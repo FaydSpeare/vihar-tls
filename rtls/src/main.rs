@@ -1,11 +1,16 @@
 use rand::Rng;
+use rsa::rand_core::{OsRng, RngCore};
 use std::convert::TryInto;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use rsa::{Pkcs1v15Encrypt, RsaPublicKey};
+use rsa::pkcs8::DecodePublicKey;
 use num_enum::TryFromPrimitive;
 use thiserror::Error;
+use x509_parser::parse_x509_certificate;
+use x509_parser::asn1_rs::ToDer;
 
 fn get_unix_time() -> u32 {
     SystemTime::now()
@@ -19,15 +24,6 @@ fn get_random_bytes(len: usize) -> Vec<u8> {
     (0..len).map(|_| rng.random()).collect()
 }
 
-enum HandshakeType {
-    ClientHello = 1,
-    ServerHello = 2,
-}
-struct Handshake {
-    htype: HandshakeType,
-    length: u32,
-    body: u8,
-}
 
 #[derive(Debug)]
 struct ProtocolVersion {
@@ -68,7 +64,10 @@ enum TLSContentType {
 #[derive(Debug, TryFromPrimitive)]
 #[repr(u8)]
 enum TLSHandshakeType {
+    ClientHello = 1,
     ServerHello = 2,
+    Certificates = 11,
+    ServerHelloDone = 14,
 }
 
 #[derive(Debug)]
@@ -81,8 +80,20 @@ struct ServerHello {
 }
 
 #[derive(Debug)]
+struct Certificate {
+    bytes: Vec<u8>
+}
+
+#[derive(Debug)]
+struct Certificates {
+    list: Vec<Certificate>
+}
+
+#[derive(Debug)]
 enum TLSHandshake {
     ServerHello(ServerHello),
+    Certificates(Certificates),
+    ServerHelloDone,
 }
 
 #[derive(Debug)]
@@ -92,7 +103,33 @@ enum TLSRecord {
 
 type TLSResult<T> = Result<T, Box<dyn std::error::Error>>;
 
-fn parse_server_hello(buf: &[u8], pos: usize, _len: usize) -> TLSResult<ServerHello> {
+fn parse_certificates(buf: &[u8], pos: usize, _len: usize) -> TLSResult<(Certificates, usize)> {
+    let mut slice = &buf[pos..];
+    println!("{:?}", &slice[0..20]);
+
+    let cert_bytes = u32::from_be_bytes([0, slice[0], slice[1], slice[2]]) as usize;
+    println!("total certs length: {cert_bytes}");
+    println!("slice length: {}", slice.len());
+
+    slice = &slice[3..];
+    if cert_bytes > slice.len() {
+        return Err(TLSError::NeedData.into());
+    }
+
+    let mut idx = 0;
+    let mut certs: Vec<Certificate> = vec![];
+
+    while idx < cert_bytes {
+        let cert_len = u32::from_be_bytes([0, slice[idx], slice[idx + 1], slice[idx + 2]]) as usize;
+        certs.push(Certificate { bytes: slice[idx + 3..idx + 3 + cert_len].to_vec() });
+        println!("{cert_len} {}", certs.last().unwrap().bytes.len());
+        idx += 3 + cert_len;
+    }
+
+    return Ok((Certificates { list: certs }, pos + 3 + idx));
+}
+
+fn parse_server_hello(buf: &[u8], pos: usize, _len: usize) -> TLSResult<(ServerHello, usize)> {
     let slice = &buf[pos..];
     let major = slice[0];
     let minor = slice[1];
@@ -108,75 +145,86 @@ fn parse_server_hello(buf: &[u8], pos: usize, _len: usize) -> TLSResult<ServerHe
     let session_id = slice[34..34 + session_len].to_vec();
     // println!("Session: {:?}", session_id);
 
-    let pos = 35 + session_len;
+    let idx = 35 + session_len;
     let cipher_suite =
-        CipherSuite::try_from(u16::from_be_bytes([slice[pos], slice[pos + 1]])).unwrap();
+        CipherSuite::try_from(u16::from_be_bytes([slice[idx], slice[idx + 1]])).unwrap();
     // println!("ciphersuite: 0x{:02X}{:02X}", slice[pos], slice[pos + 1]);
 
-    let compression_method = slice[pos + 2];
+    let compression_method = slice[idx + 2];
     // println!("compression: 0x{:02X}", slice[pos + 2]);
 
-    Ok(ServerHello {
-        server_version: ProtocolVersion { major, minor },
-        random: Random {
-            unix_time,
-            random_bytes,
+    Ok((
+        ServerHello {
+            server_version: ProtocolVersion { major, minor },
+            random: Random {
+                unix_time,
+                random_bytes,
+            },
+            session_id,
+            cipher_suite,
+            compression_method,
         },
-        session_id,
-        cipher_suite,
-        compression_method,
-    })
+        pos + idx + 3,
+    ))
 }
 
-fn parse_handshake(buf: &[u8], pos: usize) -> TLSResult<TLSHandshake> {
+
+fn parse_handshake(buf: &[u8], pos: usize) -> TLSResult<(TLSHandshake, usize)> {
     let slice = &buf[pos..];
     if slice.len() < 4 {
-        panic!("buffer contents too short")
+        return Err(TLSError::NeedData.into());
     }
 
     let length = u32::from_be_bytes([0, slice[1], slice[2], slice[3]]) as usize;
     if slice.len() < 4 + length {
-        panic!("buffer contents too short")
+        return Err(TLSError::NeedData.into());
     }
 
+    println!("Handshake length: {length}");
     TLSHandshakeType::try_from(slice[0])
         .map_err(|e| e.into())
         .and_then(|handshake_type| {
             println!("HandshakeType: {:?}", handshake_type);
             match handshake_type {
-                TLSHandshakeType::ServerHello => {
-                    parse_server_hello(buf, pos + 4, length).map(TLSHandshake::ServerHello)
-                }
+                TLSHandshakeType::ServerHello => parse_server_hello(buf, pos + 4, length)
+                    .map(|(x, y)| (TLSHandshake::ServerHello(x), y)),
+                TLSHandshakeType::Certificates => parse_certificates(buf, pos + 4, length)
+                    .map(|(x, y)| (TLSHandshake::Certificates(x), y)),
+                TLSHandshakeType::ServerHelloDone => Ok((TLSHandshake::ServerHelloDone, pos + 4)),
+                _ => unimplemented!()
             }
         })
 }
 
 #[derive(Error, Debug)]
 pub enum TLSError {
-    #[error("Buffer doesn't contain enough data")]
-    NotEnoughData,
+    #[error("Buffer requires {0} more bytes")]
+    NeedsMoreData(u16),
+
+    #[error("Buffer requires more bytes")]
+    NeedData,
 
     #[error("Invalid protocol version: {0}.{1}")]
     InvalidProtocolVersion(u8, u8),
 }
 
-fn parse_response(buf: &[u8]) -> TLSResult<TLSRecord> {
-    let major = buf.get(1).ok_or(TLSError::NotEnoughData)?;
-    let minor = buf.get(2).ok_or(TLSError::NotEnoughData)?;
+fn parse_response(buf: &[u8]) -> TLSResult<(TLSRecord, usize)> {
+    if buf.len() < 5 {
+        return Err(TLSError::NeedsMoreData((5 - buf.len()) as u16).into());
+    }
+    let major = buf[1];
+    let minor = buf[2];
 
-    if !(*major == 3 && *minor == 3) {
-        return Err(TLSError::InvalidProtocolVersion(*major, *minor).into());
+    if !(major == 3 && minor == 3) {
+        return Err(TLSError::InvalidProtocolVersion(major, minor).into());
     }
     println!("ProtocolVersion {major}.{minor}");
 
-    let length_bytes = [
-        *buf.get(3).ok_or(TLSError::NotEnoughData)?,
-        *buf.get(4).ok_or(TLSError::NotEnoughData)?,
-    ];
+    let length_bytes = [buf[3], buf[4]];
     let length = u16::from_be_bytes(length_bytes) as usize;
 
     if buf.len() < 5 + length {
-        return Err(TLSError::NotEnoughData.into());
+        return Err(TLSError::NeedsMoreData((5 + length - buf.len()) as u16).into());
     }
 
     TLSContentType::try_from(buf[0])
@@ -186,13 +234,49 @@ fn parse_response(buf: &[u8]) -> TLSResult<TLSRecord> {
             match content_type {
                 TLSContentType::ChangeCipherSpec => unimplemented!(),
                 TLSContentType::Alert => unimplemented!(),
-                TLSContentType::Handshake => parse_handshake(buf, 5).map(TLSRecord::Handshake),
+                TLSContentType::Handshake => {
+                    parse_handshake(buf, 5).map(|(x, y)| (TLSRecord::Handshake(x), y))
+                }
                 TLSContentType::ApplicationData => unimplemented!(),
             }
         })
 }
 
-fn main() -> TLSResult<()> {
+fn encrypt_pre_master_secret(cert_der: &[u8]) -> TLSResult<(Vec<u8>, Vec<u8>)> {
+    // Step 1: Parse the certificate and extract the public key
+    let (_, cert) = parse_x509_certificate(cert_der)?;
+    let spki = &cert.tbs_certificate.subject_pki;
+    let pub_key_der = spki.raw.as_ref();
+
+    // Step 2: Load RSA public key from DER (PKCS#1 format)
+    let rsa_pub = RsaPublicKey::from_public_key_der(pub_key_der)?;
+
+    // Step 3: Generate the 48-byte pre_master_secret
+    let mut pre_master = [0u8; 48];
+    let mut rng = OsRng;
+    pre_master[0] = 0x03;
+    pre_master[1] = 0x03; // TLS 1.2
+    rng.fill_bytes(&mut pre_master[2..]);
+
+    // Step 4: Encrypt it with RSA using PKCS#1 v1.5 padding (TLS 1.2 requires this)
+    let encrypted = rsa_pub.encrypt(&mut rng, Pkcs1v15Encrypt, &pre_master)?;
+    Ok((pre_master.to_vec(), encrypted)) // return both raw and encrypted
+}
+
+
+struct TLSConnection {
+    stream: TcpStream,
+    buffer: Vec<u8>
+}
+
+// if let TLSRecord::Handshake(TLSHandshake::Certificates(x)) = res {
+//     for cert in x.list {    
+//         let (x, y) = encrypt_pre_master_secret(&cert.bytes)?;
+//         println!("{:?}", x);
+//     }
+// }
+
+fn client_hello_bytes() -> Vec<u8> {
     let body = ClientHello {
         client_version: ProtocolVersion { major: 3, minor: 3 },
         random: Random {
@@ -217,7 +301,7 @@ fn main() -> TLSResult<()> {
     bodybytes.push(0);
 
     let mut bytes = Vec::<u8>::new();
-    bytes.push(HandshakeType::ClientHello as u8);
+    bytes.push(TLSHandshakeType::ClientHello as u8);
 
     let value = bodybytes.len();
     bytes.push(((value >> 16) & 0xFF) as u8);
@@ -231,20 +315,66 @@ fn main() -> TLSResult<()> {
     record.extend([3, 3]);
     record.extend((bytes.len() as u16).to_be_bytes());
     record.extend(bytes);
+    record
+}
 
-    let mut stream = TcpStream::connect("google.com:443")?;
-    stream.write_all(&record)?;
-    let mut buf = [0u8; 4096];
-    let n = stream.read(&mut buf)?;
-    println!("Received {} bytes", n);
+impl TLSConnection {
 
-    let res = parse_response(&buf)?;
-    println!("{:#?}", res);
+    pub fn new(domain: &str) -> TLSResult<Self> {
+        Ok(Self {
+            stream: TcpStream::connect(format!("{domain}:443"))?,
+            buffer: Vec::new()
+        })
+    }
 
-    // let hlen = u16::from_be_bytes([buf[3], buf[4]]) as usize;
-    // let server_hello = &buf[5..hlen + 5];
-    // println!("{:?} {}", server_hello, server_hello.len());
-    // let sh = &server_hello[6..];
+    fn parse_from_buffer(&mut self) -> Option<TLSRecord> {
+        match parse_response(&self.buffer) {
+            Ok((res, i)) => {
+                self.buffer.drain(0..i);
+                Some(res)
+            },
+            Err(e) => {
+                println!("{}", e);
+                None
+            }
+        }
+    }
 
+    pub fn next_record(&mut self) -> TLSResult<TLSRecord> { 
+        loop {
+            if let Some(record) = self.parse_from_buffer() {
+                return Ok(record)
+            }
+
+            let mut buf = [0u8; 8096];
+            let n = self.stream.read(&mut buf)?;
+            println!("Received {} bytes", n);
+            self.buffer.extend_from_slice(&buf[..n]); 
+        }
+    }
+
+
+    pub fn send_client_hello(&mut self) -> TLSResult<()> {
+        self.stream.write_all(&client_hello_bytes())?;
+        Ok(())
+    }
+
+}
+
+
+fn main() -> TLSResult<()> {
+
+    let mut connection = TLSConnection::new("google.com")?;
+    connection.send_client_hello()?;
+
+    loop {
+        let record = connection.next_record()?;
+        if let TLSRecord::Handshake(TLSHandshake::ServerHelloDone) = record {
+            break;
+        }
+        println!("{:?}", record);
+    }
+    
     Ok(())
 }
+
