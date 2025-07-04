@@ -1,0 +1,5 @@
+
+openssl s_server -accept 8443 \
+  -cert server.crt -key server.key \
+  -tls1_2 \
+  -cipher AES128-SHA
