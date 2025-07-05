@@ -41,7 +41,7 @@ fn p_hash(secret: &[u8], seed: &[u8], len: usize) -> Vec<u8> {
     bytes[..len].to_vec()
 }
 
-fn prf(secret: &[u8], label: &[u8], seed: &[u8], len: usize) -> Vec<u8> {
+pub fn prf(secret: &[u8], label: &[u8], seed: &[u8], len: usize) -> Vec<u8> {
     let mut concatenated = Vec::with_capacity(label.len() + seed.len());
     concatenated.extend_from_slice(label);
     concatenated.extend_from_slice(seed);

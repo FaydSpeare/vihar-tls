@@ -3,17 +3,19 @@ use rsa::rand_core::{OsRng, RngCore};
 use std::convert::TryInto;
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
+use sha2::{Sha256, Digest};
 
 use num_enum::TryFromPrimitive;
 use rsa::pkcs8::DecodePublicKey;
 use rsa::{Pkcs1v15Encrypt, RsaPublicKey};
 use thiserror::Error;
-use x509_parser::asn1_rs::ToDer;
 use x509_parser::parse_x509_certificate;
 
 mod prf;
+mod alert;
+
+const MASTER_SECRET_LEN: usize = 48;
 
 fn get_unix_time() -> u32 {
     SystemTime::now()
@@ -39,6 +41,15 @@ struct Random {
     random_bytes: [u8; 28],
 }
 
+impl Random {
+    fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::<u8>::new();
+        bytes.extend(self.unix_time.to_be_bytes());
+        bytes.extend(self.random_bytes);
+        bytes
+    }
+}
+
 #[allow(non_camel_case_types)]
 #[derive(Debug, TryFromPrimitive)]
 #[repr(u16)]
@@ -53,6 +64,53 @@ struct ClientHello {
     session_id: Vec<u8>,
     cipher_suites: Vec<[u8; 2]>,
     compression_methods: Vec<u8>,
+}
+
+impl ClientHello {
+    fn new() -> Self {
+        ClientHello {
+            client_version: ProtocolVersion { major: 3, minor: 3 },
+            random: Random {
+                unix_time: get_unix_time(),
+                random_bytes: get_random_bytes(28).try_into().unwrap(),
+            },
+            session_id: vec![],
+            cipher_suites: vec![(CipherSuite::TLS_RSA_WITH_AES_128_CBC_SHA as u16).to_be_bytes()],
+            compression_methods: vec![0],
+        }
+    }
+
+
+    fn to_bytes(&self) -> Vec<u8> { 
+        let mut bytes = Vec::<u8>::new();
+        bytes.extend([self.client_version.major, self.client_version.minor]); // ProtocolVersion
+        
+        bytes.extend_from_slice(&self.random.to_bytes());
+
+        bytes.push(0); // SessionId
+        
+        bytes.extend((2 * self.cipher_suites.len() as u16).to_be_bytes());
+        for suite in &self.cipher_suites {
+            bytes.extend(suite);
+        }
+
+        bytes.push(1); // Compression methods
+        bytes.push(0);
+
+        let ext = [
+            0x00, 0x0d,       // Extension type: signature_algorithms (13)
+            0x00, 0x06,       // Extension length: 6 bytes
+            0x00, 0x04,       // Supported algorithms list length: 4 bytes
+            0x04, 0x01,       // sha256 + rsa
+            0x02, 0x01,       // sha1 + rsa (optional)
+        ];
+        let extensions_len = (ext.len() as u16).to_be_bytes();
+        bytes.extend_from_slice(&extensions_len);
+        bytes.extend_from_slice(&ext);
+
+        let handshake = handshake_bytes(TLSHandshakeType::ClientHello, &bytes);
+        record_bytes(TLSContentType::Handshake, &handshake)
+    }
 }
 
 #[derive(Debug, TryFromPrimitive)]
@@ -72,6 +130,7 @@ enum TLSHandshakeType {
     Certificates = 11,
     ServerHelloDone = 14,
     ClientKeyExchange = 16,
+    Finished = 20
 }
 
 #[allow(dead_code)]
@@ -106,7 +165,8 @@ enum TLSHandshake {
 #[derive(Debug)]
 enum TLSRecord {
     Handshake(TLSHandshake),
-    Alert,
+    Alert(alert::TLSAlert),
+    ChangeCipherSuite,
 }
 
 type TLSResult<T> = Result<T, Box<dyn std::error::Error>>;
@@ -189,7 +249,7 @@ fn parse_handshake(buf: &[u8], pos: usize) -> TLSResult<(TLSHandshake, usize)> {
         return Err(TLSError::NeedData.into());
     }
 
-    println!("Handshake length: {length}");
+    // println!("Handshake length: {length}");
     TLSHandshakeType::try_from(slice[0])
         .map_err(|e| e.into())
         .and_then(|handshake_type| {
@@ -227,7 +287,7 @@ fn parse_response(buf: &[u8]) -> TLSResult<(TLSRecord, usize)> {
     if !(major == 3 && minor == 3) {
         return Err(TLSError::InvalidProtocolVersion(major, minor).into());
     }
-    println!("ProtocolVersion {major}.{minor}");
+    // println!("ProtocolVersion {major}.{minor}");
 
     let length_bytes = [buf[3], buf[4]];
     let length = u16::from_be_bytes(length_bytes) as usize;
@@ -241,10 +301,9 @@ fn parse_response(buf: &[u8]) -> TLSResult<(TLSRecord, usize)> {
         .and_then(|content_type| {
             println!("ContentType: {:?}", content_type);
             match content_type {
-                TLSContentType::ChangeCipherSpec => unimplemented!(),
+                TLSContentType::ChangeCipherSpec => Ok((TLSRecord::ChangeCipherSuite, 6)),
                 TLSContentType::Alert => {
-                    println!("{:?}", &buf[..5 + length]);
-                    unimplemented!();
+                    alert::parse_alert(buf, 5).map(|(x, y)| (TLSRecord::Alert(x), y))
                 },
                 TLSContentType::Handshake => {
                     parse_handshake(buf, 5).map(|(x, y)| (TLSRecord::Handshake(x), y))
@@ -280,17 +339,12 @@ struct TLSConnection {
     stream: TcpStream,
     buffer: Vec<u8>,
     handshakes: Vec<u8>,
+    client_random: Option<Vec<u8>>,
+    server_random: Option<Vec<u8>>,
+    // Saved temporarily to be sent later in ClientKeyExchange
+    enc_pre_master_secret: Option<Vec<u8>>,
+    master_secret: Option<Vec<u8>>,
 }
-
-// if let TLSRecord::Handshake(TLSHandshake::Certificates(x)) = res {
-//     for cert in x.list {
-//         let (x, y) = encrypt_pre_master_secret(&cert.bytes)?;
-//         println!("{:?}", x);
-//     }
-// }
-//
-//
-//
 
 fn u24_be_bytes(value: usize) -> [u8; 3] {
     [
@@ -321,47 +375,15 @@ fn change_cipher_spec_bytes() -> Vec<u8> {
     record_bytes(TLSContentType::ChangeCipherSpec, &[1])
 }
 
-fn client_hello_bytes() -> Vec<u8> {
-    let hello = ClientHello {
-        client_version: ProtocolVersion { major: 3, minor: 3 },
-        random: Random {
-            unix_time: get_unix_time(),
-            random_bytes: get_random_bytes(28).try_into().unwrap(),
-        },
-        session_id: vec![],
-        cipher_suites: vec![(CipherSuite::TLS_RSA_WITH_AES_128_CBC_SHA as u16).to_be_bytes()],
-        compression_methods: vec![0],
-    };
-
+fn client_finished_bytes(verify_data: &[u8]) -> Vec<u8> {
     let mut bytes = Vec::<u8>::new();
-    bytes.extend([hello.client_version.major, hello.client_version.minor]); // ProtocolVersion
-    bytes.extend(hello.random.unix_time.to_be_bytes());
-    bytes.extend(hello.random.random_bytes);
-    bytes.push(0); // SessionId
-    bytes.extend((2 * hello.cipher_suites.len() as u16).to_be_bytes());
-    for suite in hello.cipher_suites {
-        bytes.extend(suite);
-    }
-    bytes.push(1); // Compression methods
-    bytes.push(0);
-
-
-    let ext = [
-        0x00, 0x0d,       // Extension type: signature_algorithms (13)
-        0x00, 0x06,       // Extension length: 6 bytes
-        0x00, 0x04,       // Supported algorithms list length: 4 bytes
-        0x04, 0x01,       // sha256 + rsa
-        0x02, 0x01,       // sha1 + rsa (optional)
-    ];
-
-    let extensions_len = (ext.len() as u16).to_be_bytes();
-    bytes.extend_from_slice(&extensions_len);
-    bytes.extend_from_slice(&ext);
-
-    let handshake = handshake_bytes(TLSHandshakeType::ClientHello, &bytes);
+    bytes.push(12);
+    bytes.extend_from_slice(verify_data);
+    let handshake = handshake_bytes(TLSHandshakeType::Finished, &bytes);
     let record = record_bytes(TLSContentType::Handshake, &handshake);
     record
 }
+
 
 fn client_key_exchange_bytes(pre_master_secret: Vec<u8>) -> Vec<u8> {
     let mut bytes = Vec::<u8>::new();
@@ -376,10 +398,15 @@ fn client_key_exchange_bytes(pre_master_secret: Vec<u8>) -> Vec<u8> {
 impl TLSConnection {
     pub fn new(domain: &str) -> TLSResult<Self> {
         Ok(Self {
-            stream: TcpStream::connect(format!("{domain}:443"))?,
-            //stream: TcpStream::connect("localhost:8443")?,
+            //stream: TcpStream::connect(format!("{domain}:443"))?,
+            stream: TcpStream::connect("localhost:8443")?,
             buffer: Vec::new(),
             handshakes: Vec::new(),
+            client_random: None,
+            server_random: None,
+            enc_pre_master_secret: None,
+            master_secret: None
+
         })
     }
 
@@ -391,7 +418,7 @@ impl TLSConnection {
                 Some((res, bytes))
             }
             Err(e) => {
-                // println!("{}", e);
+                println!("{}", e);
                 None
             }
         }
@@ -400,6 +427,35 @@ impl TLSConnection {
     pub fn next_record(&mut self) -> TLSResult<(TLSRecord, Vec<u8>)> {
         loop {
             if let Some((record, bytes)) = self.parse_from_buffer() {
+
+                // Building up the handshake messages for ClientFinished
+                if let TLSRecord::Handshake(_) = record {
+                    self.handshakes.extend_from_slice(&bytes[9..]);
+                }
+
+                if let TLSRecord::Handshake(TLSHandshake::ServerHello(hello)) = &record {
+                    self.server_random = Some(hello.random.to_bytes());
+                }
+
+                if let TLSRecord::Handshake(TLSHandshake::Certificates(certs)) = &record {
+                    let cert = certs.list.last().unwrap();
+                    let (pre_master_secret, encrypted_secret) = encrypt_pre_master_secret(&cert.bytes)?; 
+
+                    let mut concat_random = Vec::<u8>::new();
+                    concat_random.extend_from_slice(self.client_random.as_ref().unwrap());
+                    concat_random.extend_from_slice(self.server_random.as_ref().unwrap());
+
+                    self.enc_pre_master_secret = Some(encrypted_secret);
+                    self.master_secret = Some(
+                        prf::prf(
+                            &pre_master_secret, 
+                            b"master secret",
+                            &concat_random,
+                            MASTER_SECRET_LEN
+                        )
+                    );
+                }
+
                 return Ok((record, bytes));
             }
 
@@ -415,33 +471,43 @@ impl TLSConnection {
         self.stream.write_all(bytes)?;
         Ok(())
     }
+
+    pub fn send(&mut self, bytes: &[u8]) -> TLSResult<()> {
+        self.stream.write_all(bytes)?;
+        Ok(())
+    }
+
+    pub fn send_client_hello(&mut self) -> TLSResult<()> {
+        let client_hello = ClientHello::new();
+        self.client_random = Some(client_hello.random.to_bytes());
+        self.send_handshake(&client_hello.to_bytes())
+    }
 }
 
 fn main() -> TLSResult<()> {
     let mut connection = TLSConnection::new("google.com")?;
-    connection.send_handshake(&client_hello_bytes())?;
+    connection.send_client_hello()?;
 
-    let mut secret: Option<Vec<u8>> = None;
+
     loop {
         let (record, bytes) = connection.next_record()?;
         println!("{:?}", record);
 
-        if let TLSRecord::Handshake(_) = record {
-            connection.handshakes.extend_from_slice(&bytes[9..]);
-        }
-
-        if let TLSRecord::Handshake(TLSHandshake::Certificates(certs)) = record {
-            let cert = certs.list.last().unwrap();
-            let (_, encrypted_secret) = encrypt_pre_master_secret(&cert.bytes)?; 
-            secret = Some(encrypted_secret);
-
+        if let TLSRecord::Alert(alert) = record {
+            return Ok(());
         }
 
         else if let TLSRecord::Handshake(TLSHandshake::ServerHelloDone) = record {
-            connection.send_handshake(&client_key_exchange_bytes(secret.clone().unwrap()))?;
-            // connection.send(&change_cipher_spec_bytes())?;
-        }
+            connection.send_handshake(&client_key_exchange_bytes(connection.enc_pre_master_secret.clone().unwrap()))?;
+            connection.send(&change_cipher_spec_bytes())?;
 
+            let seed = Sha256::digest(connection.handshakes.clone()).to_vec();
+            let verify_data = prf::prf(connection.master_secret.as_ref().unwrap(), b"client finished", &seed, 12); 
+            println!("master_secret {:?}", connection.master_secret.clone().unwrap());
+            println!("verify_data {:?}", verify_data);
+
+            connection.send(&client_finished_bytes(&verify_data))?; 
+        }
 
     }
 
