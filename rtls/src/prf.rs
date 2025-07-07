@@ -2,12 +2,12 @@ use sha2::{Sha256, Digest};
 
 const BLOCK_SIZE_BYTES: usize = 64;
 
-fn xor_bytes(a: &[u8], b: &[u8]) -> Vec<u8> {
+pub fn xor_bytes(a: &[u8], b: &[u8]) -> Vec<u8> {
     assert_eq!(a.len(), b.len(), "Slices must be the same length");
     a.iter().zip(b.iter()).map(|(x, y)| x ^ y).collect()
 }
 
-fn hmac(key: &[u8], message: &[u8]) -> Vec<u8> {
+pub fn hmac(key: &[u8], message: &[u8]) -> Vec<u8> {
     let mut k = if key.len() > BLOCK_SIZE_BYTES {
         Sha256::digest(key).to_vec()
     } else {
