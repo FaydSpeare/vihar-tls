@@ -11,7 +11,7 @@ PORT = 8443
 
 context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
 context.set_ciphers("DEFAULT:@SECLEVEL=1")
-context.set_ciphers("AES128-SHA:@SECLEVEL=1")
+context.set_ciphers("AES128-SHA256:@SECLEVEL=1")
 
 context.options |= ssl.OP_NO_TLSv1 | ssl.OP_NO_TLSv1_1  # Disable TLS < 1.2
 context.minimum_version = ssl.TLSVersion.TLSv1_2

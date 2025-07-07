@@ -180,6 +180,7 @@ enum TLSRecord {
     Handshake(TLSHandshake),
     Alert(alert::TLSAlert),
     ChangeCipherSuite,
+    ApplicationData(Vec<u8>)
 }
 
 type TLSResult<T> = Result<T, Box<dyn std::error::Error>>;
@@ -290,6 +291,42 @@ pub enum TLSError {
     InvalidProtocolVersion(u8, u8),
 }
 
+const AES128_BLOCKSIZE: usize = 16;
+
+fn decrypt_aes_128_cbc(ciphertext: &[u8], key: &[u8], iv: &[u8]) -> Vec<u8> {
+    let mut plaintext = Vec::<u8>::new();
+    let mut state = iv;
+    let cipher = Aes128::new(&GenericArray::from_slice(key));
+    let num_blocks = ciphertext.len() / AES128_BLOCKSIZE;
+
+    for i in 0..num_blocks {
+        let ct_block = &ciphertext[i * AES128_BLOCKSIZE..(i + 1) * AES128_BLOCKSIZE];
+        let mut block = GenericArray::clone_from_slice(ct_block);
+        cipher.decrypt_block(&mut block);
+        let pt_block = prf::xor_bytes(&block, state);
+        plaintext.extend_from_slice(&pt_block);
+        state = ct_block;
+    }
+
+    plaintext
+}
+
+fn encrypt_aes_128_cbc(plaintext: &[u8], key: &[u8], iv: &[u8]) -> Vec<u8> {
+    let mut ciphertext = Vec::<u8>::new();
+    let mut state = iv.to_vec();
+    let cipher = Aes128::new(&GenericArray::from_slice(key));
+    let num_blocks = plaintext.len() / AES128_BLOCKSIZE;
+    for i in 0..num_blocks {
+        let pt_block = &plaintext[i * AES128_BLOCKSIZE..(i + 1) * AES128_BLOCKSIZE];
+        let input_block = prf::xor_bytes(pt_block, &state);
+        let mut block = GenericArray::clone_from_slice(&input_block);
+        cipher.encrypt_block(&mut block);
+        ciphertext.extend_from_slice(&block);
+        state = block.to_vec();
+    }
+    ciphertext
+}
+
 fn parse_response(buf: &mut [u8], encrypted: bool, key: &Option<TLSKeys>) -> TLSResult<(TLSRecord, usize)> {
     if buf.len() < 5 {
         return Err(TLSError::NeedsMoreData((5 - buf.len()) as u16).into());
@@ -312,45 +349,41 @@ fn parse_response(buf: &mut [u8], encrypted: bool, key: &Option<TLSKeys>) -> TLS
 
     let mut pos = 5;
     if encrypted {
-        let mut plaintext = Vec::<u8>::new();
-        let ciphertext = &buf[5 + 16..5 + length];
+        let plaintext = decrypt_aes_128_cbc(
+            &buf[5 + AES128_BLOCKSIZE..5 + length],
+            &key.clone().unwrap().server_write_key,
+            &buf[5..5 + AES128_BLOCKSIZE],
+        );
 
-        let iv = &buf[5..5 + 16];
-        let mut state = iv;
-        let cipher = Aes128::new(&GenericArray::from_slice(&key.clone().unwrap().server_write_key));
-        let num_blocks = ciphertext.len() / 16;
-
-        for i in 0..num_blocks {
-            let ct_block = &ciphertext[i * 16..(i + 1) * 16];
-            let mut block = GenericArray::clone_from_slice(ct_block);
-            cipher.decrypt_block(&mut block);
-            let pt_block = prf::xor_bytes(&block, &state);
-            plaintext.extend_from_slice(&pt_block);
-            state = ct_block;
-        }
-
-        println!("CT {:?}", ciphertext);
-        println!("PT {:?}", plaintext);
         for i in 0..(length - 16) {
             buf[5 + 16 + i] = plaintext[i];
         }
-
         pos += 16;
+        println!("buffer {:?} {}", plaintext, plaintext[0]);
+
     }
 
     TLSContentType::try_from(buf[0])
         .map_err(|e| e.into())
         .and_then(|content_type| {
-            println!("ContentType: {:?}", content_type);
+            // println!("ContentType: {:?}", content_type);
             match content_type {
                 TLSContentType::ChangeCipherSpec => Ok((TLSRecord::ChangeCipherSuite, 6)),
                 TLSContentType::Alert => {
                     alert::parse_alert(buf, 5).map(|(x, y)| (TLSRecord::Alert(x), y))
                 }
                 TLSContentType::Handshake => {
+                    println!("LENGTHS: {}, {}", buf.len(), 5 + length);
                     parse_handshake(buf, pos).map(|(x, y)| (TLSRecord::Handshake(x), 5 + length))
                 }
-                TLSContentType::ApplicationData => unimplemented!(),
+                TLSContentType::ApplicationData => { 
+                    let padding = buf[5 + length - 1] as usize;
+                    println!("padding {}", padding);
+                    println!("length {}", length);
+
+                    let data = buf[5 + 16..length - padding - 1 - 32].to_vec();
+                    Ok((TLSRecord::ApplicationData(data), 5 + length))
+                },
             }
         })
 }
@@ -420,6 +453,53 @@ fn handshake_bytes(handshake_type: TLSHandshakeType, content: &[u8]) -> Vec<u8> 
     handshake
 }
 
+
+fn change_cipher_spec_bytes() -> Vec<u8> {
+    record_bytes(TLSContentType::ChangeCipherSpec, &[1])
+}
+
+fn encrypt_fragment(seq_num: u64, write_key: &[u8], mac_write_key: &[u8], fragment: &[u8], content_type: TLSContentType) -> Vec<u8> {
+
+    let mut bytes = Vec::<u8>::new();
+    bytes.extend_from_slice(&seq_num.to_be_bytes());
+    bytes.push(content_type as u8);
+    bytes.extend([3, 3]);
+    bytes.extend((fragment.len() as u16).to_be_bytes());
+    bytes.extend_from_slice(&fragment);
+
+    let mac = prf::hmac(&mac_write_key, &bytes);
+
+    let mut padding_len = 16 - ((fragment.len() + mac.len() + 1) % 16);
+    if padding_len == 16 {
+        padding_len = 16;
+    }
+    println!("padding length: {}", padding_len);
+    
+    let mut padding = Vec::<u8>::new();
+    for _ in 0..padding_len {
+        padding.push(padding_len as u8);
+    }
+
+    let mut plaintext = Vec::<u8>::new();
+    plaintext.extend_from_slice(&fragment);
+    plaintext.extend_from_slice(&mac);
+    plaintext.extend_from_slice(&padding);
+    plaintext.push(padding_len as u8);
+    
+    // Encrypt
+    let iv = get_random_bytes(16);
+    let ciphertext = encrypt_aes_128_cbc(
+        &plaintext,
+        write_key,
+        &iv 
+    );
+
+    let mut encrypted = Vec::<u8>::new();
+    encrypted.extend_from_slice(&iv); 
+    encrypted.extend_from_slice(&ciphertext);
+    encrypted
+}
+
 fn record_bytes(content_type: TLSContentType, content: &[u8]) -> Vec<u8> {
     let mut record = Vec::<u8>::new();
     record.push(content_type as u8);
@@ -429,8 +509,9 @@ fn record_bytes(content_type: TLSContentType, content: &[u8]) -> Vec<u8> {
     record
 }
 
-fn change_cipher_spec_bytes() -> Vec<u8> {
-    record_bytes(TLSContentType::ChangeCipherSpec, &[1])
+fn application_data_bytes(seq_num: u64, write_key: &[u8], mac_write_key: &[u8], msg: &[u8]) -> Vec<u8> {
+    let encrypted = encrypt_fragment(seq_num, write_key, mac_write_key, &msg, TLSContentType::ApplicationData);
+    record_bytes(TLSContentType::ApplicationData, &encrypted)
 }
 
 fn client_finished_bytes(seq_num: u64, write_key: &[u8], mac_write_key: &[u8], verify_data: &[u8]) -> (Vec<u8>, Vec<u8>) {
@@ -440,61 +521,12 @@ fn client_finished_bytes(seq_num: u64, write_key: &[u8], mac_write_key: &[u8], v
     bytes.extend_from_slice(verify_data);
     let handshake = handshake_bytes(TLSHandshakeType::Finished, &bytes);
 
-    let mut bytes = Vec::<u8>::new();
-    bytes.extend_from_slice(&seq_num.to_be_bytes());
-    bytes.push(TLSContentType::Handshake as u8);
-    bytes.extend([3, 3]);
-    bytes.extend((handshake.len() as u16).to_be_bytes());
-    bytes.extend_from_slice(&handshake);
-
-    let mac = prf::hmac(&mac_write_key, &bytes);
-
-    let mut padding_len = 16 - ((handshake.len() + mac.len() + 1) % 16);
-    if padding_len == 16 {
-        padding_len = 16;
-    }
-    
-    let mut padding = Vec::<u8>::new();
-    for _ in 0..padding_len {
-        padding.push(padding_len as u8);
-    }
-
-    let mut plaintext = Vec::<u8>::new();
-    plaintext.extend_from_slice(&handshake);
-    plaintext.extend_from_slice(&mac);
-    plaintext.extend_from_slice(&padding);
-    plaintext.push(padding_len as u8);
-    
-    println!("handshake length: {}", handshake.len());
-    println!("mac length: {}", mac.len());
-    println!("padding length: {}", padding_len);
-    println!("plaintext length: {}", plaintext.len());
-    println!("plaintext: {:?}", plaintext);
-
-    // Encrypt
-    let mut ciphertext = Vec::<u8>::new();
-    let iv = get_random_bytes(16);
-    let mut state = iv.clone();
-    let cipher = Aes128::new(&GenericArray::from_slice(write_key));
-    let num_blocks = plaintext.len() / 16;
-    for i in 0..num_blocks {
-        let pt_block = &plaintext[i * 16..(i + 1) * 16];
-        let input_block = prf::xor_bytes(pt_block, &state);
-        let mut block = GenericArray::clone_from_slice(&input_block);
-        cipher.encrypt_block(&mut block);
-        ciphertext.extend_from_slice(&block);
-        state = block.to_vec();
-    }
-
-    println!("Ciphertext: {:?} {}", ciphertext, ciphertext.len());
-    let mut encrypted = Vec::<u8>::new();
-    encrypted.extend_from_slice(&iv); 
-    encrypted.extend_from_slice(&ciphertext);
-    println!("Encrypted length: {}", encrypted.len());
-
+    let encrypted = encrypt_fragment(seq_num, write_key, mac_write_key, &handshake, TLSContentType::Handshake);
     let record = record_bytes(TLSContentType::Handshake, &encrypted);
     (handshake, record)
 }
+
+
 
 fn client_key_exchange_bytes(enc_pre_master_secret: Vec<u8>) -> Vec<u8> {
     let mut bytes = Vec::<u8>::new();
@@ -533,7 +565,7 @@ impl TLSConnection {
                 Some((res, bytes))
             }
             Err(e) => {
-                println!("{}", e);
+                // println!("{}", e);
                 None
             }
         }
@@ -612,8 +644,12 @@ impl TLSConnection {
             }
 
             let mut buf = [0u8; 8096];
-            let n = self.stream.read(&mut buf)?;
-            // println!("Received {} bytes", n);
+
+            let mut n = self.stream.read(&mut buf)?;
+            while n == 0 {
+                n = self.stream.read(&mut buf)?;
+            }
+            println!("Received {} bytes", n);
             self.buffer.extend_from_slice(&buf[..n]);
         }
     }
@@ -702,6 +738,21 @@ fn main() -> TLSResult<()> {
                 12,
             );
             println!("{:?}", verify_data);
+
+            let keys = &connection.keys.clone().unwrap();
+            let record = application_data_bytes(
+                //connection.sequence_num_write,
+                1,
+                &keys.client_write_key,
+                &keys.client_write_mac_key,
+                b"Hello, TLS",
+            );
+            connection.send(&record)?;
+
+        } else if let TLSRecord::ApplicationData(x) = record {
+            println!("got application data");
+            println!("{:?}", String::from_utf8(x).unwrap());
+            return Ok(());
         }
     }
 
