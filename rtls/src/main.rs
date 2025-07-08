@@ -418,7 +418,7 @@ fn encrypt_fragment(
     bytes.extend((fragment.len() as u16).to_be_bytes());
     bytes.extend_from_slice(&fragment);
 
-    let mac = prf::hmac(&mac_write_key, &bytes);
+    let mac = prf::hmac(&mac_write_key, &bytes, false);
 
     let mut padding_len = 16 - ((fragment.len() + mac.len() + 1) % 16);
     if padding_len == 16 {
