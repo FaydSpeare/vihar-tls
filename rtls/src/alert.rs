@@ -40,10 +40,10 @@ pub struct TLSAlert {
     description: TLSAlertDesc,
 }
 
-pub fn parse_alert(buf: &[u8], pos: usize) -> TLSResult<(TLSAlert, usize)> {
+pub fn parse_alert(buf: &[u8]) -> TLSResult<TLSAlert> {
     let alert = TLSAlert {
-        level: TLSAlertLevel::try_from(buf[pos])?,
-        description: TLSAlertDesc::try_from(buf[pos + 1])?,
+        level: TLSAlertLevel::try_from(buf[0])?,
+        description: TLSAlertDesc::try_from(buf[1])?,
     };
-    Ok((alert, pos + 2))
+    Ok(alert)
 }
