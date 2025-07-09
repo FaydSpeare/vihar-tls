@@ -94,9 +94,7 @@ impl ClientHello {
                 random_bytes: get_random_bytes(28).try_into().unwrap(),
             },
             session_id: vec![],
-            cipher_suites: vec![
-                (CipherSuiteId::TLS_RSA_WITH_AES_128_CBC_SHA as u16).to_be_bytes(),
-            ],
+            cipher_suites: vec![(CipherSuiteId::TLS_RSA_WITH_AES_128_CBC_SHA as u16).to_be_bytes()],
             compression_methods: vec![0],
         }
     }
@@ -128,7 +126,7 @@ impl ClientHello {
         //     0x00, 0x0d,              // Server Name list length: 14 bytes
         //     0x00,                 // Name Type: host_name (0)
         //     0x00, 0x0a,              // Hostname length: 11 bytes
-        //     0x67, 0x6f, 0x6f, 0x67, 0x6c, 0x65, 0x2e, 0x63, 0x6f, 0x6d    
+        //     0x67, 0x6f, 0x6f, 0x67, 0x6c, 0x65, 0x2e, 0x63, 0x6f, 0x6d
         // ];
         let extensions_len = ((signature_algorithms_ext.len()) as u16).to_be_bytes();
         bytes.extend_from_slice(&extensions_len);
@@ -207,25 +205,13 @@ enum TLSRecord {
 
 type TLSResult<T> = Result<T, Box<dyn std::error::Error>>;
 
-#[derive(Clone)]
-struct TLSKeys {
-    client_write_mac_key: Vec<u8>,
-    server_write_mac_key: Vec<u8>,
-    client_write_key: Vec<u8>,
-    server_write_key: Vec<u8>,
-}
 
 struct TLSConnection {
     stream: TcpStream,
     buffer: Vec<u8>,
     handshakes: Vec<u8>,
-    client_random: Option<Vec<u8>>,
-    server_random: Option<Vec<u8>>,
-    master_secret: Option<Vec<u8>>,
-    sequence_num_write: u64,
-    sequence_num_read: u64,
-    keys: Option<TLSKeys>,
     states: ConnectionStates,
+    server_enc: bool
 }
 
 fn u24_be_bytes(value: usize) -> [u8; 3] {
@@ -261,6 +247,21 @@ struct PendingConnectionState {
     enc_pre_master_secret: Option<Vec<u8>>,
 }
 
+struct XConnState {
+    params: SecurityParams,
+    mac_key: Vec<u8>,
+    enc_key: Vec<u8>,
+    seq_num: u64
+}
+
+#[derive(Debug, Clone)]
+struct TLSKeys {
+    client_write_mac_key: Vec<u8>,
+    server_write_mac_key: Vec<u8>,
+    client_write_key: Vec<u8>,
+    server_write_key: Vec<u8>,
+}
+
 #[derive(Debug)]
 struct ConnectionState {
     enc_key_length: u8,
@@ -272,10 +273,36 @@ struct ConnectionState {
     client_random: [u8; 32],
     server_random: [u8; 32],
     sequence_num: u64,
+    keys: TLSKeys,
 }
 
 impl ConnectionState {
     fn from_pending_state(state: &PendingConnectionState) -> TLSResult<Self> {
+
+        let mut concat_random_rev = Vec::<u8>::new();
+        concat_random_rev.extend_from_slice(&state.server_random.unwrap());
+        concat_random_rev.extend_from_slice(&state.client_random.unwrap());
+
+        // ARGS DOUBLE CHECKED
+        let key_block = prf::prf(
+            &state.master_secret.unwrap(),
+            b"key expansion",
+            &concat_random_rev,
+            2 * MAC_SIZE + 32,
+        );
+
+        // ORDER DOUBLE CHECKED
+        let client_write_mac_key = key_block[..MAC_SIZE].to_vec();
+        let server_write_mac_key = key_block[MAC_SIZE..2 * MAC_SIZE].to_vec();
+        let client_write_key = key_block[2 * MAC_SIZE..2 * MAC_SIZE + 16].to_vec();
+        let server_write_key = key_block[2 * MAC_SIZE + 16..2 * MAC_SIZE + 32].to_vec();
+        let keys = TLSKeys {
+            client_write_mac_key,
+            server_write_mac_key,
+            client_write_key,
+            server_write_key,
+        };
+
         Ok(Self {
             enc_key_length: state.enc_key_length.ok_or("")?,
             block_length: state.block_length.ok_or("")?,
@@ -286,6 +313,7 @@ impl ConnectionState {
             client_random: state.client_random.ok_or("")?,
             server_random: state.server_random.ok_or("")?,
             sequence_num: 0,
+            keys
         })
     }
 }
@@ -465,7 +493,6 @@ fn encrypt_pre_master_secret(cert_der: &[u8]) -> TLSResult<(Vec<u8>, Vec<u8>)> {
     Ok((pre_master.to_vec(), encrypted)) // return both raw and encrypted
 }
 
-
 fn handshake_bytes(handshake_type: TLSHandshakeType, content: &[u8]) -> Vec<u8> {
     let mut handshake = Vec::<u8>::new();
     handshake.push(handshake_type as u8);
@@ -561,17 +588,14 @@ fn client_finished_bytes(
     (handshake, record)
 }
 
-fn client_key_exchange_bytes(enc_pre_master_secret: Vec<u8>) -> Vec<u8> {
+fn client_key_exchange_bytes(enc_pre_master_secret: &[u8]) -> Vec<u8> {
     let mut bytes = Vec::<u8>::new();
     bytes.extend((enc_pre_master_secret.len() as u16).to_be_bytes());
-    bytes.extend(enc_pre_master_secret.clone());
+    bytes.extend_from_slice(enc_pre_master_secret);
     let handshake = handshake_bytes(TLSHandshakeType::ClientKeyExchange, &bytes);
-    // println!("enc_pre_master_secret: {}", enc_pre_master_secret.len());
-    // println!("handshake_len: {}", handshake.len());
     let record = record_bytes(TLSContentType::Handshake, &handshake);
     record
 }
-
 
 impl TLSConnection {
     pub fn new(domain: &str) -> TLSResult<Self> {
@@ -580,13 +604,8 @@ impl TLSConnection {
             //stream: TcpStream::connect("localhost:8443")?,
             buffer: Vec::new(),
             handshakes: Vec::new(),
-            client_random: None,
-            server_random: None,
-            master_secret: None,
-            sequence_num_write: 0,
-            sequence_num_read: 0,
-            keys: None,
             states: ConnectionStates::default(),
+            server_enc: false
         })
     }
 
@@ -611,10 +630,10 @@ impl TLSConnection {
         }
 
         let mut pos = 5;
-        if self.states.current.is_some() {
+        if self.server_enc {
             let plaintext = decrypt_aes_128_cbc(
                 &buf[5 + AES128_BLOCKSIZE..5 + length],
-                &self.keys.clone().unwrap().server_write_key,
+                &self.states.current.as_ref().unwrap().keys.server_write_key,
                 &buf[5..5 + AES128_BLOCKSIZE],
             );
 
@@ -662,6 +681,7 @@ impl TLSConnection {
     pub fn next_record(&mut self) -> TLSResult<(TLSRecord, Vec<u8>)> {
         loop {
             if let Some((record, bytes)) = self.parse_from_buffer() {
+                
                 // Building up the handshake messages for ClientFinished
                 if let TLSRecord::Handshake(x) = &record {
                     match x {
@@ -673,12 +693,14 @@ impl TLSConnection {
                 }
 
                 if let TLSRecord::ChangeCipherSuite = &record {
-                    if VERBOSE { println!("Received ChangeCipherSuite"); }
-                    self.states.instate_pending()?;
-
+                    if VERBOSE {
+                        println!("Received ChangeCipherSuite");
+                    }
+                    self.server_enc = true;
                 } else if let TLSRecord::Handshake(TLSHandshake::ServerHello(hello)) = &record {
-                    if VERBOSE { println!("Received ServerHello"); }
-                    self.server_random = Some(hello.random.to_bytes());
+                    if VERBOSE {
+                        println!("Received ServerHello");
+                    }
 
                     let suite =
                         ciphersuite::CipherSuiteEnum::try_from(hello.cipher_suite.clone() as u16)
@@ -694,25 +716,32 @@ impl TLSConnection {
                     self.states.pending.mac_key_length = Some(params.mac_key_length);
 
                 } else if let TLSRecord::Handshake(TLSHandshake::ServerHelloDone) = &record {
+                    if VERBOSE {
+                        println!("Received ServerHelloDone");
+                    }
 
-                    if VERBOSE { println!("Received ServerHelloDone"); }
                     self.send_handshake(&client_key_exchange_bytes(
-                        self.states.pending.enc_pre_master_secret.clone().unwrap(),
+                        self.states.pending.enc_pre_master_secret.as_ref().unwrap(),
                     ))?;
-                    if VERBOSE { println!("Sent ClientKeyExchange"); }
+                    if VERBOSE {
+                        println!("Sent ClientKeyExchange");
+                    }
 
                     self.send(&change_cipher_spec_bytes())?;
-                    if VERBOSE { println!("Sent ChangeCipherSpec"); }
+                    self.states.instate_pending()?;
+                    if VERBOSE {
+                        println!("Sent ChangeCipherSpec");
+                    }
 
-                    let seed = Sha256::digest(self.handshakes.clone()).to_vec();
+                    let seed = Sha256::digest(&self.handshakes).to_vec();
                     let verify_data = prf::prf(
-                        self.master_secret.as_ref().unwrap(),
+                        &self.states.current.as_ref().unwrap().master_secret,
                         b"client finished",
                         &seed,
                         12,
                     );
 
-                    let keys = &self.keys.clone().unwrap();
+                    let keys = &self.states.current.as_ref().unwrap().keys.clone();
                     let (pt_handshake, record) = client_finished_bytes(
                         0,
                         &keys.client_write_key,
@@ -722,67 +751,74 @@ impl TLSConnection {
                     self.send(&record)?;
                     self.handshakes.extend_from_slice(&pt_handshake);
 
-                    if VERBOSE { println!("Sent ClientFinished"); }
+                    if VERBOSE {
+                        println!("Sent ClientFinished");
+                    }
                 } else if let TLSRecord::Handshake(TLSHandshake::Certificates(certs)) = &record {
-                    if VERBOSE { println!("Received ServerCertificates"); }
+                    if VERBOSE {
+                        println!("Received ServerCertificates");
+                    }
                     let cert = &certs.list[0];
 
                     let (pre_master_secret, encrypted_secret) =
                         encrypt_pre_master_secret(&cert.bytes)?;
                     self.states.pending.enc_pre_master_secret = Some(encrypted_secret);
 
-                    let mut concat_random = Vec::<u8>::new();
-                    concat_random.extend_from_slice(self.client_random.as_ref().unwrap());
-                    concat_random.extend_from_slice(self.server_random.as_ref().unwrap());
+                    let master_secret = {
+                        let state = &self.states.pending;
+                        let mut concat_random = Vec::<u8>::new();
+                        concat_random.extend_from_slice(&state.client_random.unwrap());
+                        concat_random.extend_from_slice(&state.server_random.unwrap());
+                        Some(prf::prf(
+                            &pre_master_secret,
+                            b"master secret",
+                            &concat_random,
+                            MASTER_SECRET_LEN,
+                        ))
+                    };
 
                     // ORDER DOUBLE CHECKED
-                    self.master_secret = Some(prf::prf(
-                        &pre_master_secret,
-                        b"master secret",
-                        &concat_random,
-                        MASTER_SECRET_LEN,
-                    ));
-                    self.states.pending.master_secret = self.master_secret.as_ref()
-                        .and_then(|v| <[u8; 48]>::try_from(v.as_slice()).ok());
+                    self.states.pending.master_secret =
+                        master_secret.and_then(|v| <[u8; 48]>::try_from(v.as_slice()).ok());
 
-                    let mut concat_random_rev = Vec::<u8>::new();
-                    concat_random_rev.extend_from_slice(self.server_random.as_ref().unwrap());
-                    concat_random_rev.extend_from_slice(self.client_random.as_ref().unwrap());
+                    // let state = &self.states.pending;
+                    // let mut concat_random_rev = Vec::<u8>::new();
+                    // concat_random_rev.extend_from_slice(&state.server_random.unwrap());
+                    // concat_random_rev.extend_from_slice(&state.client_random.unwrap());
 
-                    // ARGS DOUBLE CHECKED
-                    let key_block = prf::prf(
-                        self.master_secret.as_ref().unwrap(),
-                        b"key expansion",
-                        &concat_random_rev,
-                        2 * MAC_SIZE + 32,
-                    );
+                    // // ARGS DOUBLE CHECKED
+                    // let key_block = prf::prf(
+                    //     &state.master_secret.unwrap(),
+                    //     b"key expansion",
+                    //     &concat_random_rev,
+                    //     2 * MAC_SIZE + 32,
+                    // );
 
-                    // ORDER DOUBLE CHECKED
-                    let client_write_mac_key = key_block[..MAC_SIZE].to_vec();
-                    let server_write_mac_key = key_block[MAC_SIZE..2 * MAC_SIZE].to_vec();
-                    let client_write_key = key_block[2 * MAC_SIZE..2 * MAC_SIZE + 16].to_vec();
-                    let server_write_key = key_block[2 * MAC_SIZE + 16..2 * MAC_SIZE + 32].to_vec();
-                    self.keys = Some(TLSKeys {
-                        client_write_mac_key,
-                        server_write_mac_key,
-                        client_write_key,
-                        server_write_key,
-                    });
-
+                    // // ORDER DOUBLE CHECKED
+                    // let client_write_mac_key = key_block[..MAC_SIZE].to_vec();
+                    // let server_write_mac_key = key_block[MAC_SIZE..2 * MAC_SIZE].to_vec();
+                    // let client_write_key = key_block[2 * MAC_SIZE..2 * MAC_SIZE + 16].to_vec();
+                    // let server_write_key = key_block[2 * MAC_SIZE + 16..2 * MAC_SIZE + 32].to_vec();
+                    // self.keys = Some(TLSKeys {
+                    //     client_write_mac_key,
+                    //     server_write_mac_key,
+                    //     client_write_key,
+                    //     server_write_key,
+                    // });
                 } else if let TLSRecord::Handshake(TLSHandshake::Finished(_)) = &record {
-                    if VERBOSE { println!("Received ServerFinished"); }
+                    if VERBOSE {
+                        println!("Received ServerFinished");
+                    }
 
                     let seed = Sha256::digest(self.handshakes.clone()).to_vec();
-                    let verify_data = prf::prf(
-                        self.master_secret.as_ref().unwrap(),
+                    let _verify_data = prf::prf(
+                        &self.states.current.as_ref().unwrap().master_secret,
                         b"server finished",
                         &seed,
                         12,
                     );
-
                 }
 
-                self.sequence_num_read += 1;
                 return Ok((record, bytes));
             }
 
@@ -803,14 +839,13 @@ impl TLSConnection {
     }
 
     pub fn send(&mut self, bytes: &[u8]) -> TLSResult<()> {
-        self.sequence_num_write += 1;
+        // self.sequence_num_write += 1;
         self.stream.write_all(bytes)?;
         Ok(())
     }
 
     pub fn send_client_hello(&mut self) -> TLSResult<()> {
         let client_hello = ClientHello::new();
-        self.client_random = Some(client_hello.random.to_bytes());
         self.states.pending.client_random =
             Some(client_hello.random.to_bytes().try_into().unwrap());
         self.send_handshake(&client_hello.to_bytes())
@@ -818,7 +853,9 @@ impl TLSConnection {
 
     pub fn handshake(&mut self) -> TLSResult<()> {
         self.send_client_hello()?;
-        if VERBOSE { println!("Sent ClientHello"); }
+        if VERBOSE {
+            println!("Sent ClientHello");
+        }
 
         loop {
             let (record, _) = self.next_record()?;
@@ -826,7 +863,6 @@ impl TLSConnection {
             if let TLSRecord::Alert(a) = record {
                 println!("{:?}", a);
                 return Err("Received alert during handshake".into());
-
             } else if let TLSRecord::Handshake(TLSHandshake::Finished(_)) = record {
                 println!("Handshake complete");
                 return Ok(());
@@ -835,13 +871,9 @@ impl TLSConnection {
     }
 
     pub fn send_app_data(&mut self, bytes: &[u8]) -> TLSResult<()> {
-        let keys = &self.keys.clone().unwrap();
-        let record = application_data_bytes(
-            1,
-            &keys.client_write_key,
-            &keys.client_write_mac_key,
-            bytes,
-        );
+        let keys = &self.states.current.as_ref().unwrap().keys;
+        let record =
+            application_data_bytes(1, &keys.client_write_key, &keys.client_write_mac_key, bytes);
         self.send(&record)?;
         // println!("Sent AppData: {:?}", String::from_utf8_lossy(bytes));
         Ok(())
@@ -854,7 +886,6 @@ impl TLSConnection {
             if let TLSRecord::Alert(a) = record {
                 println!("{:?}", a);
                 return Err("Received alert".into());
-
             } else if let TLSRecord::ApplicationData(x) = record {
                 return Ok(x);
             }
@@ -870,7 +901,7 @@ fn main() -> TLSResult<()> {
 
     loop {
         let bytes = connection.next_app_data()?;
-        
+
         println!("APPDATA");
         print!("{}", String::from_utf8(bytes).unwrap());
     }
