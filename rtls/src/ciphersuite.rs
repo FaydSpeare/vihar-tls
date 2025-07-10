@@ -4,11 +4,11 @@ use num_enum::TryFromPrimitive;
 #[derive(Debug)]
 pub struct CipherSuiteParams {
     pub name: &'static str,
-    pub enc_key_length: u8,
-    pub block_length: u8,
-    pub iv_length: u8,
-    pub mac_length: u8,
-    pub mac_key_length: u8,
+    pub enc_key_length: usize,
+    pub block_length: usize,
+    pub iv_length: usize,
+    pub mac_length: usize,
+    pub mac_key_length: usize,
 }
 
 pub trait CipherSuite {
