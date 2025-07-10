@@ -19,6 +19,7 @@ use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit, generic_array::GenericArr
 mod alert;
 mod ciphersuite;
 mod prf;
+mod connection;
 
 const MASTER_SECRET_LEN: usize = 48;
 const MAC_SIZE: usize = 20;
@@ -205,13 +206,40 @@ enum TLSRecord {
 
 type TLSResult<T> = Result<T, Box<dyn std::error::Error>>;
 
+enum PendingConnState {
+    ReadWritePending(PartialSecurityParams),
+    ReadPending(SecurityParams),
+    None,
+}
+
+impl Default for PendingConnState {
+    fn default() -> Self {
+        Self::ReadWritePending(PartialSecurityParams::default())
+    }
+}
+
+#[derive(Default)]
+struct ConnState {
+    mac_key: Vec<u8>,
+    enc_key: Vec<u8>,
+    seq_num: u64
+}
+
+#[derive(Default)]
+struct ConnStates {
+    params: Option<SecurityParams>,
+    read: ConnState,
+    write: ConnState,
+    pending: PendingConnState,
+}
 
 struct TLSConnection {
     stream: TcpStream,
     buffer: Vec<u8>,
     handshakes: Vec<u8>,
     states: ConnectionStates,
-    server_enc: bool
+    server_enc: bool,
+    states2: ConnStates,
 }
 
 fn u24_be_bytes(value: usize) -> [u8; 3] {
@@ -228,10 +256,22 @@ struct SecurityParams {
     iv_length: u8,
     mac_length: u8,
     mac_key_length: u8,
-
     client_random: [u8; 32],
     server_random: [u8; 32],
     master_secret: [u8; 48],
+}
+
+#[derive(Default)]
+struct PartialSecurityParams {
+    enc_key_length: Option<u8>,
+    block_length: Option<u8>,
+    iv_length: Option<u8>,
+    mac_length: Option<u8>,
+    mac_key_length: Option<u8>,
+    client_random: Option<[u8; 32]>,
+    server_random: Option<[u8; 32]>,
+    master_secret: Option<[u8; 48]>,
+    enc_pre_master_secret: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Default)]
@@ -247,12 +287,8 @@ struct PendingConnectionState {
     enc_pre_master_secret: Option<Vec<u8>>,
 }
 
-struct XConnState {
-    params: SecurityParams,
-    mac_key: Vec<u8>,
-    enc_key: Vec<u8>,
-    seq_num: u64
-}
+
+
 
 #[derive(Debug, Clone)]
 struct TLSKeys {
@@ -605,7 +641,8 @@ impl TLSConnection {
             buffer: Vec::new(),
             handshakes: Vec::new(),
             states: ConnectionStates::default(),
-            server_enc: false
+            server_enc: false,
+            states2: ConnStates::default(),
         })
     }
 
