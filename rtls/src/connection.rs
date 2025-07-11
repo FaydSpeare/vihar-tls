@@ -1,6 +1,5 @@
-#![allow(dead_code)]
-
-use crate::prf::prf;
+use crate::ciphersuite::{EncAlgorithm, MacAlgorithm};
+use crate::prf::prf_sha256;
 use crate::{TLSResult, ciphersuite::CipherSuiteParams};
 
 const MASTER_SECRET_LEN: usize = 48;
@@ -13,14 +12,10 @@ struct DerivedKeys {
     server_enc_key: Vec<u8>,
 }
 
-
 #[derive(Debug, Clone)]
 pub struct SecurityParams {
-    pub enc_key_length: usize,
-    pub block_length: usize,
-    pub iv_length: usize,
-    pub mac_length: usize,
-    pub mac_key_length: usize,
+    pub enc_algorithm: EncAlgorithm,
+    pub mac_algorithm: MacAlgorithm,
     pub client_random: [u8; 32],
     pub server_random: [u8; 32],
     pub master_secret: [u8; 48],
@@ -28,62 +23,60 @@ pub struct SecurityParams {
 
 impl SecurityParams {
     fn from_partial(params: &PartialSecurityParams) -> TLSResult<Self> {
-
         let client_random = params.client_random.ok_or("Unset param")?;
         let server_random = params.server_random.ok_or("Unset param")?;
 
-        let master_secret: [u8; MASTER_SECRET_LEN] = prf(
+        let master_secret: [u8; MASTER_SECRET_LEN] = prf_sha256(
             &params.pre_master_secret.clone().ok_or("Unset param")?,
             b"master secret",
             &[client_random.as_slice(), server_random.as_slice()].concat(),
             MASTER_SECRET_LEN,
-        ).try_into().unwrap();
+        )
+        .try_into()
+        .unwrap();
 
         Ok(Self {
-            enc_key_length: params.enc_key_length.ok_or("Unset param")?,
-            block_length: params.block_length.ok_or("Unset param")?,
-            iv_length: params.iv_length.ok_or("Unset param")?,
-            mac_length: params.mac_length.ok_or("Unset param")?,
-            mac_key_length: params.mac_key_length.ok_or("Unset param")?,
+            enc_algorithm: params.enc_algorithm.ok_or("Encryption algorithm not set")?,
+            mac_algorithm: params.mac_algorithm.ok_or("Mac algorithm not set")?,
             master_secret,
             client_random,
-            server_random
+            server_random,
         })
     }
 
     fn derive_keys(&self) -> DerivedKeys {
-        let key_block = prf(
+        let mac_key_len = self.mac_algorithm.key_length();
+        let enc_key_len = self.enc_algorithm.key_length();
+
+        let key_block = prf_sha256(
             &self.master_secret,
             b"key expansion",
             &[self.server_random.as_slice(), self.client_random.as_slice()].concat(),
-            2 * self.mac_key_length + 2 * self.enc_key_length,
+            2 * mac_key_len + 2 * enc_key_len,
         );
 
         let mut offset = 0;
-        let client_mac_key = key_block[offset..offset + self.mac_key_length].to_vec();
-        offset += self.mac_key_length;
-        let server_mac_key = key_block[offset..offset + self.mac_key_length].to_vec();
-        offset += self.mac_key_length;
-        let client_enc_key = key_block[offset..offset + self.enc_key_length].to_vec();
-        offset += self.enc_key_length;
-        let server_enc_key = key_block[offset..offset + self.enc_key_length].to_vec();
+        let client_mac_key = key_block[offset..offset + mac_key_len].to_vec();
+        offset += mac_key_len;
+        let server_mac_key = key_block[offset..offset + mac_key_len].to_vec();
+        offset += mac_key_len;
+        let client_enc_key = key_block[offset..offset + enc_key_len].to_vec();
+        offset += enc_key_len;
+        let server_enc_key = key_block[offset..offset + enc_key_len].to_vec();
 
         DerivedKeys {
             client_mac_key,
             server_mac_key,
             client_enc_key,
-            server_enc_key
+            server_enc_key,
         }
     }
 }
 
 #[derive(Default)]
 pub struct PartialSecurityParams {
-    pub enc_key_length: Option<usize>,
-    pub block_length: Option<usize>,
-    pub iv_length: Option<usize>,
-    pub mac_length: Option<usize>,
-    pub mac_key_length: Option<usize>,
+    pub enc_algorithm: Option<EncAlgorithm>,
+    pub mac_algorithm: Option<MacAlgorithm>,
     pub client_random: Option<[u8; 32]>,
     pub server_random: Option<[u8; 32]>,
     pub master_secret: Option<[u8; 48]>,
@@ -92,50 +85,92 @@ pub struct PartialSecurityParams {
 }
 
 #[derive(Default, Clone)]
-pub struct ConnState {
+pub struct InitialConnState {
+    pub seq_num: u64,
+}
+
+impl InitialConnState {
+    pub fn decrypt(&self, ciphertext: &[u8]) -> Vec<u8> {
+        ciphertext.to_vec()
+    }
+}
+
+#[derive(Clone)]
+pub struct SecureConnState {
+    pub params: SecurityParams,
     pub mac_key: Vec<u8>,
     pub enc_key: Vec<u8>,
     pub seq_num: u64,
 }
 
-impl ConnState {
-    fn new(enc_key: Vec<u8>, mac_key: Vec<u8>) -> Self {
+impl SecureConnState {
+    fn new(params: SecurityParams, enc_key: Vec<u8>, mac_key: Vec<u8>) -> Self {
         Self {
+            params,
             enc_key,
             mac_key,
             seq_num: 0,
+        }
+    }
+
+    pub fn decrypt(&self, ciphertext: &[u8]) -> Vec<u8> {
+        let (iv, ciphertext) = ciphertext.split_at(self.params.enc_algorithm.iv_length());
+        self.params
+            .enc_algorithm
+            .decrypt(ciphertext, &self.enc_key, iv)
+    }
+}
+
+#[derive(Clone)]
+pub enum ConnState {
+    Initial(InitialConnState),
+    Secure(SecureConnState),
+}
+
+impl ConnState {
+    pub fn decrypt(&self, ciphertext: &[u8]) -> Vec<u8> {
+        match self {
+            Self::Initial(state) => state.decrypt(ciphertext),
+            Self::Secure(state) => state.decrypt(ciphertext),
         }
     }
 }
 
 pub struct Negotiating {
     pub pending: PartialSecurityParams,
-}
-
-pub struct Transitioning {
-    pending: SecurityParams,
+    pub read: ConnState,
     pub write: ConnState,
 }
 
-impl Transitioning {
-    pub fn write_params(&self) -> &SecurityParams {
+impl Negotiating {
+    pub fn negotiated_params(&self) -> &PartialSecurityParams {
         &self.pending
     }
 }
 
-pub struct Synchronised {
-    params: SecurityParams,
-    pub write: ConnState,
+pub struct Transitioning {
     pub read: ConnState,
+    pub write: SecureConnState,
+}
+
+impl Transitioning {
+    pub fn write_params(&self) -> &SecurityParams {
+        &self.write.params
+    }
+}
+
+pub struct Synchronised {
+    pub write: SecureConnState,
+    pub read: SecureConnState,
 }
 
 impl Synchronised {
     pub fn read_params(&self) -> &SecurityParams {
-        &self.params
+        &self.read.params
     }
 
     pub fn write_params(&self) -> &SecurityParams {
-        &self.params
+        &self.write.params
     }
 }
 
@@ -149,6 +184,8 @@ impl Default for ConnStates {
     fn default() -> Self {
         Self::Negotating(Negotiating {
             pending: PartialSecurityParams::default(),
+            read: ConnState::Initial(InitialConnState::default()),
+            write: ConnState::Initial(InitialConnState::default())
         })
     }
 }
@@ -160,13 +197,11 @@ pub enum SecParamsRef<'a> {
 }
 
 impl ConnStates {
-
-    pub fn read_params(&self) -> TLSResult<&SecurityParams> {
-        let params = match self {
+    pub fn read_params(&self) -> Option<&SecurityParams> {
+        match self {
             Self::Synchronised(x) => Some(x.read_params()),
             _ => None,
-        };
-        params.ok_or("There are no read params in this state".into())
+        }
     }
 
     pub fn write_params(&self) -> TLSResult<&SecurityParams> {
@@ -194,20 +229,20 @@ impl ConnStates {
 
     pub fn as_synchronised(&self) -> TLSResult<&Synchronised> {
         match self {
-            Self::Synchronised(x) => Ok(&x),
+            Self::Synchronised(state) => Ok(&state),
             _ => Err("Connection not in synchronised state".into()),
         }
     }
 
     pub fn transition_write_state(&self) -> TLSResult<Self> {
         match self {
-            Self::Negotating(x) => {
-                let params = SecurityParams::from_partial(&x.pending)?;
+            Self::Negotating(state) => {
+                let params = SecurityParams::from_partial(&state.pending)?;
                 let keys = params.derive_keys();
 
                 Ok(Self::Transitioning(Transitioning {
-                    pending: params,
-                    write: ConnState::new(keys.client_enc_key, keys.client_mac_key),
+                    read: state.read.clone(),
+                    write: SecureConnState::new(params, keys.client_enc_key, keys.client_mac_key),
                 }))
             }
             _ => Err("Cannot change pending params in this state".into()),
@@ -216,13 +251,13 @@ impl ConnStates {
 
     pub fn transition_read_state(&self) -> TLSResult<Self> {
         match self {
-            Self::Transitioning(x) => {
-                let keys = x.pending.derive_keys();
+            Self::Transitioning(state) => {
+                let params = state.write.params.clone();
+                let keys = params.derive_keys();
 
                 Ok(Self::Synchronised(Synchronised {
-                    params: x.pending.clone(),
-                    write: x.write.clone(),
-                    read: ConnState::new(keys.server_enc_key, keys.server_mac_key),
+                    write: state.write.clone(),
+                    read: SecureConnState::new(params, keys.server_enc_key, keys.server_mac_key),
                 }))
             }
             _ => Err("Cannot change pending params in this state".into()),
@@ -272,11 +307,8 @@ impl ConnStates {
     pub fn set_cipher_params(&mut self, cipher_params: &CipherSuiteParams) -> TLSResult<()> {
         match self {
             Self::Negotating(state) => {
-                state.pending.block_length = Some(cipher_params.block_length);
-                state.pending.enc_key_length = Some(cipher_params.enc_key_length);
-                state.pending.iv_length = Some(cipher_params.iv_length);
-                state.pending.mac_length = Some(cipher_params.mac_length);
-                state.pending.mac_key_length = Some(cipher_params.mac_key_length);
+                state.pending.mac_algorithm = Some(cipher_params.mac_algorithm);
+                state.pending.enc_algorithm = Some(cipher_params.enc_algorithm);
                 Ok(())
             }
             _ => Err("Cannot change pending params in this state".into()),

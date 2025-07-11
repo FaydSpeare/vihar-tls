@@ -1,20 +1,114 @@
+use aes::{cipher::{generic_array::GenericArray, BlockDecrypt, BlockEncrypt, KeyInit}, Aes128};
 use num_enum::TryFromPrimitive;
+
+use crate::utils;
+
+const AES128_BLOCKSIZE: usize = 16;
+
+fn decrypt_aes_128_cbc(ciphertext: &[u8], key: &[u8], iv: &[u8]) -> Vec<u8> {
+    let mut plaintext = Vec::<u8>::new();
+    let mut state = iv;
+    let cipher = Aes128::new(&GenericArray::from_slice(key));
+    let num_blocks = ciphertext.len() / AES128_BLOCKSIZE;
+
+    for i in 0..num_blocks {
+        let ct_block = &ciphertext[i * AES128_BLOCKSIZE..(i + 1) * AES128_BLOCKSIZE];
+        let mut block = GenericArray::clone_from_slice(ct_block);
+        cipher.decrypt_block(&mut block);
+        let pt_block = utils::xor_bytes(&block, state);
+        plaintext.extend_from_slice(&pt_block);
+        state = ct_block;
+    }
+
+    plaintext
+}
+
+pub fn encrypt_aes_128_cbc(plaintext: &[u8], key: &[u8], iv: &[u8]) -> Vec<u8> {
+    let mut ciphertext = Vec::<u8>::new();
+    let mut state = iv.to_vec();
+    let cipher = Aes128::new(&GenericArray::from_slice(key));
+    let num_blocks = plaintext.len() / AES128_BLOCKSIZE;
+    for i in 0..num_blocks {
+        let pt_block = &plaintext[i * AES128_BLOCKSIZE..(i + 1) * AES128_BLOCKSIZE];
+        let input_block = utils::xor_bytes(pt_block, &state);
+        let mut block = GenericArray::clone_from_slice(&input_block);
+        cipher.encrypt_block(&mut block);
+        ciphertext.extend_from_slice(&block);
+        state = block.to_vec();
+    }
+    ciphertext
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum MacAlgorithm {
+    None,
+    HmacSha1,
+    HmacSha256,
+}
+
+impl MacAlgorithm {
+    pub fn mac_length(&self) -> usize {
+        match self {
+            Self::None => 0,
+            Self::HmacSha1 => 20,
+            Self::HmacSha256 => 32,
+        }
+    }
+
+    pub fn key_length(&self) -> usize {
+        self.mac_length()
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum EncAlgorithm {
+    None,
+    Aes128Cbc,
+}
+
+impl EncAlgorithm {
+    pub fn key_length(&self) -> usize {
+        match self {
+            Self::None => 0,
+            Self::Aes128Cbc => 16,
+        }
+    }
+
+    pub fn block_length(&self) -> usize {
+        match self {
+            Self::None => 0,
+            Self::Aes128Cbc => 16,
+        }
+    }
+
+    pub fn iv_length(&self) -> usize {
+        self.block_length()
+    }
+
+    pub fn decrypt(&self, ciphertext: &[u8], key: &[u8], iv: &[u8]) -> Vec<u8> {
+        match self {
+            Self::None => ciphertext.to_vec(),
+            Self::Aes128Cbc => decrypt_aes_128_cbc(ciphertext, key, iv)
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum KeyExchangeAlgorithm {
+    Rsa,
+}
 
 #[allow(dead_code)]
 #[derive(Debug)]
 pub struct CipherSuiteParams {
     pub name: &'static str,
-    pub enc_key_length: usize,
-    pub block_length: usize,
-    pub iv_length: usize,
-    pub mac_length: usize,
-    pub mac_key_length: usize,
+    pub mac_algorithm: MacAlgorithm,
+    pub enc_algorithm: EncAlgorithm,
+    pub key_exchange_algorithm: KeyExchangeAlgorithm,
 }
 
 pub trait CipherSuite {
     fn params(&self) -> CipherSuiteParams;
-    // fn encrypt_fragment(&self, key: &[u8], plaintext: &[u8]) -> Vec<u8>;
-    // fn decrypt_fragment(&self, key: &[u8], ciphertext: &[u8]) -> Vec<u8>;
 }
 
 pub struct RsaAes128CbcSha;
@@ -23,11 +117,9 @@ impl CipherSuite for RsaAes128CbcSha {
     fn params(&self) -> CipherSuiteParams {
         CipherSuiteParams {
             name: "TLS_RSA_WITH_AES_128_CBC_SHA",
-            enc_key_length: 16,
-            block_length: 16,
-            iv_length: 16,
-            mac_length: 20,
-            mac_key_length: 20,
+            mac_algorithm: MacAlgorithm::HmacSha1,
+            enc_algorithm: EncAlgorithm::Aes128Cbc,
+            key_exchange_algorithm: KeyExchangeAlgorithm::Rsa,
         }
     }
 }
@@ -38,11 +130,9 @@ impl CipherSuite for RsaAes128CbcSha256 {
     fn params(&self) -> CipherSuiteParams {
         CipherSuiteParams {
             name: "TLS_RSA_WITH_AES_128_CBC_SHA256",
-            enc_key_length: 16,
-            block_length: 16,
-            iv_length: 16,
-            mac_length: 32,
-            mac_key_length: 32,
+            mac_algorithm: MacAlgorithm::HmacSha256,
+            enc_algorithm: EncAlgorithm::Aes128Cbc,
+            key_exchange_algorithm: KeyExchangeAlgorithm::Rsa,
         }
     }
 }
@@ -69,5 +159,4 @@ impl CipherSuiteEnum {
 enum CipherSuiteId {
     TLS_RSA_WITH_AES_128_CBC_SHA = 0x002f,
     TLS_RSA_WITH_AES_128_CBC_SHA256 = 0x003c,
-    TLS_RSA_WITH_AES_256_CBC_SHA256 = 0x003d,
 }
