@@ -1,5 +1,10 @@
+use log::debug;
+
+use crate::ciphersuite;
 use crate::ciphersuite::{EncAlgorithm, MacAlgorithm};
 use crate::prf::prf_sha256;
+use crate::record::TLSContentType;
+use crate::utils;
 use crate::{TLSResult, ciphersuite::CipherSuiteParams};
 
 const MASTER_SECRET_LEN: usize = 48;
@@ -119,6 +124,40 @@ impl SecureConnState {
             .enc_algorithm
             .decrypt(ciphertext, &self.enc_key, iv)
     }
+
+    pub fn encrypt_fragment(&self, content_type: TLSContentType, fragment: &[u8]) -> Vec<u8> {
+        debug!("seq_num {}", self.seq_num);
+        let mut bytes = Vec::<u8>::new();
+        bytes.extend_from_slice(&self.seq_num.to_be_bytes());
+        bytes.push(content_type as u8);
+        bytes.extend([3, 3]);
+        bytes.extend((fragment.len() as u16).to_be_bytes());
+        bytes.extend_from_slice(&fragment);
+
+        // let mac = prf::hmac(&state.enc_key, &bytes, USE_SHA1);
+        let mac = self.params.mac_algorithm.mac(&self.mac_key, &bytes);
+
+        let padding_len = 16 - ((fragment.len() + mac.len() + 1) % 16);
+        let mut padding = Vec::<u8>::new();
+        for _ in 0..padding_len {
+            padding.push(padding_len as u8);
+        }
+
+        let mut plaintext = Vec::<u8>::new();
+        plaintext.extend_from_slice(&fragment);
+        plaintext.extend_from_slice(&mac);
+        plaintext.extend_from_slice(&padding);
+        plaintext.push(padding_len as u8);
+
+        // Encrypt
+        let iv = utils::get_random_bytes(16);
+        let ciphertext = ciphersuite::encrypt_aes_128_cbc(&plaintext, &self.enc_key, &iv);
+
+        let mut encrypted = Vec::<u8>::new();
+        encrypted.extend_from_slice(&iv);
+        encrypted.extend_from_slice(&ciphertext);
+        encrypted
+    }
 }
 
 #[derive(Clone)]
@@ -128,10 +167,30 @@ pub enum ConnState {
 }
 
 impl ConnState {
+    pub fn inc_seq_num(&mut self) {
+        match self {
+            Self::Initial(state) => state.seq_num += 1,
+            Self::Secure(state) => state.seq_num += 1,
+        }
+    }
+
     pub fn decrypt(&self, ciphertext: &[u8]) -> Vec<u8> {
         match self {
-            Self::Initial(state) => state.decrypt(ciphertext),
-            Self::Secure(state) => state.decrypt(ciphertext),
+            Self::Initial(state) => {
+                debug!("NULL Decrypt");
+                state.decrypt(ciphertext)
+            }
+            Self::Secure(state) => {
+                debug!("Secure Decrypt");
+                state.decrypt(ciphertext)
+            }
+        }
+    }
+
+    fn encrypt_fragment(&self, content_type: TLSContentType, fragment: &[u8]) -> Vec<u8> {
+        match self {
+            Self::Initial(_) => fragment.to_vec(),
+            Self::Secure(state) => state.encrypt_fragment(content_type, fragment)
         }
     }
 }
@@ -185,15 +244,9 @@ impl Default for ConnStates {
         Self::Negotating(Negotiating {
             pending: PartialSecurityParams::default(),
             read: ConnState::Initial(InitialConnState::default()),
-            write: ConnState::Initial(InitialConnState::default())
+            write: ConnState::Initial(InitialConnState::default()),
         })
     }
-}
-
-pub enum SecParamsRef<'a> {
-    None,
-    Partial(&'a PartialSecurityParams),
-    Complete(&'a SecurityParams),
 }
 
 impl ConnStates {
@@ -211,6 +264,22 @@ impl ConnStates {
             Self::Synchronised(x) => Some(x.write_params()),
         };
         params.ok_or("There are no write params in this state".into())
+    }
+
+    pub fn read_state(&self) -> ConnState {
+        match self {
+            Self::Negotating(x) => x.read.clone(),
+            Self::Transitioning(x) => x.read.clone(),
+            Self::Synchronised(x) => ConnState::Secure(x.read.clone()),
+        }
+    }
+
+    pub fn write_state(&self) -> ConnState {
+        match self {
+            Self::Negotating(x) => x.write.clone(),
+            Self::Transitioning(x) => ConnState::Secure(x.write.clone()),
+            Self::Synchronised(x) => ConnState::Secure(x.write.clone()),
+        }
     }
 
     pub fn as_negotating(&self) -> TLSResult<&Negotiating> {

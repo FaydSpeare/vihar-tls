@@ -1,5 +1,6 @@
 use aes::{cipher::{generic_array::GenericArray, BlockDecrypt, BlockEncrypt, KeyInit}, Aes128};
 use num_enum::TryFromPrimitive;
+use crate::prf::hmac;
 
 use crate::utils;
 
@@ -57,6 +58,14 @@ impl MacAlgorithm {
 
     pub fn key_length(&self) -> usize {
         self.mac_length()
+    }
+
+    pub fn mac(&self, key: &[u8], seed: &[u8]) -> Vec<u8> {
+        match self {
+            Self::HmacSha1 => hmac(key, seed, true),
+            Self::HmacSha256 => hmac(key, seed, false),
+            _ => unreachable!()
+        }
     }
 }
 

@@ -1,5 +1,4 @@
 use crate::alert::TLSAlert;
-use crate::encrypt_fragment;
 use crate::utils;
 use crate::{TLSError, TLSResult};
 use num_enum::TryFromPrimitive;
@@ -283,7 +282,7 @@ pub fn parse_handshake(buf: &[u8]) -> TLSResult<TLSHandshake> {
         })
 }
 
-fn handshake_bytes(handshake_type: TLSHandshakeType, content: &[u8]) -> Vec<u8> {
+pub fn handshake_bytes(handshake_type: TLSHandshakeType, content: &[u8]) -> Vec<u8> {
     let mut handshake = Vec::<u8>::new();
     handshake.push(handshake_type as u8);
     handshake.extend(utils::u24_be_bytes(content.len()));
@@ -295,49 +294,13 @@ pub fn change_cipher_spec_bytes() -> Vec<u8> {
     record_bytes(TLSContentType::ChangeCipherSpec, &[1])
 }
 
-fn record_bytes(content_type: TLSContentType, content: &[u8]) -> Vec<u8> {
+pub fn record_bytes(content_type: TLSContentType, content: &[u8]) -> Vec<u8> {
     let mut record = Vec::<u8>::new();
     record.push(content_type as u8);
     record.extend([3, 3]);
     record.extend((content.len() as u16).to_be_bytes());
     record.extend(content);
     record
-}
-
-fn application_data_bytes(
-    seq_num: u64,
-    write_key: &[u8],
-    mac_write_key: &[u8],
-    msg: &[u8],
-) -> Vec<u8> {
-    let encrypted = encrypt_fragment(
-        seq_num,
-        write_key,
-        mac_write_key,
-        &msg,
-        TLSContentType::ApplicationData,
-    );
-    record_bytes(TLSContentType::ApplicationData, &encrypted)
-}
-
-pub fn client_finished_bytes(
-    seq_num: u64,
-    write_key: &[u8],
-    mac_write_key: &[u8],
-    verify_data: &[u8],
-) -> (Vec<u8>, Vec<u8>) {
-    let mut bytes = Vec::<u8>::new();
-    bytes.extend_from_slice(verify_data);
-    let handshake = handshake_bytes(TLSHandshakeType::Finished, &bytes);
-    let encrypted = encrypt_fragment(
-        seq_num,
-        write_key,
-        mac_write_key,
-        &handshake,
-        TLSContentType::Handshake,
-    );
-    let record = record_bytes(TLSContentType::Handshake, &encrypted);
-    (handshake, record)
 }
 
 pub fn client_key_exchange_bytes(enc_pre_master_secret: &[u8]) -> Vec<u8> {
