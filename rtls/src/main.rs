@@ -17,12 +17,9 @@ mod prf;
 mod record;
 mod utils;
 
-use ciphersuite::CipherSuiteEnum;
+use ciphersuite::{CipherSuiteEnum, CipherSuiteId};
 use connection::ConnStates;
 use record::*;
-
-const MAC_SIZE: usize = 20;
-const USE_SHA1: bool = MAC_SIZE == 20;
 
 #[derive(Error, Debug)]
 pub enum TLSError {
@@ -69,8 +66,8 @@ fn encrypt_pre_master_secret(cert_der: &[u8]) -> TLSResult<(Vec<u8>, Vec<u8>)> {
 impl TLSConnection {
     pub fn new(_domain: &str) -> TLSResult<Self> {
         Ok(Self {
-            stream: TcpStream::connect(format!("{_domain}:443"))?,
-            //stream: TcpStream::connect("localhost:8443")?,
+            //stream: TcpStream::connect(format!("{_domain}:443"))?,
+            stream: TcpStream::connect("localhost:8443")?,
             buffer: Vec::new(),
             handshakes: Vec::new(),
             states: ConnStates::default(),
@@ -137,9 +134,10 @@ impl TLSConnection {
             TLSHandshake::ServerHello(hello) => {
                 info!("Received ServerHello");
 
-                let suite_id = hello.cipher_suite.clone() as u16;
+                let suite_id = hello.cipher_suite as u16;
                 let suite = CipherSuiteEnum::try_from(suite_id)?.suite();
                 let params = suite.params();
+                debug!("Selected CipherSuite: {:?}", hello.cipher_suite);
 
                 self.states.set_server_random(hello.random.as_bytes())?;
                 self.states.set_cipher_params(&params)?;
@@ -158,12 +156,14 @@ impl TLSConnection {
 
                 let state = self.states.as_negotating()?;
                 let params = state.negotiated_params();
-                self.send_handshake(&client_key_exchange_bytes(
-                    &params.enc_pre_master_secret.as_ref().unwrap(),
-                ))?;
+                let enc_pre_master_secret = params
+                    .enc_pre_master_secret
+                    .as_ref()
+                    .expect("encrypted pre-master secret not found");
+                self.send_encrypted_handshake(ClientKeyExchange::new(&enc_pre_master_secret))?;
                 info!("Sent ClientKeyExchange");
 
-                self.send(&change_cipher_spec_bytes())?;
+                self.send_encrypted(ChangeCipherSpec::new())?;
                 self.states = self.states.transition_write_state()?;
                 info!("Sent ChangeCipherSpec");
 
@@ -173,12 +173,11 @@ impl TLSConnection {
                 let verify_data =
                     prf::prf_sha256(&params.master_secret, b"client finished", &seed, 12);
 
-                let (pt_handshake, record) = self.client_finished_bytes(&verify_data)?;
+                let finished = Finished::new(verify_data);
+                self.handshakes.extend_from_slice(&finished.to_bytes());
 
-                self.send(&record)?;
+                self.send_encrypted(finished)?;
                 info!("Sent ClientFinished");
-
-                self.handshakes.extend_from_slice(&pt_handshake);
             }
             TLSHandshake::Finished(_) => {
                 info!("Received ServerFinished");
@@ -194,6 +193,19 @@ impl TLSConnection {
             _ => {}
         };
         Ok(())
+    }
+
+    fn send_encrypted<T: Into<TLSPlaintext>>(&mut self, plaintext: T) -> TLSResult<()> {
+        let ciphertext = self.states.write_state().encrypt(plaintext);
+        self.send_bytes(&ciphertext.into_bytes())
+    }
+
+    fn send_encrypted_handshake<T: Into<TLSPlaintext> + ToBytes>(
+        &mut self,
+        plaintext: T,
+    ) -> TLSResult<()> {
+        self.handshakes.extend_from_slice(&plaintext.to_bytes());
+        self.send_encrypted(plaintext)
     }
 
     pub fn next_record(&mut self) -> TLSResult<(TLSRecord, Vec<u8>)> {
@@ -227,26 +239,22 @@ impl TLSConnection {
         }
     }
 
-    pub fn send_handshake(&mut self, bytes: &[u8]) -> TLSResult<()> {
-        self.handshakes.extend_from_slice(&bytes[5..]);
-        self.send(bytes)
-    }
-
-    pub fn send(&mut self, bytes: &[u8]) -> TLSResult<()> {
+    pub fn send_bytes(&mut self, bytes: &[u8]) -> TLSResult<()> {
         self.stream.write_all(bytes)?;
-        self.states.write_state().inc_seq_num();
+        self.states.write_state_mut().inc_seq_num();
         Ok(())
     }
 
-    pub fn send_client_hello(&mut self) -> TLSResult<()> {
-        let client_hello = ClientHello::new();
-        self.states
-            .set_client_random(client_hello.random.as_bytes())?;
-        self.send_handshake(<Vec<u8>>::from(client_hello).as_slice())
+    pub fn send_client_hello(&mut self, suites: &[CipherSuiteId]) -> TLSResult<()> {
+        let hello = ClientHello::new(suites);
+        let client_random = hello.random.as_bytes();
+        self.states.set_client_random(client_random)?;
+        self.send_encrypted_handshake(hello)
     }
 
-    pub fn handshake(&mut self) -> TLSResult<()> {
-        self.send_client_hello()?;
+    pub fn handshake(&mut self, suites: &[CipherSuiteId]) -> TLSResult<()> {
+        self.states = self.states.start_handshake()?;
+        self.send_client_hello(suites)?;
         info!("Sent ClientHello");
 
         loop {
@@ -262,27 +270,11 @@ impl TLSConnection {
         }
     }
 
-    pub fn client_finished_bytes(&self, verify_data: &[u8]) -> TLSResult<(Vec<u8>, Vec<u8>)> {
-        let mut bytes = Vec::<u8>::new();
-        bytes.extend_from_slice(verify_data);
-        let handshake = handshake_bytes(TLSHandshakeType::Finished, &bytes);
-        let state = self.states.as_transitioning()?;
-        let encrypted = state
-            .write
-            .encrypt_fragment(TLSContentType::Handshake, &handshake);
-        let record = record_bytes(TLSContentType::Handshake, &encrypted);
-        Ok((handshake, record))
-    }
-
     #[allow(dead_code)]
     #[allow(unused)]
     pub fn send_app_data(&mut self, bytes: &[u8]) -> TLSResult<()> {
-        let state = self.states.as_synchronised()?;
-        let encrypted = state
-            .write
-            .encrypt_fragment(TLSContentType::ApplicationData, bytes);
-        let record = record_bytes(TLSContentType::ApplicationData, &encrypted);
-        self.send(&record)?;
+        let application_data = ApplicationData::new(bytes.to_vec());
+        self.send_encrypted(application_data);
         println!("Sent AppData: {:?}", String::from_utf8_lossy(bytes));
         Ok(())
     }
@@ -304,8 +296,16 @@ impl TLSConnection {
 fn main() -> TLSResult<()> {
     env_logger::init();
 
-    let mut connection = TLSConnection::new("example.com")?;
-    connection.handshake()?;
+    let suites = vec![
+        CipherSuiteId::TLS_RSA_WITH_NULL_SHA,
+        CipherSuiteId::TLS_RSA_WITH_AES_128_CBC_SHA,
+        CipherSuiteId::TLS_RSA_WITH_AES_256_CBC_SHA,
+        CipherSuiteId::TLS_RSA_WITH_AES_128_CBC_SHA256,
+        CipherSuiteId::TLS_RSA_WITH_AES_256_CBC_SHA256,
+    ];
+
+    let mut connection = TLSConnection::new("google.com")?;
+    connection.handshake(&suites)?;
 
     // connection.send_app_data(b"GET / HTTP/1.1\r\nHost: www.example.com\r\n\r\n")?;
     // loop {

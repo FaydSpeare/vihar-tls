@@ -1,16 +1,9 @@
+use std::fmt::Debug;
 use crate::alert::TLSAlert;
+use crate::ciphersuite::CipherSuiteId;
 use crate::utils;
 use crate::{TLSError, TLSResult};
 use num_enum::TryFromPrimitive;
-
-#[allow(non_camel_case_types)]
-#[derive(Clone, Debug, TryFromPrimitive)]
-#[repr(u16)]
-pub enum CipherSuiteId {
-    TLS_RSA_WITH_AES_128_CBC_SHA = 0x002f,
-    TLS_RSA_WITH_AES_128_CBC_SHA256 = 0x003c,
-    TLS_RSA_WITH_AES_256_CBC_SHA256 = 0x003d,
-}
 
 #[derive(Debug, Clone)]
 pub struct ProtocolVersion {
@@ -29,11 +22,46 @@ impl Random {
         let mut bytes = [0; 32];
         bytes[..4].copy_from_slice(&self.unix_time.to_be_bytes());
         bytes[4..].copy_from_slice(&self.random_bytes);
-        bytes 
+        bytes
     }
 }
 
-#[derive(Debug, Clone)]
+// #[derive(Debug)]
+// pub enum HelloExtension {
+//     SecureNegotationExt(SecureNegotationExt),
+// }
+// 
+// impl HelloExtension {
+//     fn to_bytes(&self) -> Vec<u8> {
+//         match self {
+//             Self::SecureNegotationExt(ext) => ext.to_bytes(),
+//         }
+//     }
+// }
+
+pub trait TLSExtension: Debug {
+    fn to_bytes(&self) -> Vec<u8>;
+}
+
+#[derive(Debug)]
+pub struct SecureNegotationExt {}
+
+impl SecureNegotationExt {
+    fn initial() -> Box<Self> {
+        Box::new(Self {})
+    }
+    fn renegotiation() -> Self {
+        Self {}
+    }
+}
+
+impl TLSExtension for SecureNegotationExt {
+    fn to_bytes(&self) -> Vec<u8> {
+        return vec![0xff, 0x01, 0x00, 0x01, 0x00];
+    }
+}
+
+#[derive(Debug)]
 pub struct ClientHello {
     pub client_version: ProtocolVersion,
     pub random: Random,
@@ -42,18 +70,35 @@ pub struct ClientHello {
     pub cipher_suites: Vec<[u8; 2]>,
     #[allow(dead_code)]
     pub compression_methods: Vec<u8>,
+    #[allow(dead_code)]
+    pub extensions: Vec<Box<dyn TLSExtension>>,
 }
 
+impl ClientHello {
+    pub fn new(suites: &[CipherSuiteId]) -> Self {
+        let cipher_suites = suites.iter().map(|x| (*x as u16).to_be_bytes()).collect();
+        ClientHello {
+            client_version: ProtocolVersion { major: 3, minor: 3 },
+            random: Random {
+                unix_time: utils::get_unix_time(),
+                random_bytes: utils::get_random_bytes(28).try_into().unwrap(),
+            },
+            session_id: vec![],
+            cipher_suites,
+            compression_methods: vec![0],
+            extensions: vec![SecureNegotationExt::initial()],
+        }
+    }
+}
 
-impl From<ClientHello> for Vec<u8> {
-
-    fn from(value: ClientHello) -> Vec<u8> {
+impl ToBytes for ClientHello {
+    fn to_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::<u8>::new();
-        bytes.extend([value.client_version.major, value.client_version.minor]); // ProtocolVersion
-        bytes.extend_from_slice(&value.random.as_bytes());
+        bytes.extend([self.client_version.major, self.client_version.minor]); // ProtocolVersion
+        bytes.extend_from_slice(&self.random.as_bytes());
         bytes.push(0); // SessionId
-        bytes.extend((2 * value.cipher_suites.len() as u16).to_be_bytes());
-        for suite in &value.cipher_suites {
+        bytes.extend(((2 * self.cipher_suites.len()) as u16).to_be_bytes());
+        for suite in &self.cipher_suites {
             bytes.extend(suite);
         }
 
@@ -68,37 +113,26 @@ impl From<ClientHello> for Vec<u8> {
             0x02, 0x01, // sha1 + rsa (optional)
         ];
 
-        // let sni_ext = [
-        //     0x00, 0x00,              // Extension type: server_name (0)
-        //     0x00, 0x0f,              // Extension length: 16 bytes
-        //     0x00, 0x0d,              // Server Name list length: 14 bytes
-        //     0x00,                 // Name Type: host_name (0)
-        //     0x00, 0x0a,              // Hostname length: 11 bytes
-        //     0x67, 0x6f, 0x6f, 0x67, 0x6c, 0x65, 0x2e, 0x63, 0x6f, 0x6d
-        // ];
-        let extensions_len = ((signature_algorithms_ext.len()) as u16).to_be_bytes();
-        bytes.extend_from_slice(&extensions_len);
+        let secure_renogotiation_ext = [0xff, 0x01, 0x00, 0x01, 0x00];
+
+        let extensions_len = signature_algorithms_ext.len() + secure_renogotiation_ext.len();
+        bytes.extend_from_slice((extensions_len as u16).to_be_bytes().as_ref());
         bytes.extend_from_slice(&signature_algorithms_ext);
-        //bytes.extend_from_slice(&sni_ext);
+        bytes.extend_from_slice(&secure_renogotiation_ext);
 
-        let handshake = handshake_bytes(TLSHandshakeType::ClientHello, &bytes);
-        record_bytes(TLSContentType::Handshake, &handshake) 
+        handshake_bytes(TLSHandshakeType::ClientHello, &bytes)
     }
-
 }
 
-impl ClientHello {
-    pub fn new() -> Self {
-        ClientHello {
-            client_version: ProtocolVersion { major: 3, minor: 3 },
-            random: Random {
-                unix_time: utils::get_unix_time(),
-                random_bytes: utils::get_random_bytes(28).try_into().unwrap(),
-            },
-            session_id: vec![],
-            cipher_suites: vec![(CipherSuiteId::TLS_RSA_WITH_AES_128_CBC_SHA as u16).to_be_bytes()],
-            compression_methods: vec![0],
-        }
+impl IntoBytes for ClientHello {
+    fn into_bytes(self) -> Vec<u8> {
+        self.to_bytes()
+    }
+}
+
+impl From<ClientHello> for TLSPlaintext {
+    fn from(value: ClientHello) -> TLSPlaintext {
+        TLSPlaintext::new(TLSContentType::Handshake, value.into_bytes())
     }
 }
 
@@ -111,7 +145,6 @@ pub struct ServerHello {
     pub cipher_suite: CipherSuiteId,
     pub compression_method: u8,
 }
-
 
 impl TryFrom<&[u8]> for ServerHello {
     type Error = Box<dyn std::error::Error>;
@@ -151,7 +184,6 @@ impl TryFrom<&[u8]> for ServerHello {
     }
 }
 
-
 #[derive(Debug)]
 pub struct Certificate {
     pub bytes: Vec<u8>,
@@ -177,22 +209,121 @@ impl TryFrom<&[u8]> for Certificates {
         let mut certs: Vec<Certificate> = vec![];
 
         while idx < cert_bytes {
-            let cert_len = u32::from_be_bytes([0, slice[idx], slice[idx + 1], slice[idx + 2]]) as usize;
+            let cert_len =
+                u32::from_be_bytes([0, slice[idx], slice[idx + 1], slice[idx + 2]]) as usize;
             certs.push(Certificate {
                 bytes: slice[idx + 3..idx + 3 + cert_len].to_vec(),
             });
             idx += 3 + cert_len;
         }
 
-        return Ok(Self { list: certs }); 
+        return Ok(Self { list: certs });
     }
+}
 
+pub struct ClientKeyExchange {
+    enc_pre_master_secret: Vec<u8>,
+}
+
+impl ClientKeyExchange {
+    pub fn new(enc_pre_master_secret: &[u8]) -> Self {
+        Self {
+            enc_pre_master_secret: enc_pre_master_secret.to_vec(),
+        }
+    }
+}
+
+pub trait IntoBytes {
+    fn into_bytes(self) -> Vec<u8>;
+}
+
+pub trait ToBytes {
+    fn to_bytes(&self) -> Vec<u8>;
+}
+
+impl ToBytes for ClientKeyExchange {
+    fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::<u8>::new();
+        bytes.extend((self.enc_pre_master_secret.len() as u16).to_be_bytes());
+        bytes.extend_from_slice(&self.enc_pre_master_secret);
+        handshake_bytes(TLSHandshakeType::ClientKeyExchange, &bytes)
+    }
+}
+
+impl IntoBytes for ClientKeyExchange {
+    fn into_bytes(self) -> Vec<u8> {
+        self.to_bytes()
+    }
+}
+
+impl From<ClientKeyExchange> for TLSPlaintext {
+    fn from(value: ClientKeyExchange) -> Self {
+        TLSPlaintext::new(TLSContentType::Handshake, value.to_bytes())
+    }
 }
 
 #[allow(dead_code)]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Finished {
     verify_data: Vec<u8>,
+}
+
+impl Finished {
+    pub fn new(verify_data: Vec<u8>) -> Self {
+        Self { verify_data }
+    }
+}
+
+impl ToBytes for Finished {
+    fn to_bytes(&self) -> Vec<u8> {
+        handshake_bytes(TLSHandshakeType::Finished, &self.verify_data)
+    }
+}
+
+impl IntoBytes for Finished {
+    fn into_bytes(self) -> Vec<u8> {
+        self.to_bytes()
+    }
+}
+
+impl From<Finished> for TLSPlaintext {
+    fn from(value: Finished) -> Self {
+        TLSPlaintext::new(TLSContentType::Handshake, value.into_bytes())
+    }
+}
+
+pub struct ChangeCipherSpec;
+
+impl ChangeCipherSpec {
+    pub fn new() -> Self {
+        Self {}
+    }
+}
+
+impl IntoBytes for ChangeCipherSpec {
+    fn into_bytes(self) -> Vec<u8> {
+        vec![1]
+    }
+}
+
+impl From<ChangeCipherSpec> for TLSPlaintext {
+    fn from(value: ChangeCipherSpec) -> Self {
+        TLSPlaintext::new(TLSContentType::ChangeCipherSpec, value.into_bytes())
+    }
+}
+
+pub struct ApplicationData(Vec<u8>);
+
+impl ApplicationData {
+    pub fn new(data: Vec<u8>) -> Self {
+        Self(data)
+    }
+}
+
+impl From<ApplicationData> for TLSPlaintext {
+    fn from(value: ApplicationData) -> Self {
+        TLSPlaintext::new(TLSContentType::ApplicationData, value.0)
+    }
 }
 
 #[derive(Debug, TryFromPrimitive, Copy, Clone)]
@@ -219,10 +350,20 @@ pub enum TLSHandshakeType {
 #[allow(dead_code)]
 #[derive(Debug)]
 pub enum TLSHandshake {
+    ClientHello(ClientHello),
     ServerHello(ServerHello),
     Certificates(Certificates),
     ServerHelloDone,
     Finished(Finished),
+}
+
+impl TLSHandshake {
+    pub fn into_bytes(self) -> Vec<u8> {
+        match self {
+            TLSHandshake::ClientHello(hello) => hello.into_bytes(),
+            _ => unimplemented!(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -233,24 +374,69 @@ pub enum TLSRecord {
     ApplicationData(Vec<u8>),
 }
 
+#[derive(Clone)]
+pub struct TLSPlaintext {
+    pub content_type: TLSContentType,
+    pub version: ProtocolVersion,
+    pub fragment: Vec<u8>,
+}
+
+impl TLSPlaintext {
+    fn new(content_type: TLSContentType, fragment: Vec<u8>) -> Self {
+        Self {
+            content_type,
+            version: ProtocolVersion { major: 3, minor: 3 },
+            fragment,
+        }
+    }
+}
+
 pub struct TLSCiphertext {
     pub content_type: TLSContentType,
     pub version: ProtocolVersion,
-    pub fragment: Vec<u8>
+    pub fragment: Vec<u8>,
 }
 
 impl TLSCiphertext {
-    pub fn as_bytes(&self) -> Vec<u8> {
+    pub fn new(content_type: TLSContentType, fragment: Vec<u8>) -> Self {
+        Self {
+            content_type,
+            version: ProtocolVersion { major: 3, minor: 3 },
+            fragment,
+        }
+    }
+
+    pub fn into_bytes(self) -> Vec<u8> {
         let mut bytes = Vec::<u8>::new();
         bytes.push(self.content_type as u8);
-        bytes.push(self.version.major);
-        bytes.push(self.version.minor);
+        bytes.extend_from_slice(&[self.version.major, self.version.minor]);
         bytes.extend_from_slice(&(self.fragment.len() as u16).to_be_bytes());
         bytes.extend_from_slice(&self.fragment);
         bytes
     }
 }
 
+impl TLSRecord {
+    pub fn into_bytes(self) -> Vec<u8> {
+        match self {
+            TLSRecord::Handshake(handshake) => {
+                record_bytes(TLSContentType::Handshake, &handshake.into_bytes())
+            }
+            TLSRecord::Alert(alert) => unimplemented!(),
+            TLSRecord::ChangeCipherSuite => unimplemented!(),
+            TLSRecord::ApplicationData(data) => unimplemented!(),
+        }
+    }
+
+    pub fn fragment_bytes(self) -> Vec<u8> {
+        match self {
+            TLSRecord::Handshake(handshake) => handshake.into_bytes(),
+            TLSRecord::Alert(alert) => unimplemented!(),
+            TLSRecord::ChangeCipherSuite => unimplemented!(),
+            TLSRecord::ApplicationData(data) => unimplemented!(),
+        }
+    }
+}
 
 pub fn parse_handshake(buf: &[u8]) -> TLSResult<TLSHandshake> {
     if buf.len() < 4 {

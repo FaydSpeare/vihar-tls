@@ -3,7 +3,7 @@ use log::debug;
 use crate::ciphersuite;
 use crate::ciphersuite::{EncAlgorithm, MacAlgorithm};
 use crate::prf::prf_sha256;
-use crate::record::TLSContentType;
+use crate::record::{TLSCiphertext, TLSContentType, TLSPlaintext};
 use crate::utils;
 use crate::{TLSResult, ciphersuite::CipherSuiteParams};
 
@@ -78,7 +78,7 @@ impl SecurityParams {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct PartialSecurityParams {
     pub enc_algorithm: Option<EncAlgorithm>,
     pub mac_algorithm: Option<MacAlgorithm>,
@@ -95,6 +95,11 @@ pub struct InitialConnState {
 }
 
 impl InitialConnState {
+
+    pub fn encrypt(&self, plaintext: TLSPlaintext) -> TLSCiphertext {
+        TLSCiphertext::new(plaintext.content_type, plaintext.fragment)
+    }
+
     pub fn decrypt(&self, ciphertext: &[u8]) -> Vec<u8> {
         ciphertext.to_vec()
     }
@@ -125,6 +130,11 @@ impl SecureConnState {
             .decrypt(ciphertext, &self.enc_key, iv)
     }
 
+    pub fn encrypt(&self, plaintext: TLSPlaintext) -> TLSCiphertext {
+        let ciphertext = self.encrypt_fragment(plaintext.content_type, &plaintext.fragment);
+        TLSCiphertext::new(plaintext.content_type, ciphertext)
+    }
+
     pub fn encrypt_fragment(&self, content_type: TLSContentType, fragment: &[u8]) -> Vec<u8> {
         debug!("seq_num {}", self.seq_num);
         let mut bytes = Vec::<u8>::new();
@@ -137,7 +147,8 @@ impl SecureConnState {
         // let mac = prf::hmac(&state.enc_key, &bytes, USE_SHA1);
         let mac = self.params.mac_algorithm.mac(&self.mac_key, &bytes);
 
-        let padding_len = 16 - ((fragment.len() + mac.len() + 1) % 16);
+        let block_len = self.params.enc_algorithm.block_length();
+        let padding_len = block_len - ((fragment.len() + mac.len() + 1) % block_len);
         let mut padding = Vec::<u8>::new();
         for _ in 0..padding_len {
             padding.push(padding_len as u8);
@@ -150,8 +161,8 @@ impl SecureConnState {
         plaintext.push(padding_len as u8);
 
         // Encrypt
-        let iv = utils::get_random_bytes(16);
-        let ciphertext = ciphersuite::encrypt_aes_128_cbc(&plaintext, &self.enc_key, &iv);
+        let iv = utils::get_random_bytes(self.params.enc_algorithm.iv_length());
+        let ciphertext = self.params.enc_algorithm.encrypt(&plaintext, &self.enc_key, &iv);
 
         let mut encrypted = Vec::<u8>::new();
         encrypted.extend_from_slice(&iv);
@@ -160,19 +171,12 @@ impl SecureConnState {
     }
 }
 
-#[derive(Clone)]
-pub enum ConnState {
-    Initial(InitialConnState),
-    Secure(SecureConnState),
+pub enum ConnStateRef<'a> {
+    Initial(&'a InitialConnState),
+    Secure(&'a SecureConnState),
 }
 
-impl ConnState {
-    pub fn inc_seq_num(&mut self) {
-        match self {
-            Self::Initial(state) => state.seq_num += 1,
-            Self::Secure(state) => state.seq_num += 1,
-        }
-    }
+impl ConnStateRef<'_> {
 
     pub fn decrypt(&self, ciphertext: &[u8]) -> Vec<u8> {
         match self {
@@ -187,14 +191,61 @@ impl ConnState {
         }
     }
 
-    fn encrypt_fragment(&self, content_type: TLSContentType, fragment: &[u8]) -> Vec<u8> {
+    pub fn encrypt<T: Into<TLSPlaintext>>(&self, plaintext: T) -> TLSCiphertext {
         match self {
-            Self::Initial(_) => fragment.to_vec(),
-            Self::Secure(state) => state.encrypt_fragment(content_type, fragment)
+            Self::Initial(state) => {
+                debug!("NULL Encrypt");
+                state.encrypt(plaintext.into())
+            }
+            Self::Secure(state) => {
+                debug!("Secure Encrypt");
+                state.encrypt(plaintext.into())
+            }
+        }
+    }
+
+}
+
+pub enum ConnStateRefMut<'a> {
+    Initial(&'a mut InitialConnState),
+    Secure(&'a mut SecureConnState),
+}
+
+impl ConnStateRefMut<'_> {
+
+    pub fn inc_seq_num(&mut self) {
+        match self {
+            Self::Initial(state) => state.seq_num += 1,
+            Self::Secure(state) => state.seq_num += 1,
         }
     }
 }
 
+#[derive(Clone)]
+pub enum ConnState {
+    Initial(InitialConnState),
+    Secure(SecureConnState),
+}
+
+impl ConnState {
+
+    pub fn as_ref(&self) -> ConnStateRef<'_> {
+        match self {
+            Self::Initial(state) => ConnStateRef::Initial(state),
+            Self::Secure(state) => ConnStateRef::Secure(state),
+        }
+    }
+
+    pub fn as_mut(&mut self) -> ConnStateRefMut<'_> {
+        match self {
+            Self::Initial(state) => ConnStateRefMut::Initial(state),
+            Self::Secure(state) => ConnStateRefMut::Secure(state),
+        }
+    }
+}
+
+
+#[derive(Clone)]
 pub struct Negotiating {
     pub pending: PartialSecurityParams,
     pub read: ConnState,
@@ -266,19 +317,27 @@ impl ConnStates {
         params.ok_or("There are no write params in this state".into())
     }
 
-    pub fn read_state(&self) -> ConnState {
+    pub fn read_state(&self) -> ConnStateRef<'_> {
         match self {
-            Self::Negotating(x) => x.read.clone(),
-            Self::Transitioning(x) => x.read.clone(),
-            Self::Synchronised(x) => ConnState::Secure(x.read.clone()),
+            Self::Negotating(x) => x.read.as_ref(),
+            Self::Transitioning(x) => x.read.as_ref(),
+            Self::Synchronised(x) => ConnStateRef::Secure(&x.read),
         }
     }
 
-    pub fn write_state(&self) -> ConnState {
+    pub fn write_state(&self) -> ConnStateRef<'_> {
         match self {
-            Self::Negotating(x) => x.write.clone(),
-            Self::Transitioning(x) => ConnState::Secure(x.write.clone()),
-            Self::Synchronised(x) => ConnState::Secure(x.write.clone()),
+            Self::Negotating(x) => x.write.as_ref(),
+            Self::Transitioning(x) => ConnStateRef::Secure(&x.write),
+            Self::Synchronised(x) => ConnStateRef::Secure(&x.write),
+        }
+    }
+
+    pub fn write_state_mut(&mut self) -> ConnStateRefMut<'_> {
+        match self {
+            Self::Negotating(x) => x.write.as_mut(),
+            Self::Transitioning(x) => ConnStateRefMut::Secure(&mut x.write),
+            Self::Synchronised(x) => ConnStateRefMut::Secure(&mut x.write),
         }
     }
 
@@ -330,6 +389,22 @@ impl ConnStates {
                 }))
             }
             _ => Err("Cannot change pending params in this state".into()),
+        }
+    }
+
+    pub fn start_handshake(&self) -> TLSResult<Self> {
+        match self {
+            Self::Synchronised(state) => {
+                Ok(Self::Negotating(Negotiating {
+                    pending: PartialSecurityParams::default(),
+                    write: ConnState::Secure(state.write.clone()),
+                    read: ConnState::Secure(state.read.clone())
+                }))
+            }
+            Self::Negotating(state) => {
+                Ok(Self::Negotating(state.clone()))
+            }
+            _ => Err("Cannot start a handshake in this state".into()),
         }
     }
 
