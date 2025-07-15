@@ -111,6 +111,7 @@ pub struct SecureConnState {
     pub mac_key: Vec<u8>,
     pub enc_key: Vec<u8>,
     pub seq_num: u64,
+    pub verify_data: Option<Vec<u8>>,
 }
 
 impl SecureConnState {
@@ -120,6 +121,7 @@ impl SecureConnState {
             enc_key,
             mac_key,
             seq_num: 0,
+            verify_data: None
         }
     }
 
@@ -136,7 +138,7 @@ impl SecureConnState {
     }
 
     pub fn encrypt_fragment(&self, content_type: TLSContentType, fragment: &[u8]) -> Vec<u8> {
-        debug!("seq_num {}", self.seq_num);
+        // debug!("seq_num {}", self.seq_num);
         let mut bytes = Vec::<u8>::new();
         bytes.extend_from_slice(&self.seq_num.to_be_bytes());
         bytes.push(content_type as u8);
@@ -178,14 +180,21 @@ pub enum ConnStateRef<'a> {
 
 impl ConnStateRef<'_> {
 
+    pub fn params(&self) -> Option<&SecurityParams> {
+        match self {
+            Self::Initial(_) => None,
+            Self::Secure(state) => Some(&state.params),
+        }
+    }
+
     pub fn decrypt(&self, ciphertext: &[u8]) -> Vec<u8> {
         match self {
             Self::Initial(state) => {
-                debug!("NULL Decrypt");
+                debug!("...");
                 state.decrypt(ciphertext)
             }
             Self::Secure(state) => {
-                debug!("Secure Decrypt");
+                debug!("Dencrypted");
                 state.decrypt(ciphertext)
             }
         }
@@ -194,11 +203,11 @@ impl ConnStateRef<'_> {
     pub fn encrypt<T: Into<TLSPlaintext>>(&self, plaintext: T) -> TLSCiphertext {
         match self {
             Self::Initial(state) => {
-                debug!("NULL Encrypt");
+                debug!("Unencrypted");
                 state.encrypt(plaintext.into())
             }
             Self::Secure(state) => {
-                debug!("Secure Encrypt");
+                debug!("Encrypted");
                 state.encrypt(plaintext.into())
             }
         }
@@ -350,17 +359,32 @@ impl ConnStates {
 
     pub fn as_transitioning(&self) -> TLSResult<&Transitioning> {
         match self {
-            Self::Transitioning(x) => Ok(&x),
+            Self::Transitioning(x) => Ok(x),
+            _ => Err("Connection not in negotating state".into()),
+        }
+    }
+
+    pub fn as_transitioning_mut(&mut self) -> TLSResult<&mut Transitioning> {
+        match self {
+            Self::Transitioning(x) => Ok(x),
             _ => Err("Connection not in negotating state".into()),
         }
     }
 
     pub fn as_synchronised(&self) -> TLSResult<&Synchronised> {
         match self {
-            Self::Synchronised(state) => Ok(&state),
+            Self::Synchronised(state) => Ok(state),
             _ => Err("Connection not in synchronised state".into()),
         }
     }
+
+    pub fn as_synchronised_mut(&mut self) -> TLSResult<&mut Synchronised> {
+        match self {
+            Self::Synchronised(state) => Ok(state),
+            _ => Err("Connection not in synchronised state".into()),
+        }
+    }
+
 
     pub fn transition_write_state(&self) -> TLSResult<Self> {
         match self {

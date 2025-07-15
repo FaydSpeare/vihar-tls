@@ -1,6 +1,8 @@
-use std::fmt::Debug;
 use crate::alert::TLSAlert;
-use crate::ciphersuite::CipherSuiteId;
+use crate::ciphersuite::{get_cipher_suite, CipherSuite};
+use crate::extensions::{
+    decode_extensions, EncodeExtension, Extension, HashAlgo, SecureRenegotationExt, SigAlgo, SignatureAlgorithmsExt
+};
 use crate::utils;
 use crate::{TLSError, TLSResult};
 use num_enum::TryFromPrimitive;
@@ -26,41 +28,6 @@ impl Random {
     }
 }
 
-// #[derive(Debug)]
-// pub enum HelloExtension {
-//     SecureNegotationExt(SecureNegotationExt),
-// }
-// 
-// impl HelloExtension {
-//     fn to_bytes(&self) -> Vec<u8> {
-//         match self {
-//             Self::SecureNegotationExt(ext) => ext.to_bytes(),
-//         }
-//     }
-// }
-
-pub trait TLSExtension: Debug {
-    fn to_bytes(&self) -> Vec<u8>;
-}
-
-#[derive(Debug)]
-pub struct SecureNegotationExt {}
-
-impl SecureNegotationExt {
-    fn initial() -> Box<Self> {
-        Box::new(Self {})
-    }
-    fn renegotiation() -> Self {
-        Self {}
-    }
-}
-
-impl TLSExtension for SecureNegotationExt {
-    fn to_bytes(&self) -> Vec<u8> {
-        return vec![0xff, 0x01, 0x00, 0x01, 0x00];
-    }
-}
-
 #[derive(Debug)]
 pub struct ClientHello {
     pub client_version: ProtocolVersion,
@@ -71,12 +38,18 @@ pub struct ClientHello {
     #[allow(dead_code)]
     pub compression_methods: Vec<u8>,
     #[allow(dead_code)]
-    pub extensions: Vec<Box<dyn TLSExtension>>,
+    pub extensions: Vec<Extension>
 }
 
 impl ClientHello {
-    pub fn new(suites: &[CipherSuiteId]) -> Self {
-        let cipher_suites = suites.iter().map(|x| (*x as u16).to_be_bytes()).collect();
+    pub fn new(suites: &[Box<dyn CipherSuite>], mut extensions: Vec<Extension>) -> Self {
+        let cipher_suites = suites.iter().map(|x| x.encode()).collect();
+        extensions.push(
+            SignatureAlgorithmsExt::new_from_product(
+                vec![SigAlgo::Rsa],
+                vec![HashAlgo::Sha, HashAlgo::Sha256],
+            ).into()
+        );
         ClientHello {
             client_version: ProtocolVersion { major: 3, minor: 3 },
             random: Random {
@@ -86,7 +59,7 @@ impl ClientHello {
             session_id: vec![],
             cipher_suites,
             compression_methods: vec![0],
-            extensions: vec![SecureNegotationExt::initial()],
+            extensions,
         }
     }
 }
@@ -96,7 +69,10 @@ impl ToBytes for ClientHello {
         let mut bytes = Vec::<u8>::new();
         bytes.extend([self.client_version.major, self.client_version.minor]); // ProtocolVersion
         bytes.extend_from_slice(&self.random.as_bytes());
-        bytes.push(0); // SessionId
+
+        bytes.push(self.session_id.len() as u8); // SessionId
+        bytes.extend_from_slice(&self.session_id); // SessionId bytes
+
         bytes.extend(((2 * self.cipher_suites.len()) as u16).to_be_bytes());
         for suite in &self.cipher_suites {
             bytes.extend(suite);
@@ -104,21 +80,12 @@ impl ToBytes for ClientHello {
 
         bytes.push(1); // Compression methods
         bytes.push(0);
+        
+        let extensions_bytes: Vec<u8> = self.extensions.iter().map(|x| x.encode()).flatten().collect();
+        let extensions_len = extensions_bytes.len() as u16;
 
-        let signature_algorithms_ext = [
-            0x00, 0x0d, // Extension type: signature_algorithms (13)
-            0x00, 0x06, // Extension length: 6 bytes
-            0x00, 0x04, // Supported algorithms list length: 4 bytes
-            0x04, 0x01, // sha256 + rsa
-            0x02, 0x01, // sha1 + rsa (optional)
-        ];
-
-        let secure_renogotiation_ext = [0xff, 0x01, 0x00, 0x01, 0x00];
-
-        let extensions_len = signature_algorithms_ext.len() + secure_renogotiation_ext.len();
-        bytes.extend_from_slice((extensions_len as u16).to_be_bytes().as_ref());
-        bytes.extend_from_slice(&signature_algorithms_ext);
-        bytes.extend_from_slice(&secure_renogotiation_ext);
+        bytes.extend_from_slice(&extensions_len.to_be_bytes());
+        bytes.extend_from_slice(&extensions_bytes);
 
         handshake_bytes(TLSHandshakeType::ClientHello, &bytes)
     }
@@ -142,8 +109,17 @@ pub struct ServerHello {
     pub server_version: ProtocolVersion,
     pub random: Random,
     pub session_id: Vec<u8>,
-    pub cipher_suite: CipherSuiteId,
+    pub cipher_suite: Box<dyn CipherSuite>,
     pub compression_method: u8,
+    pub extensions: Vec<Extension>
+}
+
+impl ServerHello {
+
+    pub fn supports_secure_renegotiation(&self) -> bool {
+        self.extensions.iter().any(|x| matches!(x, Extension::SecureRenegotiation(_)))
+    }
+
 }
 
 impl TryFrom<&[u8]> for ServerHello {
@@ -154,7 +130,8 @@ impl TryFrom<&[u8]> for ServerHello {
         let minor = buf[1];
 
         let unix_time = u32::from_be_bytes([buf[2], buf[3], buf[4], buf[5]]);
-        //println!("Unix: {unix_time}");
+        //CipherSuiteId::try_from(u16::from_be_bytes([buf[idx], buf[idx + 1]])).unwrap();
+        // println!("Unix: {unix_time}");
 
         let random_bytes: [u8; 28] = buf[6..34].try_into().unwrap();
         // println!("Random: {:?}", random_bytes);
@@ -164,12 +141,18 @@ impl TryFrom<&[u8]> for ServerHello {
         // println!("Session: {:?}", session_id);
 
         let idx = 35 + session_len;
-        let cipher_suite =
-            CipherSuiteId::try_from(u16::from_be_bytes([buf[idx], buf[idx + 1]])).unwrap();
-        // println!("ciphersuite: 0x{:02X}{:02X}", buf[idx], buf[idx + 1]);
+        let cipher_suite_id = u16::from_be_bytes([buf[idx], buf[idx + 1]]);
+        let cipher_suite = get_cipher_suite(cipher_suite_id)?;
+        // println!("cipher_suite: 0x{:02X}{:02X}", buf[idx], buf[idx + 1]);
 
         let compression_method = buf[idx + 2];
         // println!("compression: 0x{:02X}", slice[pos + 2]);
+        
+        let extensions = if buf.len() > idx + 3 {
+            decode_extensions(&buf[idx + 5..])?
+        } else {
+            vec![]
+        };
 
         Ok(Self {
             server_version: ProtocolVersion { major, minor },
@@ -180,6 +163,7 @@ impl TryFrom<&[u8]> for ServerHello {
             session_id,
             cipher_suite,
             compression_method,
+            extensions
         })
     }
 }
@@ -265,7 +249,7 @@ impl From<ClientKeyExchange> for TLSPlaintext {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Finished {
-    verify_data: Vec<u8>,
+    pub verify_data: Vec<u8>,
 }
 
 impl Finished {
@@ -385,7 +369,7 @@ impl TLSPlaintext {
     fn new(content_type: TLSContentType, fragment: Vec<u8>) -> Self {
         Self {
             content_type,
-            version: ProtocolVersion { major: 3, minor: 3 },
+            version: ProtocolVersion { major: 3, minor: 1 },
             fragment,
         }
     }
