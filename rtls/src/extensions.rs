@@ -6,7 +6,7 @@ use num_enum::TryFromPrimitive;
 use crate::TLSResult;
 
 #[enum_dispatch]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Extension {
     SecureRenegotiation(SecureRenegotationExt),
     SignatureAlgorithms(SignatureAlgorithmsExt),
@@ -32,7 +32,7 @@ pub fn decode_extensions(bytes: &[u8]) -> TLSResult<Vec<Extension>> {
     Ok(extensions)
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SecureRenegotationExt {
     verify_data: Option<Vec<u8>>,
 }
@@ -74,7 +74,6 @@ impl EncodeExtension for SecureRenegotationExt {
         if let Some(verify_data) = &self.verify_data {
             bytes.extend_from_slice(verify_data);
         }
-        // println!("{:?} {}", &bytes, bytes.len());
         bytes
     }
 }
@@ -92,7 +91,7 @@ pub enum HashAlgo {
     Sha256 = 4,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SignatureAlgorithmsExt {
     algorithms: Vec<(HashAlgo, SigAlgo)>,
 }

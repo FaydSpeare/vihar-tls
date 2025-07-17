@@ -1,10 +1,15 @@
 use env_logger;
 use extensions::SecureRenegotationExt;
 use log::{debug, error, info, trace, warn};
-use rsa::rand_core::{OsRng, RngCore};
 use sha2::{Digest, Sha256};
+use state_machine::{TlsState, TlsStateMachine};
 use std::io::{Read, Write};
 use std::net::TcpStream;
+
+//use rsa::rand_core::{OsRng, RngCore, CryptoRng};
+use rand_chacha::ChaCha20Rng;
+use rand_chacha::rand_core::{SeedableRng, RngCore};
+
 
 use rsa::pkcs8::DecodePublicKey;
 use rsa::{Pkcs1v15Encrypt, RsaPublicKey};
@@ -23,6 +28,7 @@ mod state_machine;
 use ciphersuite::{CipherSuite, RsaAes128CbcSha, RsaAes128CbcSha256, RsaAes256CbcSha, RsaNullSha};
 use connection::ConnStates;
 use record::*;
+
 
 #[derive(Error, Debug)]
 pub enum TLSError {
@@ -44,6 +50,7 @@ struct TLSConnection {
     handshakes: Vec<u8>,
     states: ConnStates,
     secure_renegotiation: bool,
+    sm: Option<TlsStateMachine>
 }
 
 fn encrypt_pre_master_secret(cert_der: &[u8]) -> TLSResult<(Vec<u8>, Vec<u8>)> {
@@ -57,7 +64,8 @@ fn encrypt_pre_master_secret(cert_der: &[u8]) -> TLSResult<(Vec<u8>, Vec<u8>)> {
 
     // Step 3: Generate the 48-byte pre_master_secret
     let mut pre_master = [0u8; 48];
-    let mut rng = OsRng;
+    let mut rng = ChaCha20Rng::seed_from_u64(12345);
+    //let mut rng = OsRng;
     pre_master[0] = 0x03;
     pre_master[1] = 0x03; // TLS 1.2
     rng.fill_bytes(&mut pre_master[2..]);
@@ -76,6 +84,7 @@ impl TLSConnection {
             handshakes: Vec::new(),
             states: ConnStates::default(),
             secure_renegotiation: false,
+            sm: None
         })
     }
 
@@ -168,6 +177,7 @@ impl TLSConnection {
                     .enc_pre_master_secret
                     .as_ref()
                     .expect("encrypted pre-master secret not found");
+
                 self.send_encrypted_handshake(ClientKeyExchange::new(&enc_pre_master_secret))?;
                 info!("Sent ClientKeyExchange");
 
@@ -180,6 +190,8 @@ impl TLSConnection {
                 let seed = Sha256::digest(&self.handshakes).to_vec();
                 let verify_data =
                     prf::prf_sha256(&params.master_secret, b"client finished", &seed, 12);
+                println!("Master: {:?}", &params.master_secret);
+                println!("VerifyData: {:?}", &verify_data);
 
                 let finished = Finished::new(verify_data.clone());
                 self.handshakes.extend_from_slice(&finished.to_bytes());
@@ -224,6 +236,8 @@ impl TLSConnection {
     pub fn next_record(&mut self) -> TLSResult<TLSRecord> {
         loop {
             if let Some((record, plaintext)) = self.parse_from_buffer() {
+                let _messages_to_send = self.sm.as_mut().unwrap().step(&record)?;
+                
                 // Building up the handshake messages for ClientFinished
                 if !matches!(record, TLSRecord::Handshake(TLSHandshake::Finished(_))) {
                     self.handshakes.extend_from_slice(&plaintext);
@@ -276,6 +290,10 @@ impl TLSConnection {
         };
 
         let client_hello = ClientHello::new(cipher_suites, extensions);
+
+
+        self.sm.replace(TlsStateMachine::new(&client_hello));
+
         self.handshakes.clear();
         self.states = self.states.start_handshake()?;
         self.send_client_hello(client_hello)?;

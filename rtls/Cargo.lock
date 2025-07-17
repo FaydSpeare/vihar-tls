@@ -760,6 +760,7 @@ dependencies = [
  "log",
  "num_enum",
  "rand 0.9.1",
+ "rand_chacha 0.3.1",
  "rsa",
  "sha1",
  "sha2",

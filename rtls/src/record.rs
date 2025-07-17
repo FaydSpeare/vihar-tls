@@ -1,7 +1,7 @@
 use crate::alert::TLSAlert;
 use crate::ciphersuite::{get_cipher_suite, CipherSuite};
 use crate::extensions::{
-    decode_extensions, EncodeExtension, Extension, HashAlgo, SecureRenegotationExt, SigAlgo, SignatureAlgorithmsExt
+    decode_extensions, EncodeExtension, Extension, HashAlgo, SigAlgo, SignatureAlgorithmsExt
 };
 use crate::utils;
 use crate::{TLSError, TLSResult};
@@ -28,7 +28,7 @@ impl Random {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ClientHello {
     pub client_version: ProtocolVersion,
     pub random: Random,
@@ -115,11 +115,33 @@ pub struct ServerHello {
 }
 
 impl ServerHello {
-
     pub fn supports_secure_renegotiation(&self) -> bool {
         self.extensions.iter().any(|x| matches!(x, Extension::SecureRenegotiation(_)))
     }
+}
 
+impl ToBytes for ServerHello {
+    fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::<u8>::new(); 
+        bytes.push(self.server_version.major);
+        bytes.push(self.server_version.minor);
+        bytes.extend_from_slice(&self.random.as_bytes());
+
+        bytes.push(self.session_id.len() as u8); // SessionId
+        bytes.extend_from_slice(&self.session_id); // SessionId bytes
+        
+        bytes.extend_from_slice(&self.cipher_suite.encode());
+
+        bytes.push(0); // Compression method
+
+        let extensions_bytes: Vec<u8> = self.extensions.iter().map(|x| x.encode()).flatten().collect();
+        let extensions_len = extensions_bytes.len() as u16;
+        bytes.extend_from_slice(&extensions_len.to_be_bytes());
+        bytes.extend_from_slice(&extensions_bytes);
+
+        handshake_bytes(TLSHandshakeType::ServerHello, &bytes)
+
+    }
 }
 
 impl TryFrom<&[u8]> for ServerHello {
@@ -178,6 +200,21 @@ pub struct Certificates {
     pub list: Vec<Certificate>,
 }
 
+impl ToBytes for Certificates {
+    fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::<u8>::new();
+
+        let cert_bytes = self.list.iter().map(|x| 3 + x.bytes.len()).sum();
+        bytes.extend_from_slice(&utils::u24_be_bytes(cert_bytes));
+
+        for cert in &self.list {
+            bytes.extend_from_slice(&utils::u24_be_bytes(cert.bytes.len()));
+            bytes.extend_from_slice(&cert.bytes);
+        } 
+        handshake_bytes(TLSHandshakeType::Certificates, &bytes)
+    }
+}
+
 impl TryFrom<&[u8]> for Certificates {
     type Error = Box<dyn std::error::Error>;
 
@@ -205,6 +242,7 @@ impl TryFrom<&[u8]> for Certificates {
     }
 }
 
+#[derive(Debug)]
 pub struct ClientKeyExchange {
     enc_pre_master_secret: Vec<u8>,
 }
@@ -246,6 +284,12 @@ impl From<ClientKeyExchange> for TLSPlaintext {
     }
 }
 
+impl From<ClientKeyExchange> for TLSRecord {
+    fn from(value: ClientKeyExchange) -> Self {
+        TLSRecord::Handshake(TLSHandshake::ClientKeyExchange(value))
+    }
+}
+
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Finished {
@@ -255,6 +299,12 @@ pub struct Finished {
 impl Finished {
     pub fn new(verify_data: Vec<u8>) -> Self {
         Self { verify_data }
+    }
+}
+
+impl From<Finished> for TLSRecord {
+    fn from(value: Finished) -> Self {
+        TLSRecord::Handshake(TLSHandshake::Finished(value))
     }
 }
 
@@ -284,15 +334,27 @@ impl ChangeCipherSpec {
     }
 }
 
+impl ToBytes for ChangeCipherSpec {
+    fn to_bytes(&self) -> Vec<u8> {
+        vec![1]
+    }
+}
+
 impl IntoBytes for ChangeCipherSpec {
     fn into_bytes(self) -> Vec<u8> {
-        vec![1]
+        self.to_bytes()
     }
 }
 
 impl From<ChangeCipherSpec> for TLSPlaintext {
     fn from(value: ChangeCipherSpec) -> Self {
         TLSPlaintext::new(TLSContentType::ChangeCipherSpec, value.into_bytes())
+    }
+}
+
+impl From<ChangeCipherSpec> for TLSRecord {
+    fn from(_: ChangeCipherSpec) -> Self {
+        TLSRecord::ChangeCipherSuite
     }
 }
 
@@ -338,6 +400,7 @@ pub enum TLSHandshake {
     ServerHello(ServerHello),
     Certificates(Certificates),
     ServerHelloDone,
+    ClientKeyExchange(ClientKeyExchange),
     Finished(Finished),
 }
 
@@ -443,7 +506,9 @@ pub fn parse_handshake(buf: &[u8]) -> TLSResult<TLSHandshake> {
             TLSHandshakeType::Certificates => {
                 Certificates::try_from(&buf[4..]).map(TLSHandshake::Certificates)
             }
-            TLSHandshakeType::ServerHelloDone => Ok(TLSHandshake::ServerHelloDone),
+            TLSHandshakeType::ServerHelloDone => {
+                Ok(TLSHandshake::ServerHelloDone)
+            },
             TLSHandshakeType::Finished => {
                 let verify_data = buf[4..4 + length].to_vec();
                 Ok(TLSHandshake::Finished(Finished { verify_data }))

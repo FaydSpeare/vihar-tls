@@ -10,11 +10,11 @@ use crate::{TLSResult, ciphersuite::CipherSuiteParams};
 const MASTER_SECRET_LEN: usize = 48;
 
 #[derive(Debug, Clone)]
-struct DerivedKeys {
-    client_mac_key: Vec<u8>,
-    server_mac_key: Vec<u8>,
-    client_enc_key: Vec<u8>,
-    server_enc_key: Vec<u8>,
+pub struct DerivedKeys {
+    pub client_mac_key: Vec<u8>,
+    pub server_mac_key: Vec<u8>,
+    pub client_enc_key: Vec<u8>,
+    pub server_enc_key: Vec<u8>,
 }
 
 #[derive(Debug, Clone)]
@@ -49,7 +49,7 @@ impl SecurityParams {
         })
     }
 
-    fn derive_keys(&self) -> DerivedKeys {
+    pub fn derive_keys(&self) -> DerivedKeys {
         let mac_key_len = self.mac_algorithm.key_length();
         let enc_key_len = self.enc_algorithm.key_length();
 
@@ -89,7 +89,7 @@ pub struct PartialSecurityParams {
     pub enc_pre_master_secret: Option<Vec<u8>>,
 }
 
-#[derive(Default, Clone)]
+#[derive(Default, Debug, Clone)]
 pub struct InitialConnState {
     pub seq_num: u64,
 }
@@ -105,7 +105,7 @@ impl InitialConnState {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SecureConnState {
     pub params: SecurityParams,
     pub mac_key: Vec<u8>,
@@ -115,7 +115,7 @@ pub struct SecureConnState {
 }
 
 impl SecureConnState {
-    fn new(params: SecurityParams, enc_key: Vec<u8>, mac_key: Vec<u8>) -> Self {
+    pub fn new(params: SecurityParams, enc_key: Vec<u8>, mac_key: Vec<u8>) -> Self {
         Self {
             params,
             enc_key,
@@ -230,7 +230,7 @@ impl ConnStateRefMut<'_> {
     }
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub enum ConnState {
     Initial(InitialConnState),
     Secure(SecureConnState),
