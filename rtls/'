@@ -1,8 +1,7 @@
-use alert::{TLSAlert, TLSAlertDesc, TLSAlertLevel};
 use env_logger;
 use extensions::SecureRenegotationExt;
 use log::{error, trace};
-use state_machine::{TlsContext, TlsState, TlsStateMachine};
+use state_machine::{TlsState, TlsStateMachine};
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::Instant;
@@ -25,7 +24,7 @@ mod record;
 mod state_machine;
 mod utils;
 
-use ciphersuite::{CipherSuite, RsaAes128CbcSha, RsaAes128CbcSha256, RsaAes256CbcSha, RsaAes256CbcSha256};
+use ciphersuite::{CipherSuite, RsaAes128CbcSha};
 use record::*;
 
 #[derive(Error, Debug)]
@@ -71,30 +70,17 @@ struct TLSConnection {
 }
 
 impl TLSConnection {
-    pub fn new(domain: &str) -> TLSResult<Self> {
-        let port = if domain == "localhost" { "4433" } else { "443" };
+    pub fn new(_domain: &str) -> TLSResult<Self> {
         Ok(Self {
-            stream: TcpStream::connect(format!("{domain}:{port}"))?,
+            //stream: TcpStream::connect(format!("{_domain}:443"))?,
+            stream: TcpStream::connect("localhost:4433")?,
             buffer: Vec::new(),
             state_machine: TlsStateMachine::new(),
         })
     }
 
-    pub fn new_with_context(domain: &str, ctx: TlsContext) -> TLSResult<Self> {
-        let port = if domain == "localhost" { "4433" } else { "443" };
-        Ok(Self {
-            stream: TcpStream::connect(format!("{domain}:{port}"))?,
-            buffer: Vec::new(),
-            state_machine: TlsStateMachine::from_context(ctx),
-        })
+    pub fn reconnect(&mut self, _domain: &str) -> TLSResult<()> {
 
-    }
-
-    pub fn notify_close(&mut self) -> TLSResult<()> {
-        let alert = TLSAlert::new(TLSAlertLevel::Warning, TLSAlertDesc::CloseNotify);
-        let ciphertext = self.state_machine.write_state_mut().encrypt(alert);
-        self.send_bytes(&ciphertext.into_bytes())?;
-        Ok(())
     }
 
     fn parse_message(&mut self) -> TLSResult<(TlsMessage, usize)> {
@@ -243,24 +229,22 @@ impl TLSConnection {
 fn main() -> TLSResult<()> {
     env_logger::init();
 
-    let suites: Vec<Box<dyn CipherSuite>> = vec![
-        Box::new(RsaAes128CbcSha {}),
-        Box::new(RsaAes128CbcSha256 {}),
-        Box::new(RsaAes256CbcSha {}),
-        Box::new(RsaAes256CbcSha256 {}),
-    ];
-    let domain = "facebook.com";
-    // let domain = "localhost";
+    let suites: Vec<Box<dyn CipherSuite>> = vec![Box::new(RsaAes128CbcSha {})];
 
-    let mut connection = TLSConnection::new(domain)?;
-    // connection.handshake(&suites, None)?;
-
+    let mut connection = TLSConnection::new("example.com")?;
     let session_id = connection.handshake(&suites, None)?;
-    let ctx = connection.state_machine.ctx.clone();
-    connection.notify_close()?;
 
-    let mut connection = TLSConnection::new_with_context(domain, ctx)?;
-    connection.handshake(&suites, Some(session_id))?;
+    println!();
+    println!("session_id: {:?}", session_id);
+    println!("session_info: {:?}", connection.state_machine.ctx.sessions.get(&session_id));
+    println!();
+
+    let session_id = connection.handshake(&suites, Some(session_id))?;
+
+    println!();
+    println!("session_id: {:?}", session_id);
+    println!("session_info: {:?}", connection.state_machine.ctx.sessions.get(&session_id));
+    println!();
 
     Ok(())
 

@@ -42,7 +42,7 @@ pub struct ClientHello {
 }
 
 impl ClientHello {
-    pub fn new(suites: &[Box<dyn CipherSuite>], mut extensions: Vec<Extension>) -> Self {
+    pub fn new(suites: &[Box<dyn CipherSuite>], mut extensions: Vec<Extension>, session_id: Option<Vec<u8>>) -> Self {
         let cipher_suites = suites.iter().map(|x| x.encode()).collect();
         extensions.push(
             SignatureAlgorithmsExt::new_from_product(
@@ -56,7 +56,7 @@ impl ClientHello {
                 unix_time: utils::get_unix_time(),
                 random_bytes: utils::get_random_bytes(28).try_into().unwrap(),
             },
-            session_id: vec![],
+            session_id: session_id.unwrap_or(vec![]),
             cipher_suites,
             compression_methods: vec![0],
             extensions,
@@ -72,6 +72,7 @@ impl ToBytes for ClientHello {
 
         bytes.push(self.session_id.len() as u8); // SessionId
         bytes.extend_from_slice(&self.session_id); // SessionId bytes
+        //println!("CLIENT HELLO pushed session_id {:?}", &self.session_id);
 
         bytes.extend(((2 * self.cipher_suites.len()) as u16).to_be_bytes());
         for suite in &self.cipher_suites {
@@ -142,11 +143,12 @@ impl ToBytes for ServerHello {
 
         let extensions_bytes: Vec<u8> = self.extensions.iter().map(|x| x.encode()).flatten().collect();
         let extensions_len = extensions_bytes.len() as u16;
-        bytes.extend_from_slice(&extensions_len.to_be_bytes());
-        bytes.extend_from_slice(&extensions_bytes);
+        if extensions_len > 0 {
+            bytes.extend_from_slice(&extensions_len.to_be_bytes());
+            bytes.extend_from_slice(&extensions_bytes);
+        }
 
         handshake_bytes(TLSHandshakeType::ServerHello, &bytes)
-
     }
 }
 
@@ -427,7 +429,7 @@ pub struct TLSPlaintext {
 }
 
 impl TLSPlaintext {
-    fn new(content_type: TLSContentType, fragment: Vec<u8>) -> Self {
+    pub fn new(content_type: TLSContentType, fragment: Vec<u8>) -> Self {
         Self {
             content_type,
             version: ProtocolVersion { major: 3, minor: 1 },
@@ -475,7 +477,6 @@ pub fn parse_handshake(buf: &[u8]) -> TLSResult<TLSHandshake> {
         return Err(TLSError::NeedData.into());
     }
 
-    // println!("Handshake length: {length}");
     TLSHandshakeType::try_from(buf[0])
         .map_err(|e| e.into())
         .and_then(|handshake_type| match handshake_type {

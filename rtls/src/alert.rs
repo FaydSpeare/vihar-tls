@@ -1,9 +1,9 @@
-use crate::TLSResult;
+use crate::{record::{TLSContentType, TLSPlaintext}, TLSResult};
 use num_enum::TryFromPrimitive;
 
 #[derive(Debug, TryFromPrimitive)]
 #[repr(u8)]
-enum TLSAlertDesc {
+pub enum TLSAlertDesc {
     CloseNotify = 0,
     BadRecordMac = 20,
     RecordOverflow = 22,
@@ -29,7 +29,7 @@ enum TLSAlertDesc {
 
 #[derive(Debug, TryFromPrimitive)]
 #[repr(u8)]
-enum TLSAlertLevel {
+pub enum TLSAlertLevel {
     Warning = 1,
     Fatal = 2,
 }
@@ -38,6 +38,19 @@ enum TLSAlertLevel {
 pub struct TLSAlert {
     level: TLSAlertLevel,
     description: TLSAlertDesc,
+}
+
+impl TLSAlert {
+    pub fn new(level: TLSAlertLevel, description: TLSAlertDesc) -> Self {
+        Self { level, description }
+    }
+}
+
+impl From<TLSAlert> for TLSPlaintext {
+    fn from(value: TLSAlert) -> Self {
+        let bytes: Vec<u8> = vec![value.level as u8, value.description as u8]; 
+        TLSPlaintext::new(TLSContentType::Alert, bytes)
+    }
 }
 
 pub fn parse_alert(buf: &[u8]) -> TLSResult<TLSAlert> {
