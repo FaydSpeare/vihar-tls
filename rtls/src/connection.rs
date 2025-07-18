@@ -1,3 +1,5 @@
+use log::debug;
+
 use crate::ciphersuite::{EncAlgorithm, MacAlgorithm};
 use crate::prf::prf_sha256;
 use crate::record::{TLSCiphertext, TLSContentType, TLSPlaintext};
@@ -57,7 +59,8 @@ pub struct InitialConnState {
 }
 
 impl InitialConnState {
-    pub fn encrypt(&self, plaintext: TLSPlaintext) -> TLSCiphertext {
+    pub fn encrypt(&mut self, plaintext: TLSPlaintext) -> TLSCiphertext {
+        self.seq_num += 1;
         TLSCiphertext::new(plaintext.content_type, plaintext.fragment)
     }
 
@@ -100,6 +103,8 @@ impl SecureConnState {
     }
 
     pub fn encrypt_fragment(&self, content_type: TLSContentType, fragment: &[u8]) -> Vec<u8> {
+        debug!("Using seq_num {}", self.seq_num);
+
         let mut bytes = Vec::<u8>::new();
         bytes.extend_from_slice(&self.seq_num.to_be_bytes());
         bytes.push(content_type as u8);

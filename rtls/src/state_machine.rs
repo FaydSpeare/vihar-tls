@@ -515,7 +515,7 @@ impl HandleRecord for AwaitingServerFinishedState {
         ctx: &mut TlsContext,
         msg: &TlsMessage,
     ) -> TLSResult<(TlsState, Vec<TLSCiphertext>)> {
-        if let TlsMessage::Handshake(TLSHandshake::Finished(_)) = msg {
+        if let TlsMessage::Handshake(TLSHandshake::Finished(finished)) = msg {
             info!("Received ServerFinished");
 
             if self.session_resumption.is_none() {
@@ -542,17 +542,18 @@ impl HandleRecord for AwaitingServerFinishedState {
                 ));
             }
 
+            self.handshakes.extend_from_slice(&finished.to_bytes());
             let ccs_ciphertext = self.write.encrypt(ChangeCipherSpec::new());
 
             let params = &self.read.params;
             let keys = params.derive_keys();
-            let write =
+            let mut write =
                 SecureConnState::new(params.clone(), keys.client_enc_key, keys.client_mac_key);
 
             let seed = Sha256::digest(&self.handshakes).to_vec();
             let verify_data = prf::prf_sha256(&params.master_secret, b"client finished", &seed, 12);
             let finished = Finished::new(verify_data.clone());
-            let cf_ciphertext = self.write.encrypt(finished);
+            let cf_ciphertext = write.encrypt(finished.into());
 
             info!("Sent ChangeCipherSpec");
             info!("Sent ClientFinished");

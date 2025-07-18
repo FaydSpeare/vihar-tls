@@ -257,16 +257,16 @@ fn main() -> TLSResult<()> {
 
     let session_id = connection.handshake(&suites, None)?;
     let ctx = connection.state_machine.ctx.clone();
-    connection.notify_close()?;
+    //cconnection.notify_close()?;
 
     let mut connection = TLSConnection::new_with_context(domain, ctx)?;
     connection.handshake(&suites, Some(session_id))?;
 
-    Ok(())
+    // Ok(())
 
-    // connection.write(b"GET / HTTP/1.1\r\nHost: www.example.com\r\n\r\n")?;
-    // loop {
-    //     let bytes = connection.read()?;
-    //     print!("{}", String::from_utf8_lossy(&bytes));
-    // }
+    connection.write(b"GET / HTTP/1.1\r\nHost: www.facebook.com\r\n\r\n")?;
+    loop {
+        let bytes = connection.read()?;
+        print!("{}", String::from_utf8_lossy(&bytes));
+    }
 }
