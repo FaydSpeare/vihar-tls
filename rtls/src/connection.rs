@@ -132,13 +132,14 @@ impl SecureConnState {
             .decrypt(ciphertext, &self.enc_key, iv)
     }
 
-    pub fn encrypt(&self, plaintext: TLSPlaintext) -> TLSCiphertext {
+    pub fn encrypt(&mut self, plaintext: TLSPlaintext) -> TLSCiphertext {
         let ciphertext = self.encrypt_fragment(plaintext.content_type, &plaintext.fragment);
+        self.seq_num += 1;
         TLSCiphertext::new(plaintext.content_type, ciphertext)
     }
 
     pub fn encrypt_fragment(&self, content_type: TLSContentType, fragment: &[u8]) -> Vec<u8> {
-        // debug!("seq_num {}", self.seq_num);
+        debug!("seq_num {}", self.seq_num);
         let mut bytes = Vec::<u8>::new();
         bytes.extend_from_slice(&self.seq_num.to_be_bytes());
         bytes.push(content_type as u8);
@@ -190,25 +191,10 @@ impl ConnStateRef<'_> {
     pub fn decrypt(&self, ciphertext: &[u8]) -> Vec<u8> {
         match self {
             Self::Initial(state) => {
-                debug!("...");
                 state.decrypt(ciphertext)
             }
             Self::Secure(state) => {
-                debug!("Dencrypted");
                 state.decrypt(ciphertext)
-            }
-        }
-    }
-
-    pub fn encrypt<T: Into<TLSPlaintext>>(&self, plaintext: T) -> TLSCiphertext {
-        match self {
-            Self::Initial(state) => {
-                debug!("Unencrypted");
-                state.encrypt(plaintext.into())
-            }
-            Self::Secure(state) => {
-                debug!("Encrypted");
-                state.encrypt(plaintext.into())
             }
         }
     }
@@ -222,10 +208,14 @@ pub enum ConnStateRefMut<'a> {
 
 impl ConnStateRefMut<'_> {
 
-    pub fn inc_seq_num(&mut self) {
+    pub fn encrypt<T: Into<TLSPlaintext>>(&mut self, plaintext: T) -> TLSCiphertext {
         match self {
-            Self::Initial(state) => state.seq_num += 1,
-            Self::Secure(state) => state.seq_num += 1,
+            Self::Initial(state) => {
+                state.encrypt(plaintext.into())
+            }
+            Self::Secure(state) => {
+                state.encrypt(plaintext.into())
+            }
         }
     }
 }
@@ -249,6 +239,17 @@ impl ConnState {
         match self {
             Self::Initial(state) => ConnStateRefMut::Initial(state),
             Self::Secure(state) => ConnStateRefMut::Secure(state),
+        }
+    }
+
+    pub fn encrypt<T: Into<TLSPlaintext>>(&mut self, plaintext: T) -> TLSCiphertext {
+        match self {
+            Self::Initial(state) => {
+                state.encrypt(plaintext.into())
+            }
+            Self::Secure(state) => {
+                state.encrypt(plaintext.into())
+            }
         }
     }
 }

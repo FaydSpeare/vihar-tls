@@ -103,6 +103,12 @@ impl From<ClientHello> for TLSPlaintext {
     }
 }
 
+impl From<ClientHello> for TLSRecord {
+    fn from(value: ClientHello) -> TLSRecord {
+        TLSRecord::Handshake(TLSHandshake::ClientHello(value))
+    }
+}
+
 #[allow(dead_code)]
 #[derive(Debug)]
 pub struct ServerHello {
@@ -404,14 +410,6 @@ pub enum TLSHandshake {
     Finished(Finished),
 }
 
-impl TLSHandshake {
-    pub fn into_bytes(self) -> Vec<u8> {
-        match self {
-            TLSHandshake::ClientHello(hello) => hello.into_bytes(),
-            _ => unimplemented!(),
-        }
-    }
-}
 
 #[derive(Debug)]
 pub enum TLSRecord {
@@ -463,27 +461,6 @@ impl TLSCiphertext {
     }
 }
 
-impl TLSRecord {
-    pub fn into_bytes(self) -> Vec<u8> {
-        match self {
-            TLSRecord::Handshake(handshake) => {
-                record_bytes(TLSContentType::Handshake, &handshake.into_bytes())
-            }
-            TLSRecord::Alert(alert) => unimplemented!(),
-            TLSRecord::ChangeCipherSuite => unimplemented!(),
-            TLSRecord::ApplicationData(data) => unimplemented!(),
-        }
-    }
-
-    pub fn fragment_bytes(self) -> Vec<u8> {
-        match self {
-            TLSRecord::Handshake(handshake) => handshake.into_bytes(),
-            TLSRecord::Alert(alert) => unimplemented!(),
-            TLSRecord::ChangeCipherSuite => unimplemented!(),
-            TLSRecord::ApplicationData(data) => unimplemented!(),
-        }
-    }
-}
 
 pub fn parse_handshake(buf: &[u8]) -> TLSResult<TLSHandshake> {
     if buf.len() < 4 {
@@ -492,7 +469,9 @@ pub fn parse_handshake(buf: &[u8]) -> TLSResult<TLSHandshake> {
 
     let length = u32::from_be_bytes([0, buf[1], buf[2], buf[3]]) as usize;
 
+
     if buf.len() < 4 + length {
+        println!("{}, {}", buf.len(), 4 + length);
         return Err(TLSError::NeedData.into());
     }
 
