@@ -1,19 +1,15 @@
-#![allow(unused)]
 use enum_dispatch::enum_dispatch;
 use log::info;
 use sha2::{Digest, Sha256};
 
 use crate::{
     TLSResult,
-    ciphersuite::{CipherSuite, get_cipher_suite},
-    connection::{
-        ConnState, ConnStateRef, ConnStateRefMut, InitialConnState, SecureConnState, SecurityParams,
-    },
-    extensions::Extension,
+    ciphersuite::get_cipher_suite,
+    connection::{ConnState, ConnStateRef, InitialConnState, SecureConnState, SecurityParams},
     prf,
     record::{
-        ChangeCipherSpec, ClientHello, ClientKeyExchange, Finished, IntoBytes, Random, ServerHello,
-        TLSCiphertext, TLSHandshake, TLSHandshakeType, TLSRecord, ToBytes, handshake_bytes,
+        ApplicationData, ChangeCipherSpec, ClientKeyExchange, Finished, TLSCiphertext,
+        TLSHandshake, TLSHandshakeType, TlsMessage, ToBytes, handshake_bytes,
     },
 };
 
@@ -22,18 +18,21 @@ pub struct TlsStateMachine {
 }
 
 impl TlsStateMachine {
-    pub fn step(&mut self, msg: &TLSRecord) -> TLSResult<Vec<TLSCiphertext>> {
-        let (new_state, messages) = self.state.take().unwrap().handle(msg)?;
+    pub fn step(&mut self, msg: &TlsMessage) -> TLSResult<Vec<TLSCiphertext>> {
+        let (new_state, ciphertexts) = self.state.take().unwrap().handle(msg)?;
         self.state = Some(new_state);
-        Ok(messages)
+        Ok(ciphertexts)
     }
 
     pub fn new() -> Self {
         Self {
-            state: Some(AwaitingClientHelloState {
-                read: ConnState::Initial(InitialConnState::default()),
-                write: ConnState::Initial(InitialConnState::default()),
-            }.into())
+            state: Some(
+                AwaitingClientHelloState {
+                    read: ConnState::Initial(InitialConnState::default()),
+                    write: ConnState::Initial(InitialConnState::default()),
+                }
+                .into(),
+            ),
         }
     }
 
@@ -46,14 +45,6 @@ impl TlsStateMachine {
 
     pub fn read_state(&self) -> ConnStateRef<'_> {
         self.state.as_ref().unwrap().read_state()
-    }
-
-    pub fn write_state(&self) -> ConnStateRef<'_> {
-        self.state.as_ref().unwrap().write_state()
-    }
-
-    pub fn write_state_mut(&mut self) -> ConnStateRefMut<'_> {
-        self.state.as_mut().unwrap().write_state_mut()
     }
 }
 
@@ -111,35 +102,11 @@ impl TlsState {
             Self::Established(s) => ConnStateRef::Secure(&s.read),
         }
     }
-
-    pub fn write_state(&self) -> ConnStateRef<'_> {
-        match self {
-            Self::AwaitingClientHello(s) => s.write.as_ref(),
-            Self::AwaitingServerHello(s) => s.write.as_ref(),
-            Self::AwaitingServerCertificate(s) => s.write.as_ref(),
-            Self::AwaitingServerHelloDone(s) => s.write.as_ref(),
-            Self::AwaitingServerChangeCipher(s) => ConnStateRef::Secure(&s.write),
-            Self::AwaitingServerFinished(s) => ConnStateRef::Secure(&s.write),
-            Self::Established(s) => ConnStateRef::Secure(&s.write),
-        }
-    }
-
-    pub fn write_state_mut(&mut self) -> ConnStateRefMut<'_> {
-        match self {
-            Self::AwaitingClientHello(s) => s.write.as_mut(),
-            Self::AwaitingServerHello(s) => s.write.as_mut(),
-            Self::AwaitingServerCertificate(s) => s.write.as_mut(),
-            Self::AwaitingServerHelloDone(s) => s.write.as_mut(),
-            Self::AwaitingServerChangeCipher(s) => ConnStateRefMut::Secure(&mut s.write),
-            Self::AwaitingServerFinished(s) => ConnStateRefMut::Secure(&mut s.write),
-            Self::Established(s) => ConnStateRefMut::Secure(&mut s.write),
-        }
-    }
 }
 
 #[enum_dispatch(TlsState)]
 pub trait HandleRecord {
-    fn handle(self, msg: &TLSRecord) -> TLSResult<(TlsState, Vec<TLSCiphertext>)>;
+    fn handle(self, msg: &TlsMessage) -> TLSResult<(TlsState, Vec<TLSCiphertext>)>;
 }
 
 #[derive(Debug)]
@@ -149,9 +116,11 @@ pub struct AwaitingClientHelloState {
 }
 
 impl HandleRecord for AwaitingClientHelloState {
-    fn handle(mut self, msg: &TLSRecord) -> TLSResult<(TlsState, Vec<TLSCiphertext>)> {
-        if let TLSRecord::Handshake(TLSHandshake::ClientHello(hello)) = msg {
+    fn handle(mut self, msg: &TlsMessage) -> TLSResult<(TlsState, Vec<TLSCiphertext>)> {
+        if let TlsMessage::Handshake(TLSHandshake::ClientHello(hello)) = msg {
             info!("Sent ClientHello");
+
+            let ch_ciphertext = self.write.encrypt(hello.clone());
 
             return Ok((
                 AwaitingServerHelloState {
@@ -162,7 +131,7 @@ impl HandleRecord for AwaitingClientHelloState {
                     session_id: hello.session_id.clone(),
                 }
                 .into(),
-                vec![],
+                vec![ch_ciphertext],
             ));
         }
         panic!("invalid transition");
@@ -179,8 +148,8 @@ pub struct AwaitingServerHelloState {
 }
 
 impl HandleRecord for AwaitingServerHelloState {
-    fn handle(mut self, msg: &TLSRecord) -> TLSResult<(TlsState, Vec<TLSCiphertext>)> {
-        if let TLSRecord::Handshake(TLSHandshake::ServerHello(value)) = msg {
+    fn handle(mut self, msg: &TlsMessage) -> TLSResult<(TlsState, Vec<TLSCiphertext>)> {
+        if let TlsMessage::Handshake(TLSHandshake::ServerHello(value)) = msg {
             info!("Received ServerHello");
 
             self.handshakes.extend_from_slice(&value.to_bytes());
@@ -214,8 +183,8 @@ pub struct AwaitingServerCertificateState {
 }
 
 impl HandleRecord for AwaitingServerCertificateState {
-    fn handle(mut self, msg: &TLSRecord) -> TLSResult<(TlsState, Vec<TLSCiphertext>)> {
-        if let TLSRecord::Handshake(TLSHandshake::Certificates(certs)) = msg {
+    fn handle(mut self, msg: &TlsMessage) -> TLSResult<(TlsState, Vec<TLSCiphertext>)> {
+        if let TlsMessage::Handshake(TLSHandshake::Certificates(certs)) = msg {
             info!("Received ServerCertificate");
 
             let (pre_master_secret, enc_pre_master_secret) =
@@ -265,8 +234,8 @@ pub struct AwaitingServerHelloDoneState {
 }
 
 impl HandleRecord for AwaitingServerHelloDoneState {
-    fn handle(mut self, msg: &TLSRecord) -> TLSResult<(TlsState, Vec<TLSCiphertext>)> {
-        if let TLSRecord::Handshake(TLSHandshake::ServerHelloDone) = msg {
+    fn handle(mut self, msg: &TlsMessage) -> TLSResult<(TlsState, Vec<TLSCiphertext>)> {
+        if let TlsMessage::Handshake(TLSHandshake::ServerHelloDone) = msg {
             info!("Received ServerHelloDone");
 
             self.handshakes
@@ -321,8 +290,8 @@ pub struct AwaitingServerChangeCipherState {
 }
 
 impl HandleRecord for AwaitingServerChangeCipherState {
-    fn handle(mut self, msg: &TLSRecord) -> TLSResult<(TlsState, Vec<TLSCiphertext>)> {
-        if let TLSRecord::ChangeCipherSuite = msg {
+    fn handle(self, msg: &TlsMessage) -> TLSResult<(TlsState, Vec<TLSCiphertext>)> {
+        if let TlsMessage::ChangeCipherSuite = msg {
             info!("Received ChangeCipherSuite");
 
             let keys = self.write.params.derive_keys();
@@ -354,8 +323,8 @@ pub struct AwaitingServerFinishedState {
 }
 
 impl HandleRecord for AwaitingServerFinishedState {
-    fn handle(mut self, msg: &TLSRecord) -> TLSResult<(TlsState, Vec<TLSCiphertext>)> {
-        if let TLSRecord::Handshake(TLSHandshake::Finished(finished)) = msg {
+    fn handle(self, msg: &TlsMessage) -> TLSResult<(TlsState, Vec<TLSCiphertext>)> {
+        if let TlsMessage::Handshake(TLSHandshake::Finished(finished)) = msg {
             info!("Received ServerFinished");
             info!("Handshake complete!");
 
@@ -383,10 +352,11 @@ pub struct EstablishedState {
 }
 
 impl HandleRecord for EstablishedState {
-    fn handle(mut self, msg: &TLSRecord) -> TLSResult<(TlsState, Vec<TLSCiphertext>)> {
-        println!("{:?}", msg);
-        if let TLSRecord::Handshake(TLSHandshake::ServerHelloDone) = msg {
-            unimplemented!()
+    fn handle(mut self, msg: &TlsMessage) -> TLSResult<(TlsState, Vec<TLSCiphertext>)> {
+        if let TlsMessage::ApplicationData(bytes) = msg {
+            let app_data = ApplicationData::new(bytes.clone());
+            let ciphertext = self.write.encrypt(app_data.into());
+            return Ok((self.into(), vec![ciphertext]));
         }
         panic!("invalid transition");
     }

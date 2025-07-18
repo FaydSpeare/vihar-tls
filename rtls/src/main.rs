@@ -1,14 +1,14 @@
 use env_logger;
 use extensions::SecureRenegotationExt;
-use log::{error, info, trace};
+use log::{error, trace};
 use state_machine::TlsStateMachine;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::Instant;
 
-//use rsa::rand_core::{OsRng, RngCore, CryptoRng};
-use rand_chacha::ChaCha20Rng;
-use rand_chacha::rand_core::{RngCore, SeedableRng};
+use rsa::rand_core::{OsRng, RngCore};
+// use rand_chacha::ChaCha20Rng;
+// use rand_chacha::rand_core::{RngCore, SeedableRng};
 
 use rsa::pkcs8::DecodePublicKey;
 use rsa::{Pkcs1v15Encrypt, RsaPublicKey};
@@ -52,8 +52,8 @@ fn encrypt_pre_master_secret(cert_der: &[u8]) -> TLSResult<(Vec<u8>, Vec<u8>)> {
 
     // Step 3: Generate the 48-byte pre_master_secret
     let mut pre_master = [0u8; 48];
-    let mut rng = ChaCha20Rng::seed_from_u64(12345);
-    //let mut rng = OsRng;
+    //let mut rng = ChaCha20Rng::seed_from_u64(12345);
+    let mut rng = OsRng;
     pre_master[0] = 0x03;
     pre_master[1] = 0x03; // TLS 1.2
     rng.fill_bytes(&mut pre_master[2..]);
@@ -66,7 +66,7 @@ fn encrypt_pre_master_secret(cert_der: &[u8]) -> TLSResult<(Vec<u8>, Vec<u8>)> {
 struct TLSConnection {
     stream: TcpStream,
     buffer: Vec<u8>,
-    sm: TlsStateMachine,
+    state_machine: TlsStateMachine,
 }
 
 impl TLSConnection {
@@ -75,11 +75,11 @@ impl TLSConnection {
             stream: TcpStream::connect(format!("{_domain}:443"))?,
             //stream: TcpStream::connect("localhost:8443")?,
             buffer: Vec::new(),
-            sm: TlsStateMachine::new(),
+            state_machine: TlsStateMachine::new(),
         })
     }
 
-    fn parse_record(&mut self) -> TLSResult<(TLSRecord, Vec<u8>, usize)> {
+    fn parse_message(&mut self) -> TLSResult<(TlsMessage, usize)> {
         let buf = &mut self.buffer;
         if buf.len() < 5 {
             return Err(TLSError::NeedsMoreData((5 - buf.len()) as u16).into());
@@ -99,7 +99,7 @@ impl TLSConnection {
             return Err(TLSError::NeedsMoreData((5 + length - buf.len()) as u16).into());
         }
 
-        let state = self.sm.read_state();
+        let state = self.state_machine.read_state();
         let plaintext = state.decrypt(&buf[5..5 + length]);
         let fragment = match state.params() {
             None => plaintext.clone(),
@@ -111,23 +111,23 @@ impl TLSConnection {
             }
         };
 
-        let record = TLSContentType::try_from(buf[0])
+        let message = TLSContentType::try_from(buf[0])
             .map_err(|e| e.into())
             .and_then(|content_type| match content_type {
-                TLSContentType::ChangeCipherSpec => Ok(TLSRecord::ChangeCipherSuite),
-                TLSContentType::Alert => alert::parse_alert(&fragment).map(TLSRecord::Alert),
-                TLSContentType::Handshake => parse_handshake(&fragment).map(TLSRecord::Handshake),
-                TLSContentType::ApplicationData => Ok(TLSRecord::ApplicationData(fragment.clone())),
+                TLSContentType::ChangeCipherSpec => Ok(TlsMessage::ChangeCipherSuite),
+                TLSContentType::Alert => alert::parse_alert(&fragment).map(TlsMessage::Alert),
+                TLSContentType::Handshake => parse_handshake(&fragment).map(TlsMessage::Handshake),
+                TLSContentType::ApplicationData => Ok(TlsMessage::ApplicationData(fragment.clone())),
             })?;
 
-        return Ok((record, fragment, 5 + length));
+        return Ok((message, 5 + length));
     }
 
-    fn parse_from_buffer(&mut self) -> Option<(TLSRecord, Vec<u8>)> {
-        match self.parse_record() {
-            Ok((res, plaintext, i)) => {
+    fn parse_message_from_buffer(&mut self) -> Option<TlsMessage> {
+        match self.parse_message() {
+            Ok((msg, i)) => {
                 self.buffer.drain(0..i);
-                Some((res, plaintext))
+                Some(msg)
             }
             Err(e) => {
                 trace!("ParseRecordErr: {}", e);
@@ -136,42 +136,38 @@ impl TLSConnection {
         }
     }
 
-    fn send_encrypted<T: Into<TLSPlaintext>>(&mut self, plaintext: T) -> TLSResult<()> {
-        let mut state = self.sm.write_state_mut();
-        let ciphertext = state.encrypt(plaintext);
-        self.send_bytes(&ciphertext.into_bytes())
-    }
-
-    pub fn next_record(&mut self) -> TLSResult<TLSRecord> {
+    fn next_message(&mut self) -> TLSResult<TlsMessage> {
         loop {
-            if let Some((record, _)) = self.parse_from_buffer() {
+            if let Some(msg) = self.parse_message_from_buffer() {
 
-                match &record {
-                    TLSRecord::ApplicationData(_) | TLSRecord::Alert(_) => {}
-                    _ => {
-                        let messages_to_send = self.sm.step(&record)?;
-                        for message in messages_to_send {
-                            self.send_bytes(&message.into_bytes())?;
-                        }
-                    }
+                match &msg {
+                    TlsMessage::ApplicationData(_) | TlsMessage::Alert(_) => {}
+                    _ => self.process_message(&msg)?
                 }
 
-                return Ok(record);
+                return Ok(msg);
             }
 
             let mut buf = [0u8; 8096];
-
             let mut n = self.stream.read(&mut buf)?;
             while n == 0 {
                 n = self.stream.read(&mut buf)?;
             }
+
             trace!("Received {} bytes", n);
             self.buffer.extend_from_slice(&buf[..n]);
         }
     }
 
-    pub fn send_bytes(&mut self, bytes: &[u8]) -> TLSResult<()> {
+    fn send_bytes(&mut self, bytes: &[u8]) -> TLSResult<()> {
         self.stream.write_all(bytes)?;
+        Ok(())
+    }
+
+    fn process_message(&mut self, msg: &TlsMessage) -> TLSResult<()> {
+        for ciphertext in self.state_machine.step(msg)? {
+            self.send_bytes(&ciphertext.into_bytes())?;
+        }
         Ok(())
     }
 
@@ -179,43 +175,37 @@ impl TLSConnection {
         let start_time = Instant::now();
         let extensions = vec![SecureRenegotationExt::initial().into()];
         let client_hello = ClientHello::new(cipher_suites, extensions);
+        self.process_message(&client_hello.into())?;
 
-        self.sm.step(&client_hello.clone().into())?;
-        self.send_encrypted(client_hello)?;
-
-        loop {
-            let record = self.next_record()?;
-
-            if let TLSRecord::Alert(a) = record {
+        while !self.state_machine.is_established() {
+            if let TlsMessage::Alert(a) = self.next_message()? {
                 println!("{:?}", a);
                 return Err("Received alert during handshake".into());
             }
-            if self.sm.is_established() {
-                let elapsed = Instant::now() - start_time;
-                println!("elapsed: {} seconds", elapsed.as_secs_f64());
-                return Ok(());
-            }
         }
+
+        let elapsed = Instant::now() - start_time;
+        println!("elapsed: {} seconds", elapsed.as_secs_f64());
+        return Ok(());
     }
 
-    #[allow(dead_code)]
-    #[allow(unused)]
-    pub fn send_app_data(&mut self, bytes: &[u8]) -> TLSResult<()> {
-        let application_data = ApplicationData::new(bytes.to_vec());
-        self.send_encrypted(application_data);
+    pub fn write(&mut self, bytes: &[u8]) -> TLSResult<()> {
+        self.process_message(&TlsMessage::ApplicationData(bytes.to_vec()))?;
         println!("Sent AppData: {:?}", String::from_utf8_lossy(bytes));
         Ok(())
     }
 
-    pub fn next_app_data(&mut self) -> TLSResult<Vec<u8>> {
+    pub fn read(&mut self) -> TLSResult<Vec<u8>> {
         loop {
-            let record = self.next_record()?;
-
-            if let TLSRecord::Alert(a) = record {
-                println!("{:?}", a);
-                return Err("Received alert".into());
-            } else if let TLSRecord::ApplicationData(x) = record {
-                return Ok(x);
+            let msg = self.next_message()?;
+            match msg {
+                TlsMessage::ApplicationData(bytes) => {
+                    return Ok(bytes);
+                },
+                _ => {
+                    println!("{:?}", msg);
+                    return Err("Received unexpected message".into()); 
+                }
             }
         }
     }
@@ -226,14 +216,14 @@ fn main() -> TLSResult<()> {
 
     let suites: Vec<Box<dyn CipherSuite>> = vec![Box::new(RsaAes128CbcSha {})];
 
-    let mut connection = TLSConnection::new("facebook.com")?;
+    let mut connection = TLSConnection::new("example.com")?;
     connection.handshake(&suites)?;
 
-    Ok(())
+    //Ok(())
 
-    // connection.send_app_data(b"GET / HTTP/1.1\r\nHost: www.example.com\r\n\r\n")?;
-    // loop {
-    //     let bytes = connection.next_app_data()?;
-    //     print!("{}", String::from_utf8_lossy(&bytes));
-    // }
+    connection.write(b"GET / HTTP/1.1\r\nHost: www.example.com\r\n\r\n")?;
+    loop {
+        let bytes = connection.read()?;
+        print!("{}", String::from_utf8_lossy(&bytes));
+    }
 }

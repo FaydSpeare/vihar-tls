@@ -103,9 +103,9 @@ impl From<ClientHello> for TLSPlaintext {
     }
 }
 
-impl From<ClientHello> for TLSRecord {
-    fn from(value: ClientHello) -> TLSRecord {
-        TLSRecord::Handshake(TLSHandshake::ClientHello(value))
+impl From<ClientHello> for TlsMessage {
+    fn from(value: ClientHello) -> TlsMessage {
+        TlsMessage::Handshake(TLSHandshake::ClientHello(value))
     }
 }
 
@@ -290,9 +290,9 @@ impl From<ClientKeyExchange> for TLSPlaintext {
     }
 }
 
-impl From<ClientKeyExchange> for TLSRecord {
+impl From<ClientKeyExchange> for TlsMessage {
     fn from(value: ClientKeyExchange) -> Self {
-        TLSRecord::Handshake(TLSHandshake::ClientKeyExchange(value))
+        TlsMessage::Handshake(TLSHandshake::ClientKeyExchange(value))
     }
 }
 
@@ -308,9 +308,9 @@ impl Finished {
     }
 }
 
-impl From<Finished> for TLSRecord {
+impl From<Finished> for TlsMessage {
     fn from(value: Finished) -> Self {
-        TLSRecord::Handshake(TLSHandshake::Finished(value))
+        TlsMessage::Handshake(TLSHandshake::Finished(value))
     }
 }
 
@@ -358,9 +358,9 @@ impl From<ChangeCipherSpec> for TLSPlaintext {
     }
 }
 
-impl From<ChangeCipherSpec> for TLSRecord {
+impl From<ChangeCipherSpec> for TlsMessage {
     fn from(_: ChangeCipherSpec) -> Self {
-        TLSRecord::ChangeCipherSuite
+        TlsMessage::ChangeCipherSuite
     }
 }
 
@@ -412,7 +412,7 @@ pub enum TLSHandshake {
 
 
 #[derive(Debug)]
-pub enum TLSRecord {
+pub enum TlsMessage {
     Handshake(TLSHandshake),
     Alert(TLSAlert),
     ChangeCipherSuite,
