@@ -5,10 +5,27 @@ use log::{debug, info};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    ciphersuite::get_cipher_suite, connection::{ConnState, ConnStateRef, ConnStateRefMut, InitialConnState, SecureConnState, SecurityParams}, prf, record::{
-        handshake_bytes, ApplicationData, ChangeCipherSpec, ClientKeyExchange, Finished, TLSCiphertext, TLSHandshake, TLSHandshakeType, TlsMessage, ToBytes
-    }, TLSResult
+    TLSResult,
+    ciphersuite::get_cipher_suite,
+    connection::{
+        ConnState, ConnStateRef, ConnStateRefMut, InitialConnState, SecureConnState, SecurityParams,
+    },
+    prf,
+    record::{
+        ApplicationData, ChangeCipherSpec, ClientKeyExchange, Finished, TLSCiphertext,
+        TLSHandshake, TLSHandshakeType, TlsMessage, ToBytes, handshake_bytes,
+    },
 };
+
+fn client_verify_data(master_secret: &[u8], handshakes: &[u8]) -> Vec<u8> {
+    let seed = Sha256::digest(handshakes).to_vec();
+    prf::prf_sha256(&master_secret, b"client finished", &seed, 12)
+}
+
+fn server_verify_data(master_secret: &[u8], handshakes: &[u8]) -> Vec<u8> {
+    let seed = Sha256::digest(handshakes).to_vec();
+    prf::prf_sha256(&master_secret, b"server finished", &seed, 12)
+}
 
 #[derive(Debug, Clone)]
 pub struct SessionInfo {
@@ -47,7 +64,7 @@ impl TlsStateMachine {
             ),
         }
     }
-    
+
     pub fn from_context(ctx: TlsContext) -> Self {
         Self {
             ctx,
@@ -198,7 +215,7 @@ impl HandleRecord for AwaitingClientHelloState {
                         ProposedSessionResumption {
                             master_secret: session_info.master_secret,
                             cipher_suite: session_info.cipher_suite,
-                            session_id: hello.session_id.clone()
+                            session_id: hello.session_id.clone(),
                         }
                     }),
                 }
@@ -392,8 +409,7 @@ impl HandleRecord for AwaitingServerHelloDoneState {
             let keys = params.derive_keys();
             let mut write = SecureConnState::new(params, keys.client_enc_key, keys.client_mac_key);
 
-            let seed = Sha256::digest(&self.handshakes).to_vec();
-            let verify_data = prf::prf_sha256(&self.master_secret, b"client finished", &seed, 12);
+            let verify_data = client_verify_data(&self.master_secret, &self.handshakes);
             let finished = Finished::new(verify_data.clone());
             self.handshakes.extend_from_slice(&finished.to_bytes());
             let f_ciphertext = write.encrypt(finished.into());
@@ -463,8 +479,7 @@ impl HandleRecord for AwaitingServerChangeCipherState {
                     ));
                 }
                 Some(resumption) => {
-                    let ciphersuite =
-                        get_cipher_suite(resumption.cipher_suite)?;
+                    let ciphersuite = get_cipher_suite(resumption.cipher_suite)?;
                     let params = SecurityParams {
                         cipher_suite_id: resumption.cipher_suite,
                         client_random: resumption.client_random,
@@ -518,57 +533,64 @@ impl HandleRecord for AwaitingServerFinishedState {
         if let TlsMessage::Handshake(TLSHandshake::Finished(finished)) = msg {
             info!("Received ServerFinished");
 
-            if self.session_resumption.is_none() {
-                info!("Handshake complete! (full)");
-
-                ctx.sessions.insert(
-                    self.session_id.clone(),
-                    SessionInfo {
-                        master_secret: self.read.params.master_secret,
-                        cipher_suite: self.read.params.cipher_suite_id,
-                    },
-                );
-
-                return Ok((
-                    EstablishedState {
-                        session_id: self.session_id,
-                        read: self.read,
-                        write: self.write.into_secure()?,
-                        secure_renegotiation: self.secure_renegotiation,
-                        client_verify_data: self.client_verify_data,
-                    }
-                    .into(),
-                    vec![],
-                ));
-            }
-
+            let verify_data = server_verify_data(&self.read.params.master_secret, &self.handshakes);
+            assert_eq!(verify_data, finished.verify_data);
             self.handshakes.extend_from_slice(&finished.to_bytes());
-            let ccs_ciphertext = self.write.encrypt(ChangeCipherSpec::new());
 
-            let params = &self.read.params;
-            let keys = params.derive_keys();
-            let mut write =
-                SecureConnState::new(params.clone(), keys.client_enc_key, keys.client_mac_key);
+            match self.session_resumption {
+                None => {
+                    info!("Handshake complete! (full)");
 
-            let seed = Sha256::digest(&self.handshakes).to_vec();
-            let verify_data = prf::prf_sha256(&params.master_secret, b"client finished", &seed, 12);
-            let finished = Finished::new(verify_data.clone());
-            let cf_ciphertext = write.encrypt(finished.into());
+                    ctx.sessions.insert(
+                        self.session_id.clone(),
+                        SessionInfo {
+                            master_secret: self.read.params.master_secret,
+                            cipher_suite: self.read.params.cipher_suite_id,
+                        },
+                    );
 
-            info!("Sent ChangeCipherSpec");
-            info!("Sent ClientFinished");
-            info!("Handshake complete! (abbreviated)");
-            return Ok((
-                EstablishedState {
-                    session_id: self.session_id,
-                    read: self.read,
-                    write,
-                    secure_renegotiation: self.secure_renegotiation,
-                    client_verify_data: self.client_verify_data,
+                    return Ok((
+                        EstablishedState {
+                            session_id: self.session_id,
+                            read: self.read,
+                            write: self.write.into_secure()?,
+                            secure_renegotiation: self.secure_renegotiation,
+                            client_verify_data: self.client_verify_data,
+                        }
+                        .into(),
+                        vec![],
+                    ));
                 }
-                .into(),
-                vec![ccs_ciphertext, cf_ciphertext],
-            ));
+                Some(_) => {
+                    let ccs_ciphertext = self.write.encrypt(ChangeCipherSpec::new());
+
+                    let params = &self.read.params;
+                    let keys = params.derive_keys();
+                    let mut write = SecureConnState::new(
+                        params.clone(),
+                        keys.client_enc_key,
+                        keys.client_mac_key,
+                    );
+
+                    let finished = Finished::new(verify_data.clone());
+                    let cf_ciphertext = write.encrypt(finished.into());
+
+                    info!("Sent ChangeCipherSpec");
+                    info!("Sent ClientFinished");
+                    info!("Handshake complete! (abbreviated)");
+                    return Ok((
+                        EstablishedState {
+                            session_id: self.session_id,
+                            read: self.read,
+                            write,
+                            secure_renegotiation: self.secure_renegotiation,
+                            client_verify_data: self.client_verify_data,
+                        }
+                        .into(),
+                        vec![ccs_ciphertext, cf_ciphertext],
+                    ));
+                }
+            }
         }
         panic!("invalid transition");
     }

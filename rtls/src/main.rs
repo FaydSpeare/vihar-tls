@@ -240,6 +240,14 @@ impl TLSConnection {
     }
 }
 
+/*
+* TODO:
+* increment read conn state seq num
+* verify mac on read
+* use enum_dispatch for cipher suites
+*
+*/
+
 fn main() -> TLSResult<()> {
     env_logger::init();
 
@@ -249,24 +257,25 @@ fn main() -> TLSResult<()> {
         Box::new(RsaAes256CbcSha {}),
         Box::new(RsaAes256CbcSha256 {}),
     ];
-    let domain = "facebook.com";
-    // let domain = "localhost";
 
+    // let domain = "example.com";
+    let domain = "localhost";
+    
     let mut connection = TLSConnection::new(domain)?;
-    // connection.handshake(&suites, None)?;
-
     let session_id = connection.handshake(&suites, None)?;
+
     let ctx = connection.state_machine.ctx.clone();
-    //cconnection.notify_close()?;
+    connection.notify_close()?;
+
 
     let mut connection = TLSConnection::new_with_context(domain, ctx)?;
     connection.handshake(&suites, Some(session_id))?;
 
-    // Ok(())
+    Ok(())
 
-    connection.write(b"GET / HTTP/1.1\r\nHost: www.facebook.com\r\n\r\n")?;
-    loop {
-        let bytes = connection.read()?;
-        print!("{}", String::from_utf8_lossy(&bytes));
-    }
+    // connection.write(format!("GET / HTTP/1.1\r\nHost: {domain}\r\n\r\n").as_ref())?;
+    // loop {
+    //     let bytes = connection.read()?;
+    //     print!("{}", String::from_utf8_lossy(&bytes));
+    // }
 }
