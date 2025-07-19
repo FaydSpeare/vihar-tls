@@ -1,4 +1,4 @@
-use crate::{record::{TLSContentType, TLSPlaintext}, TLSResult};
+use crate::{messages::{TLSContentType, TLSPlaintext}, TLSResult};
 use num_enum::TryFromPrimitive;
 
 #[derive(Debug, TryFromPrimitive)]

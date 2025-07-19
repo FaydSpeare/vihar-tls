@@ -21,12 +21,12 @@ mod ciphersuite;
 mod connection;
 mod extensions;
 mod prf;
-mod record;
+mod messages;
 mod state_machine;
 mod utils;
 
 use ciphersuite::{CipherSuite, RsaAes128CbcSha, RsaAes128CbcSha256, RsaAes256CbcSha, RsaAes256CbcSha256};
-use record::*;
+use messages::*;
 
 #[derive(Error, Debug)]
 pub enum TLSError {
@@ -245,7 +245,20 @@ impl TLSConnection {
 * increment read conn state seq num
 * verify mac on read
 * use enum_dispatch for cipher suites
+* session ticket extension
+* DH cipher suites
+* record layer to allow fragmentation
+* 
 *
+* DESIGN:
+*
+* work out how to integrate alerts (with or without state machine?)
+*   state_machine should be able to deside when to send alerts
+*
+* should all tls messages go through state machine?
+*   if so then we can't return ciphertexts from handle
+*
+* add direction to handle method of states
 */
 
 fn main() -> TLSResult<()> {

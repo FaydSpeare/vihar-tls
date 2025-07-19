@@ -11,7 +11,7 @@ use crate::{
         ConnState, ConnStateRef, ConnStateRefMut, InitialConnState, SecureConnState, SecurityParams,
     },
     prf,
-    record::{
+    messages::{
         ApplicationData, ChangeCipherSpec, ClientKeyExchange, Finished, TLSCiphertext,
         TLSHandshake, TLSHandshakeType, TlsMessage, ToBytes, handshake_bytes,
     },

@@ -2,7 +2,7 @@ use log::debug;
 
 use crate::ciphersuite::{EncAlgorithm, MacAlgorithm};
 use crate::prf::prf_sha256;
-use crate::record::{TLSCiphertext, TLSContentType, TLSPlaintext};
+use crate::messages::{TLSCiphertext, TLSContentType, TLSPlaintext};
 use crate::{utils, TLSResult};
 
 #[derive(Debug, Clone)]
@@ -75,7 +75,6 @@ pub struct SecureConnState {
     pub mac_key: Vec<u8>,
     pub enc_key: Vec<u8>,
     pub seq_num: u64,
-    pub verify_data: Option<Vec<u8>>,
 }
 
 impl SecureConnState {
@@ -85,7 +84,6 @@ impl SecureConnState {
             enc_key,
             mac_key,
             seq_num: 0,
-            verify_data: None,
         }
     }
 
