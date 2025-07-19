@@ -5,9 +5,15 @@ use log::{debug, info};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    alert::TLSAlert, ciphersuite::{get_cipher_suite, CipherSuiteMethods}, connection::{ConnState, InitialConnState, SecureConnState, SecurityParams}, messages::{
-        handshake_bytes, ApplicationData, ChangeCipherSpec, ClientKeyExchange, Finished, TLSCiphertext, TLSHandshake, TLSHandshakeType, TlsMessage, ToBytes
-    }, prf, TLSResult
+    TLSResult,
+    alert::TLSAlert,
+    ciphersuite::{CipherSuiteMethods, get_cipher_suite},
+    connection::{ConnState, InitialConnState, SecureConnState, SecurityParams},
+    messages::{
+        ChangeCipherSpec, ClientKeyExchange, Finished, TLSHandshake, TLSHandshakeType,
+        TLSPlaintext, TlsMessage, ToBytes, handshake_bytes,
+    },
+    prf,
 };
 
 fn client_verify_data(master_secret: &[u8], handshakes: &[u8]) -> Vec<u8> {
@@ -31,7 +37,7 @@ pub struct TlsContext {
     pub sessions: HashMap<Vec<u8>, SessionInfo>,
 }
 
-pub struct TlsStateMachine {
+pub struct TlsHandshakeStateMachine {
     pub state: Option<TlsState>,
     pub ctx: TlsContext,
 }
@@ -50,15 +56,20 @@ impl ConnStates {
     }
 }
 
-pub enum TlsAction {
-    None,
-    SendAlert(TLSAlert),
-    SendCiphertexts(Vec<TLSCiphertext>),
+pub enum TlsEntity {
+    Client,
+    Server
 }
 
-impl TlsStateMachine {
-    pub fn step(&mut self, cs: &mut ConnStates, msg: &TlsMessage) -> TLSResult<TlsAction> {
-        let (new_state, action) = self.state.take().unwrap().handle(&mut self.ctx, cs, msg)?;
+pub enum TlsAction {
+    SendAlert(TLSAlert),
+    ChangeCipherSpec(TlsEntity, ConnState),
+    SendPlaintext(TLSPlaintext),
+}
+
+impl TlsHandshakeStateMachine {
+    pub fn transition(&mut self, msg: &TlsMessage) -> TLSResult<Vec<TlsAction>> {
+        let (new_state, action) = self.state.take().unwrap().handle(&mut self.ctx, msg)?;
         self.state = Some(new_state);
         Ok(action)
     }
@@ -143,9 +154,8 @@ pub trait HandleRecord {
     fn handle(
         self,
         ctx: &mut TlsContext,
-        cs: &mut ConnStates,
         msg: &TlsMessage,
-    ) -> TLSResult<(TlsState, TlsAction)>;
+    ) -> TLSResult<(TlsState, Vec<TlsAction>)>;
 }
 
 #[derive(Debug)]
@@ -155,13 +165,10 @@ impl HandleRecord for AwaitingClientHelloState {
     fn handle(
         self,
         _ctx: &mut TlsContext,
-        cs: &mut ConnStates,
         msg: &TlsMessage,
-    ) -> TLSResult<(TlsState, TlsAction)> {
+    ) -> TLSResult<(TlsState, Vec<TlsAction>)> {
         if let TlsMessage::Handshake(TLSHandshake::ClientHello(hello)) = msg {
             info!("Sent ClientHello");
-
-            let ch_ciphertext = cs.write.encrypt(hello.clone());
 
             return Ok((
                 AwaitingServerHelloState {
@@ -177,7 +184,7 @@ impl HandleRecord for AwaitingClientHelloState {
                     }),
                 }
                 .into(),
-                TlsAction::SendCiphertexts(vec![ch_ciphertext]),
+                vec![TlsAction::SendPlaintext(hello.clone().into())],
             ));
         }
         panic!("invalid transition");
@@ -211,9 +218,8 @@ impl HandleRecord for AwaitingServerHelloState {
     fn handle(
         mut self,
         _ctx: &mut TlsContext,
-        _cs: &mut ConnStates,
         msg: &TlsMessage,
-    ) -> TLSResult<(TlsState, TlsAction)> {
+    ) -> TLSResult<(TlsState, Vec<TlsAction>)> {
         if let TlsMessage::Handshake(TLSHandshake::ServerHello(hello)) = msg {
             info!("Received ServerHello");
             self.handshakes.extend_from_slice(&hello.to_bytes());
@@ -223,22 +229,28 @@ impl HandleRecord for AwaitingServerHelloState {
                 .as_ref()
                 .map_or(false, |x| x.session_id == hello.session_id)
             {
+                let resumption = self.session_resumption.unwrap();
+                let ciphersuite = get_cipher_suite(resumption.cipher_suite)?;
+                let params = SecurityParams {
+                    cipher_suite_id: resumption.cipher_suite,
+                    client_random: self.client_random,
+                    server_random: hello.random.as_bytes(),
+                    enc_algorithm: ciphersuite.params().enc_algorithm,
+                    mac_algorithm: ciphersuite.params().mac_algorithm,
+                    master_secret: resumption.master_secret,
+                };
+
                 return Ok((
                     AwaitingServerChangeCipherState {
                         session_id: hello.session_id.clone(),
                         handshakes: self.handshakes,
                         secure_renegotiation: hello.supports_secure_renegotiation(),
                         client_verify_data: vec![],
-                        session_resumption: Some(AgreedSessionResumption {
-                            master_secret: self.session_resumption.as_ref().unwrap().master_secret,
-                            cipher_suite: self.session_resumption.as_ref().unwrap().cipher_suite,
-                            session_id: self.session_resumption.unwrap().session_id,
-                            client_random: self.client_random,
-                            server_random: hello.random.as_bytes(),
-                        }),
+                        params,
+                        is_session_resumption: true,
                     }
                     .into(),
-                    TlsAction::None,
+                    vec![],
                 ));
             }
 
@@ -253,7 +265,7 @@ impl HandleRecord for AwaitingServerHelloState {
                     cipher_suite: hello.cipher_suite.encode(),
                 }
                 .into(),
-                TlsAction::None,
+                vec![],
             ));
         }
         panic!("invalid transition");
@@ -274,9 +286,8 @@ impl HandleRecord for AwaitingServerCertificateState {
     fn handle(
         mut self,
         _ctx: &mut TlsContext,
-        _cs: &mut ConnStates,
         msg: &TlsMessage,
-    ) -> TLSResult<(TlsState, TlsAction)> {
+    ) -> TLSResult<(TlsState, Vec<TlsAction>)> {
         if let TlsMessage::Handshake(TLSHandshake::Certificates(certs)) = msg {
             info!("Received ServerCertificate");
 
@@ -305,7 +316,7 @@ impl HandleRecord for AwaitingServerCertificateState {
                     cipher_suite: self.cipher_suite,
                 }
                 .into(),
-                TlsAction::None,
+                vec![],
             ));
         }
         panic!("invalid transition");
@@ -328,9 +339,8 @@ impl HandleRecord for AwaitingServerHelloDoneState {
     fn handle(
         mut self,
         _ctx: &mut TlsContext,
-        cs: &mut ConnStates,
         msg: &TlsMessage,
-    ) -> TLSResult<(TlsState, TlsAction)> {
+    ) -> TLSResult<(TlsState, Vec<TlsAction>)> {
         if let TlsMessage::Handshake(TLSHandshake::ServerHelloDone) = msg {
             info!("Received ServerHelloDone");
 
@@ -340,10 +350,8 @@ impl HandleRecord for AwaitingServerHelloDoneState {
             let client_key_exchange = ClientKeyExchange::new(&self.enc_pre_master_secret);
             self.handshakes
                 .extend_from_slice(&client_key_exchange.to_bytes());
-            let cke_ciphertext = cs.write.encrypt(client_key_exchange);
 
             let change_cipher_spec = ChangeCipherSpec::new();
-            let ccs_ciphertext = cs.write.encrypt(change_cipher_spec);
 
             let ciphersuite = get_cipher_suite(u16::from_be_bytes(self.cipher_suite))?;
             let params = SecurityParams {
@@ -355,16 +363,16 @@ impl HandleRecord for AwaitingServerHelloDoneState {
                 enc_algorithm: ciphersuite.params().enc_algorithm,
             };
             let keys = params.derive_keys();
-            cs.write = ConnState::Secure(SecureConnState::new(
-                params,
+            let write = ConnState::Secure(SecureConnState::new(
+                params.clone(),
                 keys.client_enc_key,
                 keys.client_mac_key,
             ));
 
             let verify_data = client_verify_data(&self.master_secret, &self.handshakes);
-            let finished = Finished::new(verify_data.clone());
-            self.handshakes.extend_from_slice(&finished.to_bytes());
-            let f_ciphertext = cs.write.encrypt(finished);
+            let client_finished = Finished::new(verify_data.clone());
+            self.handshakes
+                .extend_from_slice(&client_finished.to_bytes());
 
             info!("Sent ClientKeyExchange");
             info!("Sent ChangeCipherSuite");
@@ -375,10 +383,16 @@ impl HandleRecord for AwaitingServerHelloDoneState {
                     handshakes: self.handshakes,
                     secure_renegotiation: self.secure_renegotiation,
                     client_verify_data: verify_data,
-                    session_resumption: None,
+                    params,
+                    is_session_resumption: false,
                 }
                 .into(),
-                TlsAction::SendCiphertexts(vec![cke_ciphertext, ccs_ciphertext, f_ciphertext]),
+                vec![
+                    TlsAction::SendPlaintext(client_key_exchange.into()),
+                    TlsAction::SendPlaintext(change_cipher_spec.into()),
+                    TlsAction::ChangeCipherSpec(TlsEntity::Client, write),
+                    TlsAction::SendPlaintext(client_finished.into()),
+                ],
             ));
         }
         panic!("invalid transition");
@@ -390,72 +404,38 @@ pub struct AwaitingServerChangeCipherState {
     handshakes: Vec<u8>,
     secure_renegotiation: bool,
     client_verify_data: Vec<u8>,
-    session_resumption: Option<AgreedSessionResumption>,
+    params: SecurityParams,
+    is_session_resumption: bool,
 }
 
 impl HandleRecord for AwaitingServerChangeCipherState {
     fn handle(
         self,
         _ctx: &mut TlsContext,
-        cs: &mut ConnStates,
         msg: &TlsMessage,
-    ) -> TLSResult<(TlsState, TlsAction)> {
+    ) -> TLSResult<(TlsState, Vec<TlsAction>)> {
         if let TlsMessage::ChangeCipherSpec = msg {
             info!("Received ChangeCipherSpec");
 
-            match &self.session_resumption {
-                None => {
-                    let write = cs.write.as_secure()?;
-                    let keys = write.params.derive_keys();
-                    cs.read = ConnState::Secure(SecureConnState::new(
-                        write.params.clone(),
-                        keys.server_enc_key,
-                        keys.server_mac_key,
-                    ));
+            let keys = self.params.derive_keys();
+            let read = ConnState::Secure(SecureConnState::new(
+                self.params.clone(),
+                keys.server_enc_key,
+                keys.server_mac_key,
+            ));
 
-                    return Ok((
-                        AwaitingServerFinishedState {
-                            session_id: self.session_id,
-                            handshakes: self.handshakes,
-                            secure_renegotiation: self.secure_renegotiation,
-                            client_verify_data: self.client_verify_data,
-                            session_resumption: None,
-                        }
-                        .into(),
-                        TlsAction::None,
-                    ));
+            return Ok((
+                AwaitingServerFinishedState {
+                    session_id: self.session_id,
+                    handshakes: self.handshakes,
+                    secure_renegotiation: self.secure_renegotiation,
+                    client_verify_data: self.client_verify_data,
+                    params: self.params,
+                    is_session_resumption: self.is_session_resumption,
                 }
-                Some(resumption) => {
-                    let ciphersuite = get_cipher_suite(resumption.cipher_suite)?;
-                    let params = SecurityParams {
-                        cipher_suite_id: resumption.cipher_suite,
-                        client_random: resumption.client_random,
-                        server_random: resumption.server_random,
-                        enc_algorithm: ciphersuite.params().enc_algorithm,
-                        mac_algorithm: ciphersuite.params().mac_algorithm,
-                        master_secret: resumption.master_secret,
-                    };
-                    let keys = params.derive_keys();
-
-                    cs.read = ConnState::Secure(SecureConnState::new(
-                        params.clone(),
-                        keys.server_enc_key,
-                        keys.server_mac_key,
-                    ));
-
-                    return Ok((
-                        AwaitingServerFinishedState {
-                            session_id: self.session_id,
-                            handshakes: self.handshakes,
-                            secure_renegotiation: self.secure_renegotiation,
-                            client_verify_data: self.client_verify_data,
-                            session_resumption: self.session_resumption,
-                        }
-                        .into(),
-                        TlsAction::None,
-                    ));
-                }
-            }
+                .into(),
+                vec![TlsAction::ChangeCipherSpec(TlsEntity::Server, read)],
+            ));
         }
         panic!("invalid transition");
     }
@@ -467,74 +447,72 @@ pub struct AwaitingServerFinishedState {
     handshakes: Vec<u8>,
     secure_renegotiation: bool,
     client_verify_data: Vec<u8>,
-    session_resumption: Option<AgreedSessionResumption>,
+    params: SecurityParams,
+    is_session_resumption: bool,
 }
 
 impl HandleRecord for AwaitingServerFinishedState {
     fn handle(
         mut self,
         ctx: &mut TlsContext,
-        cs: &mut ConnStates,
         msg: &TlsMessage,
-    ) -> TLSResult<(TlsState, TlsAction)> {
+    ) -> TLSResult<(TlsState, Vec<TlsAction>)> {
         if let TlsMessage::Handshake(TLSHandshake::Finished(finished)) = msg {
             info!("Received ServerFinished");
-            let read = cs.read.as_secure()?;
 
-            let verify_data = server_verify_data(&read.params.master_secret, &self.handshakes);
+            let verify_data = server_verify_data(&self.params.master_secret, &self.handshakes);
             assert_eq!(verify_data, finished.verify_data);
             self.handshakes.extend_from_slice(&finished.to_bytes());
 
-            match self.session_resumption {
-                None => {
-                    info!("Handshake complete! (full)");
+            if !self.is_session_resumption {
+                info!("Handshake complete! (full)");
 
-                    ctx.sessions.insert(
-                        self.session_id.clone(),
-                        SessionInfo {
-                            master_secret: read.params.master_secret,
-                            cipher_suite: read.params.cipher_suite_id,
-                        },
-                    );
+                ctx.sessions.insert(
+                    self.session_id.clone(),
+                    SessionInfo {
+                        master_secret: self.params.master_secret,
+                        cipher_suite: self.params.cipher_suite_id,
+                    },
+                );
 
-                    return Ok((
-                        EstablishedState {
-                            session_id: self.session_id,
-                            secure_renegotiation: self.secure_renegotiation,
-                            client_verify_data: self.client_verify_data,
-                        }
-                        .into(),
-                        TlsAction::None,
-                    ));
-                }
-                Some(_) => {
-                    let ccs_ciphertext = cs.write.encrypt(ChangeCipherSpec::new());
+                return Ok((
+                    EstablishedState {
+                        session_id: self.session_id,
+                        secure_renegotiation: self.secure_renegotiation,
+                        client_verify_data: self.client_verify_data,
+                    }
+                    .into(),
+                    vec![],
+                ));
+            } else {
+                let change_cipher_spec = ChangeCipherSpec::new();
 
-                    let params = &cs.read.as_secure()?.params;
-                    let keys = params.derive_keys();
-                    cs.write = ConnState::Secure(SecureConnState::new(
-                        params.clone(),
-                        keys.client_enc_key,
-                        keys.client_mac_key,
-                    ));
+                let keys = self.params.derive_keys();
+                let write = ConnState::Secure(SecureConnState::new(
+                    self.params.clone(),
+                    keys.client_enc_key,
+                    keys.client_mac_key,
+                ));
 
-                    let verify_data = client_verify_data(&read.params.master_secret, &self.handshakes);
-                    let finished = Finished::new(verify_data);
-                    let cf_ciphertext = cs.write.encrypt(finished);
+                let verify_data = client_verify_data(&self.params.master_secret, &self.handshakes);
+                let client_finished = Finished::new(verify_data);
 
-                    info!("Sent ChangeCipherSpec");
-                    info!("Sent ClientFinished");
-                    info!("Handshake complete! (abbreviated)");
-                    return Ok((
-                        EstablishedState {
-                            session_id: self.session_id,
-                            secure_renegotiation: self.secure_renegotiation,
-                            client_verify_data: self.client_verify_data,
-                        }
-                        .into(),
-                        TlsAction::SendCiphertexts(vec![ccs_ciphertext, cf_ciphertext]),
-                    ));
-                }
+                info!("Sent ChangeCipherSpec");
+                info!("Sent ClientFinished");
+                info!("Handshake complete! (abbreviated)");
+                return Ok((
+                    EstablishedState {
+                        session_id: self.session_id,
+                        secure_renegotiation: self.secure_renegotiation,
+                        client_verify_data: self.client_verify_data,
+                    }
+                    .into(),
+                    vec![
+                        TlsAction::SendPlaintext(change_cipher_spec.into()),
+                        TlsAction::ChangeCipherSpec(TlsEntity::Client, write),
+                        TlsAction::SendPlaintext(client_finished.into()),
+                    ],
+                ));
             }
         }
         panic!("invalid transition");
@@ -552,17 +530,9 @@ impl HandleRecord for EstablishedState {
     fn handle(
         self,
         _ctx: &mut TlsContext,
-        cs: &mut ConnStates,
         msg: &TlsMessage,
-    ) -> TLSResult<(TlsState, TlsAction)> {
-        // if let TlsMessage::ApplicationData(bytes) = msg {
-        //     let app_data = ApplicationData::new(bytes.clone());
-        //     let ciphertext = cs.write.encrypt(app_data);
-        //     return Ok((self.into(), TlsAction::SendCiphertexts(vec![ciphertext])));
-        // }
-
+    ) -> TLSResult<(TlsState, Vec<TlsAction>)> {
         if let TlsMessage::Handshake(TLSHandshake::ClientHello(hello)) = msg {
-            let ch_ciphertext = cs.write.encrypt(hello.clone());
             return Ok((
                 AwaitingServerHelloState {
                     handshakes: hello.to_bytes(),
@@ -570,7 +540,7 @@ impl HandleRecord for EstablishedState {
                     session_resumption: None,
                 }
                 .into(),
-                TlsAction::SendCiphertexts(vec![ch_ciphertext])
+                vec![TlsAction::SendPlaintext(hello.clone().into())],
             ));
         }
         panic!("invalid transition");

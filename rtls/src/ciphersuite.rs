@@ -166,10 +166,10 @@ pub struct CipherSuiteParams {
 #[enum_dispatch]
 #[derive(Debug)]
 pub enum CipherSuite {
-    RsaAes128CbcSha(RsaAes128CbcShaX),
-    RsaAes128CbcSha256(RsaAes128CbcSha256X),
-    RsaAes256CbcSha(RsaAes256CbcShaX),
-    RsaAes256CbcSha256(RsaAes256CbcSha256X),
+    RsaAes128CbcSha(RsaAes128CbcSha),
+    RsaAes128CbcSha256(RsaAes128CbcSha256),
+    RsaAes256CbcSha(RsaAes256CbcSha),
+    RsaAes256CbcSha256(RsaAes256CbcSha256),
 }
 
 #[enum_dispatch(CipherSuite)]
@@ -179,9 +179,9 @@ pub trait CipherSuiteMethods: Debug {
 }
 
 #[derive(Debug)]
-pub struct RsaAes128CbcShaX;
+pub struct RsaAes128CbcSha;
 
-impl CipherSuiteMethods for RsaAes128CbcShaX {
+impl CipherSuiteMethods for RsaAes128CbcSha {
     fn encode(&self) -> [u8; 2] {
         return [0x00, 0x2f];
     }
@@ -197,9 +197,9 @@ impl CipherSuiteMethods for RsaAes128CbcShaX {
 }
 
 #[derive(Debug)]
-pub struct RsaAes256CbcShaX;
+pub struct RsaAes256CbcSha;
 
-impl CipherSuiteMethods for RsaAes256CbcShaX {
+impl CipherSuiteMethods for RsaAes256CbcSha {
     fn encode(&self) -> [u8; 2] {
         return [0x00, 0x35];
     }
@@ -214,9 +214,9 @@ impl CipherSuiteMethods for RsaAes256CbcShaX {
 }
 
 #[derive(Debug)]
-pub struct RsaAes128CbcSha256X;
+pub struct RsaAes128CbcSha256;
 
-impl CipherSuiteMethods for RsaAes128CbcSha256X {
+impl CipherSuiteMethods for RsaAes128CbcSha256 {
     fn encode(&self) -> [u8; 2] {
         return [0x00, 0x3c];
     }
@@ -231,9 +231,9 @@ impl CipherSuiteMethods for RsaAes128CbcSha256X {
 }
 
 #[derive(Debug)]
-pub struct RsaAes256CbcSha256X;
+pub struct RsaAes256CbcSha256;
 
-impl CipherSuiteMethods for RsaAes256CbcSha256X {
+impl CipherSuiteMethods for RsaAes256CbcSha256 {
     fn encode(&self) -> [u8; 2] {
         return [0x00, 0x3d];
     }
@@ -267,10 +267,10 @@ impl CipherSuiteMethods for RsaNullSha {
 
 pub fn get_cipher_suite(value: u16) -> TLSResult<CipherSuite> {
     match value {
-        0x002f => Ok(RsaAes128CbcShaX.into()),
-        0x0035 => Ok(RsaAes256CbcShaX.into()),
-        0x003c => Ok(RsaAes128CbcSha256X.into()),
-        0x003d => Ok(RsaAes256CbcSha256X.into()),
+        0x002f => Ok(RsaAes128CbcSha.into()),
+        0x0035 => Ok(RsaAes256CbcSha.into()),
+        0x003c => Ok(RsaAes128CbcSha256.into()),
+        0x003d => Ok(RsaAes256CbcSha256.into()),
         _ => Err("unsupported cipher suite".into())
     }
 }

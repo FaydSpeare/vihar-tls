@@ -3,7 +3,7 @@ use connection::ConnState;
 use env_logger;
 use extensions::SecureRenegotationExt;
 use log::{error, trace};
-use state_machine::{ConnStates, TlsAction, TlsContext, TlsState, TlsStateMachine};
+use state_machine::{ConnStates, TlsAction, TlsContext, TlsEntity, TlsHandshakeStateMachine, TlsState};
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::Instant;
@@ -27,7 +27,7 @@ mod state_machine;
 mod utils;
 
 use ciphersuite::{
-    CipherSuite, RsaAes128CbcSha256X, RsaAes128CbcShaX, RsaAes256CbcSha256X, RsaAes256CbcShaX,
+    CipherSuite, RsaAes128CbcSha256, RsaAes128CbcSha, RsaAes256CbcSha256, RsaAes256CbcSha,
 };
 use messages::*;
 
@@ -70,7 +70,7 @@ fn encrypt_pre_master_secret(cert_der: &[u8]) -> TLSResult<(Vec<u8>, Vec<u8>)> {
 struct TLSConnection {
     stream: TcpStream,
     buffer: Vec<u8>,
-    pub state_machine: TlsStateMachine,
+    pub handshake_state_machine: TlsHandshakeStateMachine,
     conn_states: ConnStates,
 }
 
@@ -80,7 +80,7 @@ impl TLSConnection {
         Ok(Self {
             stream: TcpStream::connect(format!("{domain}:{port}"))?,
             buffer: Vec::new(),
-            state_machine: TlsStateMachine::new(),
+            handshake_state_machine: TlsHandshakeStateMachine::new(),
             conn_states: ConnStates::new(),
         })
     }
@@ -90,7 +90,7 @@ impl TLSConnection {
         Ok(Self {
             stream: TcpStream::connect(format!("{domain}:{port}"))?,
             buffer: Vec::new(),
-            state_machine: TlsStateMachine::from_context(ctx),
+            handshake_state_machine: TlsHandshakeStateMachine::from_context(ctx),
             conn_states: ConnStates::new(),
         })
     }
@@ -208,13 +208,20 @@ impl TLSConnection {
     }
 
     fn process_message(&mut self, msg: &TlsMessage) -> TLSResult<()> {
-        match self.state_machine.step(&mut self.conn_states, msg)? {
-            TlsAction::SendCiphertexts(ciphertexts) => {
-                for ciphertext in ciphertexts {
+        for action in self.handshake_state_machine.transition(msg)? {
+            match action {
+                TlsAction::ChangeCipherSpec(TlsEntity::Client, write) => {
+                    self.conn_states.write = write
+                }
+                TlsAction::ChangeCipherSpec(TlsEntity::Server, read) => {
+                    self.conn_states.read = read
+                }
+                TlsAction::SendPlaintext(plaintext) => {
+                    let ciphertext = self.conn_states.write.encrypt(plaintext);
                     self.send_bytes(&ciphertext.into_bytes())?;
                 }
+                _ => {}
             }
-            _ => {}
         }
         Ok(())
     }
@@ -224,7 +231,7 @@ impl TLSConnection {
         cipher_suites: &[CipherSuite],
         session_id: Option<Vec<u8>>,
     ) -> TLSResult<Vec<u8>> {
-        let extensions = match self.state_machine.state.as_ref().unwrap() {
+        let extensions = match self.handshake_state_machine.state.as_ref().unwrap() {
             TlsState::Established(s) => {
                 vec![SecureRenegotationExt::renegotiation(&s.client_verify_data).into()]
             }
@@ -235,7 +242,7 @@ impl TLSConnection {
         let start_time = Instant::now();
         self.process_message(&client_hello.into())?;
 
-        while !self.state_machine.is_established() {
+        while !self.handshake_state_machine.is_established() {
             if let TlsMessage::Alert(a) = self.next_message()? {
                 println!("{:?}", a);
                 return Err("Received alert during handshake".into());
@@ -246,7 +253,7 @@ impl TLSConnection {
         println!("elapsed: {} seconds", elapsed.as_secs_f64());
 
         let state = self
-            .state_machine
+            .handshake_state_machine
             .state
             .as_ref()
             .unwrap()
@@ -293,15 +300,15 @@ impl TLSConnection {
 fn main() -> TLSResult<()> {
     env_logger::init();
 
-    let suites: Vec<CipherSuite> = vec![RsaAes128CbcShaX {}.into()];
+    let suites: Vec<CipherSuite> = vec![RsaAes128CbcSha {}.into()];
 
-    let domain = "google.com";
-    //let domain = "localhost";
+    let domain = "facebook.com";
+    // let domain = "localhost";
 
     let mut connection = TLSConnection::new(domain)?;
     let session_id = connection.handshake(&suites, None)?;
 
-    let ctx = connection.state_machine.ctx.clone();
+    let ctx = connection.handshake_state_machine.ctx.clone();
     connection.notify_close()?;
 
     let mut connection = TLSConnection::new_with_context(domain, ctx)?;
