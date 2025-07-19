@@ -60,12 +60,15 @@ pub struct InitialConnState {
 
 impl InitialConnState {
     pub fn encrypt(&mut self, plaintext: TLSPlaintext) -> TLSCiphertext {
+        let ciphertext = TLSCiphertext::new(plaintext.content_type, plaintext.fragment);
         self.seq_num += 1;
-        TLSCiphertext::new(plaintext.content_type, plaintext.fragment)
+        ciphertext
     }
 
-    pub fn decrypt(&self, ciphertext: &[u8]) -> Vec<u8> {
-        ciphertext.to_vec()
+    pub fn decrypt(&mut self, ciphertext: &[u8]) -> Vec<u8> {
+        let plaintext = ciphertext.to_vec();
+        self.seq_num += 1;
+        plaintext
     }
 }
 
@@ -87,11 +90,13 @@ impl SecureConnState {
         }
     }
 
-    pub fn decrypt(&self, ciphertext: &[u8]) -> Vec<u8> {
+    pub fn decrypt(&mut self, ciphertext: &[u8]) -> Vec<u8> {
         let (iv, ciphertext) = ciphertext.split_at(self.params.enc_algorithm.iv_length());
-        self.params
+        let plaintext = self.params
             .enc_algorithm
-            .decrypt(ciphertext, &self.enc_key, iv)
+            .decrypt(ciphertext, &self.enc_key, iv);
+        self.seq_num += 1;
+        plaintext
     }
 
     pub fn encrypt(&mut self, plaintext: TLSPlaintext) -> TLSCiphertext {
@@ -150,13 +155,6 @@ impl ConnStateRef<'_> {
             Self::Secure(state) => Some(&state.params),
         }
     }
-
-    pub fn decrypt(&self, ciphertext: &[u8]) -> Vec<u8> {
-        match self {
-            Self::Initial(state) => state.decrypt(ciphertext),
-            Self::Secure(state) => state.decrypt(ciphertext),
-        }
-    }
 }
 
 pub enum ConnStateRefMut<'a> {
@@ -188,6 +186,13 @@ impl ConnState {
         Err("Connection state is not secure".into())
     }
 
+    pub fn as_secure(&self) -> TLSResult<&SecureConnState> {
+        if let ConnState::Secure(state) = self {
+            return Ok(state);
+        }
+        Err("Connection state is not secure".into())
+    }
+
     pub fn as_ref(&self) -> ConnStateRef<'_> {
         match self {
             Self::Initial(state) => ConnStateRef::Initial(state),
@@ -206,6 +211,13 @@ impl ConnState {
         match self {
             Self::Initial(state) => state.encrypt(plaintext.into()),
             Self::Secure(state) => state.encrypt(plaintext.into()),
+        }
+    }
+
+    pub fn decrypt(&mut self, ciphertext: &[u8]) -> Vec<u8> {
+        match self {
+            Self::Initial(state) => state.decrypt(ciphertext),
+            Self::Secure(state) => state.decrypt(ciphertext),
         }
     }
 }

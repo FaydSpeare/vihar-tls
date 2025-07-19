@@ -1,5 +1,5 @@
 use crate::alert::TLSAlert;
-use crate::ciphersuite::{get_cipher_suite, CipherSuite};
+use crate::ciphersuite::{get_cipher_suite, CipherSuite, CipherSuiteMethods};
 use crate::extensions::{
     decode_extensions, EncodeExtension, Extension, HashAlgo, SigAlgo, SignatureAlgorithmsExt
 };
@@ -42,7 +42,7 @@ pub struct ClientHello {
 }
 
 impl ClientHello {
-    pub fn new(suites: &[Box<dyn CipherSuite>], mut extensions: Vec<Extension>, session_id: Option<Vec<u8>>) -> Self {
+    pub fn new(suites: &[CipherSuite], mut extensions: Vec<Extension>, session_id: Option<Vec<u8>>) -> Self {
         let cipher_suites = suites.iter().map(|x| x.encode()).collect();
         extensions.push(
             SignatureAlgorithmsExt::new_from_product(
@@ -116,7 +116,7 @@ pub struct ServerHello {
     pub server_version: ProtocolVersion,
     pub random: Random,
     pub session_id: Vec<u8>,
-    pub cipher_suite: Box<dyn CipherSuite>,
+    pub cipher_suite: CipherSuite,
     pub compression_method: u8,
     pub extensions: Vec<Extension>
 }
@@ -362,7 +362,7 @@ impl From<ChangeCipherSpec> for TLSPlaintext {
 
 impl From<ChangeCipherSpec> for TlsMessage {
     fn from(_: ChangeCipherSpec) -> Self {
-        TlsMessage::ChangeCipherSuite
+        TlsMessage::ChangeCipherSpec
     }
 }
 
@@ -417,7 +417,7 @@ pub enum TLSHandshake {
 pub enum TlsMessage {
     Handshake(TLSHandshake),
     Alert(TLSAlert),
-    ChangeCipherSuite,
+    ChangeCipherSpec,
     ApplicationData(Vec<u8>),
 }
 

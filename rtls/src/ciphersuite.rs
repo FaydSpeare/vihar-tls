@@ -1,7 +1,7 @@
 use std::fmt::Debug;
 
 use aes::{cipher::{generic_array::GenericArray, BlockDecrypt, BlockEncrypt, KeyInit}, Aes128, Aes256};
-use num_enum::TryFromPrimitive;
+use enum_dispatch::enum_dispatch;
 use crate::{prf::hmac, TLSResult};
 
 use crate::utils;
@@ -163,15 +163,25 @@ pub struct CipherSuiteParams {
     pub key_exchange_algorithm: KeyExchangeAlgorithm,
 }
 
-pub trait CipherSuite: Debug {
+#[enum_dispatch]
+#[derive(Debug)]
+pub enum CipherSuite {
+    RsaAes128CbcSha(RsaAes128CbcShaX),
+    RsaAes128CbcSha256(RsaAes128CbcSha256X),
+    RsaAes256CbcSha(RsaAes256CbcShaX),
+    RsaAes256CbcSha256(RsaAes256CbcSha256X),
+}
+
+#[enum_dispatch(CipherSuite)]
+pub trait CipherSuiteMethods: Debug {
     fn encode(&self) -> [u8; 2];
     fn params(&self) -> CipherSuiteParams;
 }
 
 #[derive(Debug)]
-pub struct RsaAes128CbcSha;
+pub struct RsaAes128CbcShaX;
 
-impl CipherSuite for RsaAes128CbcSha {
+impl CipherSuiteMethods for RsaAes128CbcShaX {
     fn encode(&self) -> [u8; 2] {
         return [0x00, 0x2f];
     }
@@ -187,9 +197,9 @@ impl CipherSuite for RsaAes128CbcSha {
 }
 
 #[derive(Debug)]
-pub struct RsaAes256CbcSha;
+pub struct RsaAes256CbcShaX;
 
-impl CipherSuite for RsaAes256CbcSha {
+impl CipherSuiteMethods for RsaAes256CbcShaX {
     fn encode(&self) -> [u8; 2] {
         return [0x00, 0x35];
     }
@@ -204,9 +214,9 @@ impl CipherSuite for RsaAes256CbcSha {
 }
 
 #[derive(Debug)]
-pub struct RsaAes128CbcSha256;
+pub struct RsaAes128CbcSha256X;
 
-impl CipherSuite for RsaAes128CbcSha256 {
+impl CipherSuiteMethods for RsaAes128CbcSha256X {
     fn encode(&self) -> [u8; 2] {
         return [0x00, 0x3c];
     }
@@ -221,9 +231,9 @@ impl CipherSuite for RsaAes128CbcSha256 {
 }
 
 #[derive(Debug)]
-pub struct RsaAes256CbcSha256;
+pub struct RsaAes256CbcSha256X;
 
-impl CipherSuite for RsaAes256CbcSha256 {
+impl CipherSuiteMethods for RsaAes256CbcSha256X {
     fn encode(&self) -> [u8; 2] {
         return [0x00, 0x3d];
     }
@@ -240,7 +250,7 @@ impl CipherSuite for RsaAes256CbcSha256 {
 #[derive(Debug)]
 pub struct RsaNullSha;
 
-impl CipherSuite for RsaNullSha {
+impl CipherSuiteMethods for RsaNullSha {
     fn encode(&self) -> [u8; 2] {
         return [0x00, 0x02];
     }
@@ -255,13 +265,12 @@ impl CipherSuite for RsaNullSha {
 }
 
 
-pub fn get_cipher_suite(value: u16) -> TLSResult<Box<dyn CipherSuite>> {
+pub fn get_cipher_suite(value: u16) -> TLSResult<CipherSuite> {
     match value {
-        0x0002 => Ok(Box::new(RsaNullSha)),
-        0x002f => Ok(Box::new(RsaAes128CbcSha)),
-        0x0035 => Ok(Box::new(RsaAes256CbcSha)),
-        0x003c => Ok(Box::new(RsaAes128CbcSha256)),
-        0x003d => Ok(Box::new(RsaAes256CbcSha256)),
+        0x002f => Ok(RsaAes128CbcShaX.into()),
+        0x0035 => Ok(RsaAes256CbcShaX.into()),
+        0x003c => Ok(RsaAes128CbcSha256X.into()),
+        0x003d => Ok(RsaAes256CbcSha256X.into()),
         _ => Err("unsupported cipher suite".into())
     }
 }

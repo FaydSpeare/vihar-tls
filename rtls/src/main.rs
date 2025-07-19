@@ -1,8 +1,9 @@
 use alert::{TLSAlert, TLSAlertDesc, TLSAlertLevel};
+use connection::ConnState;
 use env_logger;
 use extensions::SecureRenegotationExt;
 use log::{error, trace};
-use state_machine::{TlsContext, TlsState, TlsStateMachine};
+use state_machine::{ConnStates, TlsAction, TlsContext, TlsState, TlsStateMachine};
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::Instant;
@@ -20,12 +21,14 @@ mod alert;
 mod ciphersuite;
 mod connection;
 mod extensions;
-mod prf;
 mod messages;
+mod prf;
 mod state_machine;
 mod utils;
 
-use ciphersuite::{CipherSuite, RsaAes128CbcSha, RsaAes128CbcSha256, RsaAes256CbcSha, RsaAes256CbcSha256};
+use ciphersuite::{
+    CipherSuite, RsaAes128CbcSha256X, RsaAes128CbcShaX, RsaAes256CbcSha256X, RsaAes256CbcShaX,
+};
 use messages::*;
 
 #[derive(Error, Debug)]
@@ -68,6 +71,7 @@ struct TLSConnection {
     stream: TcpStream,
     buffer: Vec<u8>,
     pub state_machine: TlsStateMachine,
+    conn_states: ConnStates,
 }
 
 impl TLSConnection {
@@ -77,6 +81,7 @@ impl TLSConnection {
             stream: TcpStream::connect(format!("{domain}:{port}"))?,
             buffer: Vec::new(),
             state_machine: TlsStateMachine::new(),
+            conn_states: ConnStates::new(),
         })
     }
 
@@ -86,13 +91,13 @@ impl TLSConnection {
             stream: TcpStream::connect(format!("{domain}:{port}"))?,
             buffer: Vec::new(),
             state_machine: TlsStateMachine::from_context(ctx),
+            conn_states: ConnStates::new(),
         })
-
     }
 
     pub fn notify_close(&mut self) -> TLSResult<()> {
         let alert = TLSAlert::new(TLSAlertLevel::Warning, TLSAlertDesc::CloseNotify);
-        let ciphertext = self.state_machine.write_state_mut().encrypt(alert);
+        let ciphertext = self.conn_states.write.encrypt(alert);
         self.send_bytes(&ciphertext.into_bytes())?;
         Ok(())
     }
@@ -117,22 +122,41 @@ impl TLSConnection {
             return Err(TLSError::NeedsMoreData((5 + length - buf.len()) as u16).into());
         }
 
-        let state = self.state_machine.read_state();
+        let state = &mut self.conn_states.read;
         let plaintext = state.decrypt(&buf[5..5 + length]);
-        let fragment = match state.params() {
-            None => plaintext.clone(),
-            Some(params) => {
+
+        let fragment = match state {
+            ConnState::Initial(_) => plaintext.clone(),
+            ConnState::Secure(secure_state) => {
                 let len = plaintext.len();
                 let padding = plaintext[len - 1] as usize;
-                let mac_len = params.mac_algorithm.mac_length();
-                plaintext[..len - padding - 1 - mac_len].to_vec()
+                let mac_len = secure_state.params.mac_algorithm.mac_length();
+                let fragment = plaintext[..len - padding - 1 - mac_len].to_vec();
+                let mac = plaintext[len - padding - 1 - mac_len..len - padding - 1].to_vec();
+
+                let mut bytes = Vec::<u8>::new();
+                bytes.extend_from_slice(&(secure_state.seq_num - 1).to_be_bytes());
+                bytes.push(buf[0]);
+                bytes.extend([3, 3]);
+                bytes.extend((fragment.len() as u16).to_be_bytes());
+                bytes.extend_from_slice(&fragment);
+
+                assert_eq!(
+                    secure_state
+                        .params
+                        .mac_algorithm
+                        .mac(&secure_state.mac_key, &bytes),
+                    mac,
+                    "bad_record_mac"
+                );
+                fragment
             }
         };
 
         let message = TLSContentType::try_from(buf[0])
             .map_err(|e| e.into())
             .and_then(|content_type| match content_type {
-                TLSContentType::ChangeCipherSpec => Ok(TlsMessage::ChangeCipherSuite),
+                TLSContentType::ChangeCipherSpec => Ok(TlsMessage::ChangeCipherSpec),
                 TLSContentType::Alert => alert::parse_alert(&fragment).map(TlsMessage::Alert),
                 TLSContentType::Handshake => parse_handshake(&fragment).map(TlsMessage::Handshake),
                 TLSContentType::ApplicationData => {
@@ -184,13 +208,22 @@ impl TLSConnection {
     }
 
     fn process_message(&mut self, msg: &TlsMessage) -> TLSResult<()> {
-        for ciphertext in self.state_machine.step(msg)? {
-            self.send_bytes(&ciphertext.into_bytes())?;
+        match self.state_machine.step(&mut self.conn_states, msg)? {
+            TlsAction::SendCiphertexts(ciphertexts) => {
+                for ciphertext in ciphertexts {
+                    self.send_bytes(&ciphertext.into_bytes())?;
+                }
+            }
+            _ => {}
         }
         Ok(())
     }
 
-    pub fn handshake(&mut self, cipher_suites: &[Box<dyn CipherSuite>], session_id: Option<Vec<u8>>) -> TLSResult<Vec<u8>> {
+    pub fn handshake(
+        &mut self,
+        cipher_suites: &[CipherSuite],
+        session_id: Option<Vec<u8>>,
+    ) -> TLSResult<Vec<u8>> {
         let extensions = match self.state_machine.state.as_ref().unwrap() {
             TlsState::Established(s) => {
                 vec![SecureRenegotationExt::renegotiation(&s.client_verify_data).into()]
@@ -212,13 +245,20 @@ impl TLSConnection {
         let elapsed = Instant::now() - start_time;
         println!("elapsed: {} seconds", elapsed.as_secs_f64());
 
-        let state = self.state_machine.state.as_ref().unwrap().as_established()?;
+        let state = self
+            .state_machine
+            .state
+            .as_ref()
+            .unwrap()
+            .as_established()?;
         return Ok(state.session_id.clone());
     }
 
     #[allow(dead_code)]
     pub fn write(&mut self, bytes: &[u8]) -> TLSResult<()> {
-        self.process_message(&TlsMessage::ApplicationData(bytes.to_vec()))?;
+        let ciphertext = self.conn_states.write.encrypt(ApplicationData::new(bytes.to_vec()));
+        self.send_bytes(&ciphertext.into_bytes())?;
+        //self.process_message(&TlsMessage::ApplicationData(bytes.to_vec()))?;
         println!("Sent AppData: {:?}", String::from_utf8_lossy(bytes));
         Ok(())
     }
@@ -242,44 +282,27 @@ impl TLSConnection {
 
 /*
 * TODO:
-* increment read conn state seq num
-* verify mac on read
-* use enum_dispatch for cipher suites
 * session ticket extension
 * DH cipher suites
 * record layer to allow fragmentation
-* 
 *
 * DESIGN:
-*
-* work out how to integrate alerts (with or without state machine?)
-*   state_machine should be able to deside when to send alerts
-*
-* should all tls messages go through state machine?
-*   if so then we can't return ciphertexts from handle
-*
 * add direction to handle method of states
 */
 
 fn main() -> TLSResult<()> {
     env_logger::init();
 
-    let suites: Vec<Box<dyn CipherSuite>> = vec![
-        Box::new(RsaAes128CbcSha {}),
-        Box::new(RsaAes128CbcSha256 {}),
-        Box::new(RsaAes256CbcSha {}),
-        Box::new(RsaAes256CbcSha256 {}),
-    ];
+    let suites: Vec<CipherSuite> = vec![RsaAes128CbcShaX {}.into()];
 
-    // let domain = "example.com";
-    let domain = "localhost";
-    
+    let domain = "google.com";
+    //let domain = "localhost";
+
     let mut connection = TLSConnection::new(domain)?;
     let session_id = connection.handshake(&suites, None)?;
 
     let ctx = connection.state_machine.ctx.clone();
     connection.notify_close()?;
-
 
     let mut connection = TLSConnection::new_with_context(domain, ctx)?;
     connection.handshake(&suites, Some(session_id))?;
