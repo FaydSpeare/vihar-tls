@@ -54,6 +54,9 @@ impl From<TLSAlert> for TLSPlaintext {
 }
 
 pub fn try_parse_alert(buf: &[u8]) -> TLSResult<TLSAlert> {
+    if buf.len() < 2 {
+        return Err("need data".into());
+    }
     let alert = TLSAlert {
         level: TLSAlertLevel::try_from(buf[0])?,
         description: TLSAlertDesc::try_from(buf[1])?,

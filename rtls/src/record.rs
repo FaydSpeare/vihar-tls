@@ -8,25 +8,18 @@ use crate::{
     },
 };
 
-struct TlsRecord {
-    content_type: TLSContentType,
-    protocol_version: ProtocolVersion,
-    fragment: Vec<u8>,
-}
-
 pub struct RecordLayer {
     buffer: Vec<u8>,
     alert_buffer: Vec<u8>,
     handshake_buffer: Vec<u8>,
 }
 
-
 impl RecordLayer {
     pub fn new() -> Self {
         Self {
             buffer: vec![],
             alert_buffer: vec![],
-            handshake_buffer: vec![]
+            handshake_buffer: vec![],
         }
     }
 
@@ -53,8 +46,7 @@ impl RecordLayer {
         }
 
         self.buffer.drain(..5);
-        let fragment = self.buffer[..fragment_len].to_vec();
-        self.buffer.drain(..fragment_len);
+        let fragment = self.buffer.drain(..fragment_len).collect();
 
         Ok(TLSCiphertext {
             content_type,
@@ -102,27 +94,34 @@ impl RecordLayer {
     }
 
     pub fn try_parse_message(&mut self, conn_state: &mut ConnState) -> TLSResult<TlsMessage> {
-        let plaintext = self
-            .try_parse_ciphertext()
-            .and_then(|ciphertext| RecordLayer::decrypt_ciphertext(conn_state, ciphertext))?;
+        loop {
+            let plaintext = self
+                .try_parse_ciphertext()
+                .and_then(|ciphertext| RecordLayer::decrypt_ciphertext(conn_state, ciphertext))?;
 
-        match plaintext.content_type {
-            TLSContentType::ChangeCipherSpec => {
-                assert_eq!(plaintext.fragment, &[1]);
-                Ok(TlsMessage::ChangeCipherSpec)
-            }
-            TLSContentType::ApplicationData => Ok(TlsMessage::ApplicationData(plaintext.fragment)),
-            TLSContentType::Alert => {
-                self.alert_buffer.extend(plaintext.fragment);
-                let alert = try_parse_alert(&self.alert_buffer)?;
-                self.alert_buffer.drain(..2);
-                Ok(TlsMessage::Alert(alert))
-            }
-            TLSContentType::Handshake => {
-                self.handshake_buffer.extend(plaintext.fragment);
-                let (handshake, len) = try_parse_handshake(&self.handshake_buffer)?;
-                self.handshake_buffer.drain(..len);
-                Ok(TlsMessage::Handshake(handshake))
+            match plaintext.content_type {
+                TLSContentType::ChangeCipherSpec => {
+                    assert_eq!(plaintext.fragment, &[1]);
+                    return Ok(TlsMessage::ChangeCipherSpec);
+                }
+                TLSContentType::ApplicationData => {
+                    return Ok(TlsMessage::ApplicationData(plaintext.fragment));
+                }
+                TLSContentType::Alert => {
+                    self.alert_buffer.extend(plaintext.fragment);
+                    println!("extended alert buffer");
+                    if let Ok(alert) = try_parse_alert(&self.alert_buffer) {
+                        self.alert_buffer.drain(..2);
+                        return Ok(TlsMessage::Alert(alert));
+                    }
+                }
+                TLSContentType::Handshake => {
+                    self.handshake_buffer.extend(plaintext.fragment);
+                    if let Ok((handshake, len)) = try_parse_handshake(&self.handshake_buffer) {
+                        self.handshake_buffer.drain(..len);
+                        return Ok(TlsMessage::Handshake(handshake));
+                    }
+                }
             }
         }
     }
