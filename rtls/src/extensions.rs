@@ -3,7 +3,7 @@ use std::fmt::Debug;
 use enum_dispatch::enum_dispatch;
 use num_enum::TryFromPrimitive;
 
-use crate::{messages::{ToBytes, NewSessionTicket}, TLSResult};
+use crate::TLSResult;
 
 #[enum_dispatch]
 #[derive(Debug, Clone)]
@@ -11,6 +11,7 @@ pub enum Extension {
     SecureRenegotiation(SecureRenegotationExt),
     SignatureAlgorithms(SignatureAlgorithmsExt),
     SessionTicket(SessionTicketExt),
+    ExtendedMasterSecret(ExtendedMasterSecretExt),
 }
 
 #[enum_dispatch(Extension)]
@@ -27,6 +28,7 @@ pub fn decode_extensions(bytes: &[u8]) -> TLSResult<Vec<Extension>> {
         0x000d => SignatureAlgorithmsExt::try_decode(bytes)?,
         0xff01 => SecureRenegotationExt::decode(bytes),
         0x0023 => SessionTicketExt::decode(bytes),
+        0x0017 => ExtendedMasterSecretExt::decode(bytes),
         _ => return Err(format!("unimplemented extension type: {id:#x}").into()),
     };
     let mut extensions: Vec<Extension> = vec![ext];
@@ -111,6 +113,28 @@ impl EncodeExtension for SessionTicketExt {
         bytes.extend_from_slice(&(ticket_bytes.len() as u16).to_be_bytes());
         bytes.extend_from_slice(&ticket_bytes);
         bytes
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ExtendedMasterSecretExt {}
+
+impl ExtendedMasterSecretExt {
+
+    pub fn new() -> Self {
+        Self {}
+    }
+
+    fn decode(bytes: &[u8]) -> (Extension, usize) {
+        let extension_len = u16::from_be_bytes([bytes[2], bytes[3]]) as usize;
+        assert_eq!(extension_len, 0);
+        (Self {}.into(), 4 + extension_len)
+    }
+}
+
+impl EncodeExtension for ExtendedMasterSecretExt {
+    fn encode(&self) -> Vec<u8> {
+        vec![0x00, 0x17, 0x00, 0x00]
     }
 }
 

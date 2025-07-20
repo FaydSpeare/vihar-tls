@@ -1,7 +1,7 @@
 use alert::{TLSAlert, TLSAlertDesc, TLSAlertLevel};
 use connection::ConnState;
 use env_logger;
-use extensions::{SecureRenegotationExt, SessionTicketExt};
+use extensions::{ExtendedMasterSecretExt, SecureRenegotationExt, SessionTicketExt};
 use log::{error, trace};
 use state_machine::{ConnStates, TlsAction, TlsContext, TlsEntity, TlsHandshakeStateMachine, TlsState};
 use std::io::{Read, Write};
@@ -244,6 +244,8 @@ impl TLSConnection {
             Some(ticket) => extensions.push(SessionTicketExt::resume(ticket).into()),
         }
 
+        extensions.push(ExtendedMasterSecretExt::new().into());
+
         let client_hello = ClientHello::new(cipher_suites, extensions, session_id);
 
         let start_time = Instant::now();
@@ -309,7 +311,7 @@ fn main() -> TLSResult<()> {
 
     let suites: Vec<CipherSuite> = vec![RsaAes128CbcSha.into()];
 
-    let domain = "google.com";
+    let domain = "yurichev.org";
     //let domain = "localhost";
 
     let mut connection = TLSConnection::new(domain)?;
@@ -321,13 +323,13 @@ fn main() -> TLSResult<()> {
     let session_ticket = ctx.session_tickets.keys().last().cloned();
     connection.notify_close()?;
 
-    match session_ticket {
-        Some(session_ticket) => {
-            let mut connection = TLSConnection::new_with_context(domain, ctx)?;
-            connection.handshake(&suites, None, Some(session_ticket.to_vec()))?;
-        },
-        None => {}
-    }
+     match session_ticket {
+         Some(session_ticket) => {
+             let mut connection = TLSConnection::new_with_context(domain, ctx)?;
+             connection.handshake(&suites, None, Some(session_ticket.to_vec()))?;
+         },
+         None => {}
+     }
     //connection.handshake(&suites, Some(session_id))?;
 
     Ok(())

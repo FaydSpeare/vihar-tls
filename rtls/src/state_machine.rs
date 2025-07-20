@@ -10,8 +10,8 @@ use crate::{
     ciphersuite::{CipherSuiteMethods, get_cipher_suite},
     connection::{ConnState, InitialConnState, SecureConnState, SecurityParams},
     messages::{
-        ChangeCipherSpec, ClientKeyExchange, Finished, NewSessionTicket, TLSHandshake,
-        TLSHandshakeType, TLSPlaintext, TlsMessage, ToBytes, handshake_bytes,
+        ChangeCipherSpec, ClientKeyExchange, Finished, TLSHandshake, TLSHandshakeType,
+        TLSPlaintext, TlsMessage, ToBytes, handshake_bytes,
     },
     prf,
 };
@@ -281,7 +281,8 @@ impl HandleRecord for AwaitingServerHelloState {
 
                 if hello.supports_session_ticket() {
                     // TODO: server could still have rejected our ticket and simply be
-                    // signaling a new ticket issuance by show session ticket support
+                    // signaling a new ticket issuance by show session ticket support.
+                    // Or it accepted our ticket and is issuing a new one...
                     //
                     // So we could get NewSessionTicket OR ServerCertificate next.
                     return Ok((
@@ -300,6 +301,7 @@ impl HandleRecord for AwaitingServerHelloState {
 
                 // TODO: server could still have rejected our ticket and simply be
                 // signaling that it will not issue a new ticket either.
+                // Or it accepted our ticket...
                 //
                 // So we could get ChangeCipherSpec OR ServerCertificate next.
                 return Ok((
@@ -324,6 +326,7 @@ impl HandleRecord for AwaitingServerHelloState {
                     client_random: self.client_random,
                     server_random: hello.random.as_bytes(),
                     secure_renegotiation: hello.supports_secure_renegotiation(),
+                    extended_master_secret: hello.supports_extended_master_secret(),
                     session_ticket: hello.supports_session_ticket(),
                     cipher_suite: hello.cipher_suite.encode(),
                 }
@@ -343,6 +346,7 @@ pub struct AwaitingServerCertificateState {
     server_random: [u8; 32],
     cipher_suite: [u8; 2],
     secure_renegotiation: bool,
+    extended_master_secret: bool,
     session_ticket: bool,
 }
 
@@ -358,25 +362,17 @@ impl HandleRecord for AwaitingServerCertificateState {
             let (pre_master_secret, enc_pre_master_secret) =
                 crate::encrypt_pre_master_secret(&certs.list[0].bytes)?;
 
-            let master_secret: [u8; 48] = crate::prf::prf_sha256(
-                &pre_master_secret,
-                b"master secret",
-                &[self.client_random.as_slice(), self.server_random.as_slice()].concat(),
-                48,
-            )
-            .try_into()
-            .unwrap();
-
             self.handshakes.extend_from_slice(&certs.to_bytes());
             return Ok((
                 AwaitingServerHelloDoneState {
                     session_id: self.session_id,
                     handshakes: self.handshakes,
-                    master_secret,
+                    pre_master_secret,
                     enc_pre_master_secret,
                     client_random: self.client_random,
                     server_random: self.server_random,
                     secure_renegotiation: self.secure_renegotiation,
+                    extended_master_secret: self.extended_master_secret,
                     session_ticket: self.session_ticket,
                     cipher_suite: self.cipher_suite,
                 }
@@ -396,8 +392,9 @@ pub struct AwaitingServerHelloDoneState {
     server_random: [u8; 32],
     cipher_suite: [u8; 2],
     secure_renegotiation: bool,
+    extended_master_secret: bool,
     session_ticket: bool,
-    master_secret: [u8; 48],
+    pre_master_secret: Vec<u8>,
     enc_pre_master_secret: Vec<u8>,
 }
 
@@ -419,12 +416,13 @@ impl HandleRecord for AwaitingServerHelloDoneState {
 
             let change_cipher_spec = ChangeCipherSpec::new();
 
+            let master_secret = self.calculate_master_secret();
             let ciphersuite = get_cipher_suite(u16::from_be_bytes(self.cipher_suite))?;
             let params = SecurityParams {
                 cipher_suite_id: u16::from_be_bytes(self.cipher_suite),
                 client_random: self.client_random,
                 server_random: self.server_random,
-                master_secret: self.master_secret,
+                master_secret,
                 mac_algorithm: ciphersuite.params().mac_algorithm,
                 enc_algorithm: ciphersuite.params().enc_algorithm,
             };
@@ -435,7 +433,7 @@ impl HandleRecord for AwaitingServerHelloDoneState {
                 keys.client_mac_key,
             ));
 
-            let verify_data = client_verify_data(&self.master_secret, &self.handshakes);
+            let verify_data = client_verify_data(&master_secret, &self.handshakes);
             let client_finished = Finished::new(verify_data.clone());
             self.handshakes
                 .extend_from_slice(&client_finished.to_bytes());
@@ -479,6 +477,28 @@ impl HandleRecord for AwaitingServerHelloDoneState {
             ));
         }
         panic!("invalid transition");
+    }
+}
+
+impl AwaitingServerHelloDoneState {
+    fn calculate_master_secret(&self) -> [u8; 48] {
+        let (label, seed): (&[u8], Vec<u8>) = if self.extended_master_secret {
+            (
+                b"extended master secret",
+                Sha256::digest(&self.handshakes).to_vec(),
+            )
+        } else {
+            (
+                b"master secret",
+                [self.client_random.as_slice(), self.server_random.as_slice()].concat(),
+            )
+        };
+
+        let master_secret: [u8; 48] =
+            crate::prf::prf_sha256(&self.pre_master_secret, label, &seed, 48)
+                .try_into()
+                .unwrap();
+        master_secret
     }
 }
 

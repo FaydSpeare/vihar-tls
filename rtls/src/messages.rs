@@ -158,6 +158,11 @@ impl ServerHello {
             .iter()
             .any(|x| matches!(x, Extension::SessionTicket(_)))
     }
+    pub fn supports_extended_master_secret(&self) -> bool {
+        self.extensions
+            .iter()
+            .any(|x| matches!(x, Extension::ExtendedMasterSecret(_)))
+    }
 }
 
 impl ToBytes for ServerHello {
