@@ -1,7 +1,7 @@
 use crate::alert::TLSAlert;
-use crate::ciphersuite::{get_cipher_suite, CipherSuite, CipherSuiteMethods};
+use crate::ciphersuite::{CipherSuite, CipherSuiteMethods, get_cipher_suite};
 use crate::extensions::{
-    decode_extensions, EncodeExtension, Extension, HashAlgo, SigAlgo, SignatureAlgorithmsExt
+    EncodeExtension, Extension, HashAlgo, SigAlgo, SignatureAlgorithmsExt, decode_extensions,
 };
 use crate::utils;
 use crate::{TLSError, TLSResult};
@@ -38,17 +38,22 @@ pub struct ClientHello {
     #[allow(dead_code)]
     pub compression_methods: Vec<u8>,
     #[allow(dead_code)]
-    pub extensions: Vec<Extension>
+    pub extensions: Vec<Extension>,
 }
 
 impl ClientHello {
-    pub fn new(suites: &[CipherSuite], mut extensions: Vec<Extension>, session_id: Option<Vec<u8>>) -> Self {
+    pub fn new(
+        suites: &[CipherSuite],
+        mut extensions: Vec<Extension>,
+        session_id: Option<Vec<u8>>,
+    ) -> Self {
         let cipher_suites = suites.iter().map(|x| x.encode()).collect();
         extensions.push(
             SignatureAlgorithmsExt::new_from_product(
                 vec![SigAlgo::Rsa],
                 vec![HashAlgo::Sha, HashAlgo::Sha256],
-            ).into()
+            )
+            .into(),
         );
         ClientHello {
             client_version: ProtocolVersion { major: 3, minor: 3 },
@@ -61,6 +66,22 @@ impl ClientHello {
             compression_methods: vec![0],
             extensions,
         }
+    }
+
+    pub fn includes_session_ticket(&self) -> bool {
+        self.extensions
+            .iter()
+            .any(|ext| matches!(ext, Extension::SessionTicket(ext) if ext.ticket.is_some()))
+    }
+
+    pub fn session_ticket(&self) -> Option<Vec<u8>> {
+        self.extensions.iter().find_map(|ext| {
+            if let Extension::SessionTicket(ticket_ext) = ext {
+                ticket_ext.ticket.clone()
+            } else {
+                None
+            }
+        })
     }
 }
 
@@ -81,8 +102,13 @@ impl ToBytes for ClientHello {
 
         bytes.push(1); // Compression methods
         bytes.push(0);
-        
-        let extensions_bytes: Vec<u8> = self.extensions.iter().map(|x| x.encode()).flatten().collect();
+
+        let extensions_bytes: Vec<u8> = self
+            .extensions
+            .iter()
+            .map(|x| x.encode())
+            .flatten()
+            .collect();
         let extensions_len = extensions_bytes.len() as u16;
 
         bytes.extend_from_slice(&extensions_len.to_be_bytes());
@@ -118,30 +144,42 @@ pub struct ServerHello {
     pub session_id: Vec<u8>,
     pub cipher_suite: CipherSuite,
     pub compression_method: u8,
-    pub extensions: Vec<Extension>
+    pub extensions: Vec<Extension>,
 }
 
 impl ServerHello {
     pub fn supports_secure_renegotiation(&self) -> bool {
-        self.extensions.iter().any(|x| matches!(x, Extension::SecureRenegotiation(_)))
+        self.extensions
+            .iter()
+            .any(|x| matches!(x, Extension::SecureRenegotiation(_)))
+    }
+    pub fn supports_session_ticket(&self) -> bool {
+        self.extensions
+            .iter()
+            .any(|x| matches!(x, Extension::SessionTicket(_)))
     }
 }
 
 impl ToBytes for ServerHello {
     fn to_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::<u8>::new(); 
+        let mut bytes = Vec::<u8>::new();
         bytes.push(self.server_version.major);
         bytes.push(self.server_version.minor);
         bytes.extend_from_slice(&self.random.as_bytes());
 
         bytes.push(self.session_id.len() as u8); // SessionId
         bytes.extend_from_slice(&self.session_id); // SessionId bytes
-        
+
         bytes.extend_from_slice(&self.cipher_suite.encode());
 
         bytes.push(0); // Compression method
 
-        let extensions_bytes: Vec<u8> = self.extensions.iter().map(|x| x.encode()).flatten().collect();
+        let extensions_bytes: Vec<u8> = self
+            .extensions
+            .iter()
+            .map(|x| x.encode())
+            .flatten()
+            .collect();
         let extensions_len = extensions_bytes.len() as u16;
         if extensions_len > 0 {
             bytes.extend_from_slice(&extensions_len.to_be_bytes());
@@ -177,12 +215,13 @@ impl TryFrom<&[u8]> for ServerHello {
 
         let compression_method = buf[idx + 2];
         // println!("compression: 0x{:02X}", slice[pos + 2]);
-        
+
         let extensions = if buf.len() > idx + 3 {
             decode_extensions(&buf[idx + 5..])?
         } else {
             vec![]
         };
+        println!("ServerHelloExtensions: {:?}", extensions);
 
         Ok(Self {
             server_version: ProtocolVersion { major, minor },
@@ -193,7 +232,7 @@ impl TryFrom<&[u8]> for ServerHello {
             session_id,
             cipher_suite,
             compression_method,
-            extensions
+            extensions,
         })
     }
 }
@@ -218,7 +257,7 @@ impl ToBytes for Certificates {
         for cert in &self.list {
             bytes.extend_from_slice(&utils::u24_be_bytes(cert.bytes.len()));
             bytes.extend_from_slice(&cert.bytes);
-        } 
+        }
         handshake_bytes(TLSHandshakeType::Certificates, &bytes)
     }
 }
@@ -380,6 +419,38 @@ impl From<ApplicationData> for TLSPlaintext {
     }
 }
 
+#[derive(Hash, Eq, PartialEq, Debug, Clone)]
+pub struct NewSessionTicket {
+    lifetime_hint: u32,
+    pub ticket: Vec<u8>,
+}
+
+impl TryFrom<&[u8]> for NewSessionTicket {
+    type Error = Box<dyn std::error::Error>;
+
+    fn try_from(buf: &[u8]) -> Result<Self, Self::Error> {
+        let lifetime_hint = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]);
+
+        let ticket_len = u16::from_be_bytes([buf[4], buf[5]]) as usize;
+        let ticket = buf[6..6 + ticket_len].to_vec();
+
+        Ok(Self {
+            lifetime_hint,
+            ticket,
+        })
+    }
+}
+
+impl ToBytes for NewSessionTicket {
+    fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::<u8>::new();
+        bytes.extend_from_slice(&self.lifetime_hint.to_be_bytes());
+        bytes.extend_from_slice(&(self.ticket.len() as u16).to_be_bytes());
+        bytes.extend_from_slice(&self.ticket);
+        handshake_bytes(TLSHandshakeType::NewSessionTicket, &bytes)
+    }
+}
+
 #[derive(Debug, TryFromPrimitive, Copy, Clone)]
 #[repr(u8)]
 pub enum TLSContentType {
@@ -394,6 +465,7 @@ pub enum TLSContentType {
 pub enum TLSHandshakeType {
     ClientHello = 1,
     ServerHello = 2,
+    NewSessionTicket = 4,
     Certificates = 11,
     ServerHelloDone = 14,
     ClientKeyExchange = 16,
@@ -406,12 +478,12 @@ pub enum TLSHandshakeType {
 pub enum TLSHandshake {
     ClientHello(ClientHello),
     ServerHello(ServerHello),
+    NewSessionTicket(NewSessionTicket),
     Certificates(Certificates),
     ServerHelloDone,
     ClientKeyExchange(ClientKeyExchange),
     Finished(Finished),
 }
-
 
 #[derive(Debug)]
 pub enum TlsMessage {
@@ -463,14 +535,12 @@ impl TLSCiphertext {
     }
 }
 
-
 pub fn parse_handshake(buf: &[u8]) -> TLSResult<TLSHandshake> {
     if buf.len() < 4 {
         return Err(TLSError::NeedData.into());
     }
 
     let length = u32::from_be_bytes([0, buf[1], buf[2], buf[3]]) as usize;
-
 
     if buf.len() < 4 + length {
         println!("{}, {}", buf.len(), 4 + length);
@@ -483,12 +553,13 @@ pub fn parse_handshake(buf: &[u8]) -> TLSResult<TLSHandshake> {
             TLSHandshakeType::ServerHello => {
                 ServerHello::try_from(&buf[4..]).map(TLSHandshake::ServerHello)
             }
+            TLSHandshakeType::NewSessionTicket => {
+                NewSessionTicket::try_from(&buf[4..]).map(TLSHandshake::NewSessionTicket)
+            }
             TLSHandshakeType::Certificates => {
                 Certificates::try_from(&buf[4..]).map(TLSHandshake::Certificates)
             }
-            TLSHandshakeType::ServerHelloDone => {
-                Ok(TLSHandshake::ServerHelloDone)
-            },
+            TLSHandshakeType::ServerHelloDone => Ok(TLSHandshake::ServerHelloDone),
             TLSHandshakeType::Finished => {
                 let verify_data = buf[4..4 + length].to_vec();
                 Ok(TLSHandshake::Finished(Finished { verify_data }))
@@ -503,26 +574,4 @@ pub fn handshake_bytes(handshake_type: TLSHandshakeType, content: &[u8]) -> Vec<
     handshake.extend(utils::u24_be_bytes(content.len()));
     handshake.extend(content);
     handshake
-}
-
-pub fn change_cipher_spec_bytes() -> Vec<u8> {
-    record_bytes(TLSContentType::ChangeCipherSpec, &[1])
-}
-
-pub fn record_bytes(content_type: TLSContentType, content: &[u8]) -> Vec<u8> {
-    let mut record = Vec::<u8>::new();
-    record.push(content_type as u8);
-    record.extend([3, 3]);
-    record.extend((content.len() as u16).to_be_bytes());
-    record.extend(content);
-    record
-}
-
-pub fn client_key_exchange_bytes(enc_pre_master_secret: &[u8]) -> Vec<u8> {
-    let mut bytes = Vec::<u8>::new();
-    bytes.extend((enc_pre_master_secret.len() as u16).to_be_bytes());
-    bytes.extend_from_slice(enc_pre_master_secret);
-    let handshake = handshake_bytes(TLSHandshakeType::ClientKeyExchange, &bytes);
-    let record = record_bytes(TLSContentType::Handshake, &handshake);
-    record
 }

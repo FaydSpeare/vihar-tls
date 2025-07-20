@@ -3,13 +3,14 @@ use std::fmt::Debug;
 use enum_dispatch::enum_dispatch;
 use num_enum::TryFromPrimitive;
 
-use crate::TLSResult;
+use crate::{messages::{ToBytes, NewSessionTicket}, TLSResult};
 
 #[enum_dispatch]
 #[derive(Debug, Clone)]
 pub enum Extension {
     SecureRenegotiation(SecureRenegotationExt),
     SignatureAlgorithms(SignatureAlgorithmsExt),
+    SessionTicket(SessionTicketExt),
 }
 
 #[enum_dispatch(Extension)]
@@ -25,6 +26,7 @@ pub fn decode_extensions(bytes: &[u8]) -> TLSResult<Vec<Extension>> {
     let (ext, pos) = match id {
         0x000d => SignatureAlgorithmsExt::try_decode(bytes)?,
         0xff01 => SecureRenegotationExt::decode(bytes),
+        0x0023 => SessionTicketExt::decode(bytes),
         _ => return Err(format!("unimplemented extension type: {id:#x}").into()),
     };
     let mut extensions: Vec<Extension> = vec![ext];
@@ -56,7 +58,8 @@ impl SecureRenegotationExt {
         (
             Self {
                 verify_data: Some(bytes[5..5 + verify_data_len].to_vec()),
-            }.into(),
+            }
+            .into(),
             4 + extension_len,
         )
     }
@@ -74,6 +77,39 @@ impl EncodeExtension for SecureRenegotationExt {
         if let Some(verify_data) = &self.verify_data {
             bytes.extend_from_slice(verify_data);
         }
+        bytes
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SessionTicketExt {
+    pub ticket: Option<Vec<u8>>
+}
+
+impl SessionTicketExt {
+
+    pub fn new() -> Self {
+        Self { ticket: None }
+    }
+
+    pub fn resume(ticket: Vec<u8>) -> Self {
+        Self { ticket: Some(ticket) }
+    }
+
+    fn decode(bytes: &[u8]) -> (Extension, usize) {
+        let extension_len = u16::from_be_bytes([bytes[2], bytes[3]]) as usize;
+        assert_eq!(extension_len, 0);
+        (Self { ticket: None }.into(), 4 + extension_len)
+    }
+}
+
+impl EncodeExtension for SessionTicketExt {
+    fn encode(&self) -> Vec<u8> {
+        let ticket_bytes = self.ticket.as_ref().map_or(vec![], |t| t.clone());
+        let mut bytes = Vec::<u8>::new();
+        bytes.extend_from_slice(&[0x00, 0x23]);
+        bytes.extend_from_slice(&(ticket_bytes.len() as u16).to_be_bytes());
+        bytes.extend_from_slice(&ticket_bytes);
         bytes
     }
 }

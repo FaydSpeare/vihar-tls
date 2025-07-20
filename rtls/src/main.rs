@@ -1,7 +1,7 @@
 use alert::{TLSAlert, TLSAlertDesc, TLSAlertLevel};
 use connection::ConnState;
 use env_logger;
-use extensions::SecureRenegotationExt;
+use extensions::{SecureRenegotationExt, SessionTicketExt};
 use log::{error, trace};
 use state_machine::{ConnStates, TlsAction, TlsContext, TlsEntity, TlsHandshakeStateMachine, TlsState};
 use std::io::{Read, Write};
@@ -230,13 +230,20 @@ impl TLSConnection {
         &mut self,
         cipher_suites: &[CipherSuite],
         session_id: Option<Vec<u8>>,
+        session_ticket: Option<Vec<u8>>,
     ) -> TLSResult<Vec<u8>> {
-        let extensions = match self.handshake_state_machine.state.as_ref().unwrap() {
+        let mut extensions = match self.handshake_state_machine.state.as_ref().unwrap() {
             TlsState::Established(s) => {
                 vec![SecureRenegotationExt::renegotiation(&s.client_verify_data).into()]
             }
             _ => vec![SecureRenegotationExt::initial().into()],
         };
+
+        match session_ticket {
+            None => extensions.push(SessionTicketExt::new().into()),
+            Some(ticket) => extensions.push(SessionTicketExt::resume(ticket).into()),
+        }
+
         let client_hello = ClientHello::new(cipher_suites, extensions, session_id);
 
         let start_time = Instant::now();
@@ -300,19 +307,28 @@ impl TLSConnection {
 fn main() -> TLSResult<()> {
     env_logger::init();
 
-    let suites: Vec<CipherSuite> = vec![RsaAes128CbcSha {}.into()];
+    let suites: Vec<CipherSuite> = vec![RsaAes128CbcSha.into()];
 
-    let domain = "facebook.com";
-    // let domain = "localhost";
+    let domain = "google.com";
+    //let domain = "localhost";
 
     let mut connection = TLSConnection::new(domain)?;
-    let session_id = connection.handshake(&suites, None)?;
+    let session_id = connection.handshake(&suites, None, None)?;
+
+    // println!("{:?}", connection.handshake_state_machine.ctx);
 
     let ctx = connection.handshake_state_machine.ctx.clone();
+    let session_ticket = ctx.session_tickets.keys().last().cloned();
     connection.notify_close()?;
 
-    let mut connection = TLSConnection::new_with_context(domain, ctx)?;
-    connection.handshake(&suites, Some(session_id))?;
+    match session_ticket {
+        Some(session_ticket) => {
+            let mut connection = TLSConnection::new_with_context(domain, ctx)?;
+            connection.handshake(&suites, None, Some(session_ticket.to_vec()))?;
+        },
+        None => {}
+    }
+    //connection.handshake(&suites, Some(session_id))?;
 
     Ok(())
 
