@@ -53,7 +53,7 @@ impl From<TLSAlert> for TLSPlaintext {
     }
 }
 
-pub fn parse_alert(buf: &[u8]) -> TLSResult<TLSAlert> {
+pub fn try_parse_alert(buf: &[u8]) -> TLSResult<TLSAlert> {
     let alert = TLSAlert {
         level: TLSAlertLevel::try_from(buf[0])?,
         description: TLSAlertDesc::try_from(buf[1])?,

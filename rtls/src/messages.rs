@@ -55,6 +55,7 @@ impl ClientHello {
             )
             .into(),
         );
+        // println!("ClientHello Extensions: {:#?}", extensions);
         ClientHello {
             client_version: ProtocolVersion { major: 3, minor: 3 },
             random: Random {
@@ -226,7 +227,7 @@ impl TryFrom<&[u8]> for ServerHello {
         } else {
             vec![]
         };
-        println!("ServerHelloExtensions: {:?}", extensions);
+        // println!("ServerHello Extensions: {:#?}", extensions);
 
         Ok(Self {
             server_version: ProtocolVersion { major, minor },
@@ -540,7 +541,7 @@ impl TLSCiphertext {
     }
 }
 
-pub fn parse_handshake(buf: &[u8]) -> TLSResult<TLSHandshake> {
+pub fn try_parse_handshake(buf: &[u8]) -> TLSResult<(TLSHandshake, usize)> {
     if buf.len() < 4 {
         return Err(TLSError::NeedData.into());
     }
@@ -548,11 +549,10 @@ pub fn parse_handshake(buf: &[u8]) -> TLSResult<TLSHandshake> {
     let length = u32::from_be_bytes([0, buf[1], buf[2], buf[3]]) as usize;
 
     if buf.len() < 4 + length {
-        println!("{}, {}", buf.len(), 4 + length);
         return Err(TLSError::NeedData.into());
     }
 
-    TLSHandshakeType::try_from(buf[0])
+    let handshake = TLSHandshakeType::try_from(buf[0])
         .map_err(|e| e.into())
         .and_then(|handshake_type| match handshake_type {
             TLSHandshakeType::ServerHello => {
@@ -570,7 +570,9 @@ pub fn parse_handshake(buf: &[u8]) -> TLSResult<TLSHandshake> {
                 Ok(TLSHandshake::Finished(Finished { verify_data }))
             }
             _ => unimplemented!(),
-        })
+        })?;
+
+    Ok((handshake, length + 4))
 }
 
 pub fn handshake_bytes(handshake_type: TLSHandshakeType, content: &[u8]) -> Vec<u8> {

@@ -3,6 +3,7 @@ use connection::ConnState;
 use env_logger;
 use extensions::{ALPNExt, ExtendedMasterSecretExt, HeartbeatExt, SecureRenegotationExt, SessionTicketExt};
 use log::{error, trace};
+use record::RecordLayer;
 use state_machine::{ConnStates, TlsAction, TlsContext, TlsEntity, TlsHandshakeStateMachine, TlsState};
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -25,6 +26,7 @@ mod messages;
 mod prf;
 mod state_machine;
 mod utils;
+mod record;
 
 use ciphersuite::{
     CipherSuite, RsaAes128CbcSha256, RsaAes128CbcSha, RsaAes256CbcSha256, RsaAes256CbcSha,
@@ -72,6 +74,7 @@ struct TLSConnection {
     buffer: Vec<u8>,
     pub handshake_state_machine: TlsHandshakeStateMachine,
     conn_states: ConnStates,
+    record_layer: RecordLayer
 }
 
 impl TLSConnection {
@@ -82,6 +85,7 @@ impl TLSConnection {
             buffer: Vec::new(),
             handshake_state_machine: TlsHandshakeStateMachine::new(),
             conn_states: ConnStates::new(),
+            record_layer: RecordLayer::new(),
         })
     }
 
@@ -92,6 +96,7 @@ impl TLSConnection {
             buffer: Vec::new(),
             handshake_state_machine: TlsHandshakeStateMachine::from_context(ctx),
             conn_states: ConnStates::new(),
+            record_layer: RecordLayer::new(),
         })
     }
 
@@ -157,8 +162,8 @@ impl TLSConnection {
             .map_err(|e| e.into())
             .and_then(|content_type| match content_type {
                 TLSContentType::ChangeCipherSpec => Ok(TlsMessage::ChangeCipherSpec),
-                TLSContentType::Alert => alert::parse_alert(&fragment).map(TlsMessage::Alert),
-                TLSContentType::Handshake => parse_handshake(&fragment).map(TlsMessage::Handshake),
+                TLSContentType::Alert => alert::try_parse_alert(&fragment).map(TlsMessage::Alert),
+                TLSContentType::Handshake => try_parse_handshake(&fragment).map(|(h, _)| TlsMessage::Handshake(h)),
                 TLSContentType::ApplicationData => {
                     Ok(TlsMessage::ApplicationData(fragment.clone()))
                 }
@@ -182,13 +187,20 @@ impl TLSConnection {
 
     fn next_message(&mut self) -> TLSResult<TlsMessage> {
         loop {
-            if let Some(msg) = self.parse_message_from_buffer() {
+            // if let Some(msg) = self.parse_message_from_buffer() {
+            //     match &msg {
+            //         TlsMessage::ApplicationData(_) | TlsMessage::Alert(_) => {}
+            //         _ => self.process_message(&msg)?,
+            //     }
+
+            //     return Ok(msg);
+            // }
+            if let Ok(msg) = self.record_layer.try_parse_message(&mut self.conn_states.read) {
                 match &msg {
                     TlsMessage::ApplicationData(_) | TlsMessage::Alert(_) => {}
                     _ => self.process_message(&msg)?,
                 }
-
-                return Ok(msg);
+                return Ok(msg)
             }
 
             let mut buf = [0u8; 8096];
@@ -198,7 +210,8 @@ impl TLSConnection {
             }
 
             trace!("Received {} bytes", n);
-            self.buffer.extend_from_slice(&buf[..n]);
+            //self.buffer.extend_from_slice(&buf[..n]);
+            self.record_layer.feed(&buf[..n]);
         }
     }
 
@@ -300,7 +313,7 @@ impl TLSConnection {
 
 /*
 * TODO:
-* session ticket extension
+* session ticket unhappy paths
 * DH cipher suites
 * record layer to allow fragmentation
 *
@@ -313,7 +326,7 @@ fn main() -> TLSResult<()> {
 
     let suites: Vec<CipherSuite> = vec![RsaAes128CbcSha.into()];
 
-    let domain = "example.com";
+    let domain = "google.com";
     //let domain = "localhost";
 
     let mut connection = TLSConnection::new(domain)?;
@@ -323,22 +336,22 @@ fn main() -> TLSResult<()> {
 
     let ctx = connection.handshake_state_machine.ctx.clone();
     let session_ticket = ctx.session_tickets.keys().last().cloned();
-    //connection.notify_close()?;
+    connection.notify_close()?;
 
-    // match session_ticket {
-    //     Some(session_ticket) => {
-    //         let mut connection = TLSConnection::new_with_context(domain, ctx)?;
-    //         connection.handshake(&suites, None, Some(session_ticket.to_vec()))?;
-    //     },
-    //     None => {}
-    // }
+    match session_ticket {
+        Some(session_ticket) => {
+            let mut connection = TLSConnection::new_with_context(domain, ctx)?;
+            connection.handshake(&suites, None, Some(session_ticket.to_vec()))?;
+        },
+        None => {}
+    }
     //connection.handshake(&suites, Some(session_id))?;
 
-    //Ok(())
+    Ok(())
 
-    connection.write(format!("GET / HTTP/1.1\r\nHost: {domain}\r\n\r\n").as_ref())?;
-    loop {
-        let bytes = connection.read()?;
-        print!("{}", String::from_utf8_lossy(&bytes));
-    }
+    //connection.write(format!("GET / HTTP/1.1\r\nHost: {domain}\r\n\r\n").as_ref())?;
+    //loop {
+    //    let bytes = connection.read()?;
+    //    print!("{}", String::from_utf8_lossy(&bytes));
+    //}
 }
