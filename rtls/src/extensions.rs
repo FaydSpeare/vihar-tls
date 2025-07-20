@@ -12,6 +12,8 @@ pub enum Extension {
     SignatureAlgorithms(SignatureAlgorithmsExt),
     SessionTicket(SessionTicketExt),
     ExtendedMasterSecret(ExtendedMasterSecretExt),
+    Heartbeat(HeartbeatExt),
+    ALPN(ALPNExt),
 }
 
 #[enum_dispatch(Extension)]
@@ -29,6 +31,8 @@ pub fn decode_extensions(bytes: &[u8]) -> TLSResult<Vec<Extension>> {
         0xff01 => SecureRenegotationExt::decode(bytes),
         0x0023 => SessionTicketExt::decode(bytes),
         0x0017 => ExtendedMasterSecretExt::decode(bytes),
+        0x000f => HeartbeatExt::decode(bytes)?,
+        0x0010 => ALPNExt::decode(bytes)?,
         _ => return Err(format!("unimplemented extension type: {id:#x}").into()),
     };
     let mut extensions: Vec<Extension> = vec![ext];
@@ -85,17 +89,18 @@ impl EncodeExtension for SecureRenegotationExt {
 
 #[derive(Debug, Clone)]
 pub struct SessionTicketExt {
-    pub ticket: Option<Vec<u8>>
+    pub ticket: Option<Vec<u8>>,
 }
 
 impl SessionTicketExt {
-
     pub fn new() -> Self {
         Self { ticket: None }
     }
 
     pub fn resume(ticket: Vec<u8>) -> Self {
-        Self { ticket: Some(ticket) }
+        Self {
+            ticket: Some(ticket),
+        }
     }
 
     fn decode(bytes: &[u8]) -> (Extension, usize) {
@@ -120,7 +125,6 @@ impl EncodeExtension for SessionTicketExt {
 pub struct ExtendedMasterSecretExt {}
 
 impl ExtendedMasterSecretExt {
-
     pub fn new() -> Self {
         Self {}
     }
@@ -197,6 +201,81 @@ impl EncodeExtension for SignatureAlgorithmsExt {
         bytes.extend_from_slice(&extension_len.to_be_bytes()); // Extension length
         bytes.extend_from_slice(&supported_algorithms_len.to_be_bytes()); // Algorithms length
         bytes.extend_from_slice(&supported_algorithms);
+        bytes
+    }
+}
+
+#[derive(Debug, Copy, Clone, TryFromPrimitive)]
+#[repr(u8)]
+pub enum HeartbeatMode {
+    PeerAllowedToSend = 1,
+    PeerNotAllowedToSend = 2,
+}
+
+#[derive(Debug, Clone)]
+pub struct HeartbeatExt {
+    mode: HeartbeatMode,
+}
+
+impl HeartbeatExt {
+    pub fn new() -> Self {
+        Self {
+            mode: HeartbeatMode::PeerNotAllowedToSend,
+        }
+    }
+
+    fn decode(bytes: &[u8]) -> TLSResult<(Extension, usize)> {
+        let extension_len = u16::from_be_bytes([bytes[2], bytes[3]]) as usize;
+        assert_eq!(extension_len, 1);
+        let mode = HeartbeatMode::try_from(bytes[4])?;
+        Ok((Self { mode }.into(), 4 + extension_len))
+    }
+}
+
+impl EncodeExtension for HeartbeatExt {
+    fn encode(&self) -> Vec<u8> {
+        vec![0x00, 0x0f, 0x00, 0x01, self.mode as u8]
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ALPNExt {
+    protocols: Vec<String>,
+}
+
+impl ALPNExt {
+    pub fn new(protocols: Vec<String>) -> Self {
+        Self { protocols }
+    }
+
+    fn decode(bytes: &[u8]) -> TLSResult<(Extension, usize)> {
+        let extension_len = u16::from_be_bytes([bytes[2], bytes[3]]) as usize;
+        let mut idx = 6;
+        let mut protocols = Vec::<String>::new();
+        while idx < 4 + extension_len {
+            let name_len = bytes[idx] as usize;
+            protocols.push(String::from_utf8(
+                bytes[idx + 1..idx + 1 + name_len].to_vec(),
+            )?);
+            idx += 1 + name_len;
+        }
+
+        Ok((Self { protocols }.into(), 4 + extension_len))
+    }
+}
+
+impl EncodeExtension for ALPNExt {
+    fn encode(&self) -> Vec<u8> {
+        let mut protocols_bytes = Vec::<u8>::new();
+        for protocol in &self.protocols {
+            protocols_bytes.push(protocol.len() as u8);
+            protocols_bytes.extend_from_slice(protocol.as_ref());
+        }
+        let mut bytes = Vec::<u8>::new();
+        bytes.extend_from_slice(&[0x00, 0x10]);
+        bytes.extend_from_slice(&((protocols_bytes.len() + 2) as u16).to_be_bytes());
+        bytes.extend_from_slice(&(protocols_bytes.len() as u16).to_be_bytes());
+        bytes.extend_from_slice(&protocols_bytes);
         bytes
     }
 }

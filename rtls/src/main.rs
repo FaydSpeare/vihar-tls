@@ -1,7 +1,7 @@
 use alert::{TLSAlert, TLSAlertDesc, TLSAlertLevel};
 use connection::ConnState;
 use env_logger;
-use extensions::{ExtendedMasterSecretExt, SecureRenegotationExt, SessionTicketExt};
+use extensions::{ALPNExt, ExtendedMasterSecretExt, HeartbeatExt, SecureRenegotationExt, SessionTicketExt};
 use log::{error, trace};
 use state_machine::{ConnStates, TlsAction, TlsContext, TlsEntity, TlsHandshakeStateMachine, TlsState};
 use std::io::{Read, Write};
@@ -245,6 +245,8 @@ impl TLSConnection {
         }
 
         extensions.push(ExtendedMasterSecretExt::new().into());
+        extensions.push(HeartbeatExt::new().into());
+        extensions.push(ALPNExt::new(vec!["http/1.1".to_string()]).into());
 
         let client_hello = ClientHello::new(cipher_suites, extensions, session_id);
 
@@ -311,7 +313,7 @@ fn main() -> TLSResult<()> {
 
     let suites: Vec<CipherSuite> = vec![RsaAes128CbcSha.into()];
 
-    let domain = "yurichev.org";
+    let domain = "example.com";
     //let domain = "localhost";
 
     let mut connection = TLSConnection::new(domain)?;
@@ -321,22 +323,22 @@ fn main() -> TLSResult<()> {
 
     let ctx = connection.handshake_state_machine.ctx.clone();
     let session_ticket = ctx.session_tickets.keys().last().cloned();
-    connection.notify_close()?;
+    //connection.notify_close()?;
 
-     match session_ticket {
-         Some(session_ticket) => {
-             let mut connection = TLSConnection::new_with_context(domain, ctx)?;
-             connection.handshake(&suites, None, Some(session_ticket.to_vec()))?;
-         },
-         None => {}
-     }
+    // match session_ticket {
+    //     Some(session_ticket) => {
+    //         let mut connection = TLSConnection::new_with_context(domain, ctx)?;
+    //         connection.handshake(&suites, None, Some(session_ticket.to_vec()))?;
+    //     },
+    //     None => {}
+    // }
     //connection.handshake(&suites, Some(session_id))?;
 
-    Ok(())
+    //Ok(())
 
-    // connection.write(format!("GET / HTTP/1.1\r\nHost: {domain}\r\n\r\n").as_ref())?;
-    // loop {
-    //     let bytes = connection.read()?;
-    //     print!("{}", String::from_utf8_lossy(&bytes));
-    // }
+    connection.write(format!("GET / HTTP/1.1\r\nHost: {domain}\r\n\r\n").as_ref())?;
+    loop {
+        let bytes = connection.read()?;
+        print!("{}", String::from_utf8_lossy(&bytes));
+    }
 }
