@@ -152,6 +152,7 @@ impl EncAlgorithm {
 #[derive(Debug, Clone)]
 pub enum KeyExchangeAlgorithm {
     Rsa,
+    DheRsa,
 }
 
 #[allow(dead_code)]
@@ -170,6 +171,8 @@ pub enum CipherSuite {
     RsaAes128CbcSha256(RsaAes128CbcSha256),
     RsaAes256CbcSha(RsaAes256CbcSha),
     RsaAes256CbcSha256(RsaAes256CbcSha256),
+    DheRsaAes128CbcSha(DheRsaAes128CbcSha),
+    DheRsaAes128CbcSha256(DheRsaAes128CbcSha256),
 }
 
 #[enum_dispatch(CipherSuite)]
@@ -264,6 +267,42 @@ impl CipherSuiteMethods for RsaNullSha {
     }
 }
 
+#[derive(Debug)]
+pub struct DheRsaAes128CbcSha;
+
+impl CipherSuiteMethods for DheRsaAes128CbcSha {
+    fn encode(&self) -> [u8; 2] {
+        return [0x00, 0x33];
+    }
+
+    fn params(&self) -> CipherSuiteParams {
+        CipherSuiteParams {
+            name: "TLS_DHE_RSA_WITH_AES_128_CBC_SHA",
+            mac_algorithm: MacAlgorithm::HmacSha1,
+            enc_algorithm: EncAlgorithm::Aes128Cbc,
+            key_exchange_algorithm: KeyExchangeAlgorithm::DheRsa,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct DheRsaAes128CbcSha256;
+
+impl CipherSuiteMethods for DheRsaAes128CbcSha256 {
+    fn encode(&self) -> [u8; 2] {
+        return [0x00, 0x67];
+    }
+
+    fn params(&self) -> CipherSuiteParams {
+        CipherSuiteParams {
+            name: "TLS_DHE_RSA_WITH_AES_128_CBC_SHA256",
+            mac_algorithm: MacAlgorithm::HmacSha256,
+            enc_algorithm: EncAlgorithm::Aes128Cbc,
+            key_exchange_algorithm: KeyExchangeAlgorithm::DheRsa,
+        }
+    }
+}
+
 
 pub fn get_cipher_suite(value: u16) -> TLSResult<CipherSuite> {
     match value {
@@ -271,6 +310,8 @@ pub fn get_cipher_suite(value: u16) -> TLSResult<CipherSuite> {
         0x0035 => Ok(RsaAes256CbcSha.into()),
         0x003c => Ok(RsaAes128CbcSha256.into()),
         0x003d => Ok(RsaAes256CbcSha256.into()),
+        0x0033 => Ok(DheRsaAes128CbcSha.into()),
+        0x0067 => Ok(DheRsaAes128CbcSha256.into()),
         _ => Err("unsupported cipher suite".into())
     }
 }

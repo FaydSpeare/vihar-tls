@@ -32,7 +32,7 @@ mod state_machine;
 mod utils;
 
 use ciphersuite::{
-    CipherSuite, RsaAes128CbcSha, RsaAes128CbcSha256, RsaAes256CbcSha, RsaAes256CbcSha256,
+    CipherSuite, DheRsaAes128CbcSha, DheRsaAes128CbcSha256, RsaAes128CbcSha, RsaAes128CbcSha256, RsaAes256CbcSha, RsaAes256CbcSha256
 };
 use messages::*;
 
@@ -244,10 +244,14 @@ impl TLSConnection {
 fn main() -> TLSResult<()> {
     env_logger::init();
 
-    let suites: Vec<CipherSuite> = vec![RsaAes128CbcSha.into()];
+    let suites: Vec<CipherSuite> = vec![
+        // RsaAes128CbcSha.into(),
+        // DheRsaAes128CbcSha.into(),
+        DheRsaAes128CbcSha256.into(),
+    ];
 
-    //let domain = "challenges.re";
-    let domain = "example.com";
+    let domain = "challenges.re";
+    //let domain = "localhost";
 
     let mut connection = TLSConnection::new(domain)?;
     let session_id = connection.handshake(&suites, None, None)?;
@@ -256,22 +260,29 @@ fn main() -> TLSResult<()> {
 
     let ctx = connection.handshake_state_machine.ctx.clone();
     let session_ticket = ctx.session_tickets.keys().last().cloned();
+    // connection.notify_close()?;
 
-    match session_ticket {
-        Some(session_ticket) => {
-            connection.notify_close()?;
-            let mut connection = TLSConnection::new_with_context(domain, ctx)?;
-            connection.handshake(&suites, None, Some(session_ticket.to_vec()))?;
-        }
-        None => {}
-    }
-    // connection.handshake(&suites, Some(session_id))?;
+    // match session_ticket {
+    //     Some(session_ticket) => {
+    //         connection.notify_close()?;
+    //         connection = TLSConnection::new_with_context(domain, ctx)?;
+    //         connection.handshake(&suites, None, Some(session_ticket.to_vec()))?;
+    //     }
+    //     None => {}
+    // }
+    // let msg = connection.next_message()?;
+    // println!("{:?}", msg);
+    
+    
+    //let mut connection = TLSConnection::new_with_context(domain, ctx)?;
+    //connection.handshake(&suites, Some(session_id), None)?;
 
-    //Ok(())
+    Ok(())
 
+    //connection.write(b"HEY")?;
     //connection.write(format!("GET / HTTP/1.1\r\nHost: {domain}\r\n\r\n").as_ref())?;
-    loop {
-        let bytes = connection.read()?;
-        print!("{}", String::from_utf8_lossy(&bytes));
-    }
+    //loop {
+    //    let bytes = connection.read()?;
+    //    print!("{}", String::from_utf8_lossy(&bytes));
+    //}
 }

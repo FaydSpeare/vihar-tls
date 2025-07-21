@@ -14,8 +14,8 @@ pub fn get_unix_time() -> u32 {
 }
 
 pub fn get_random_bytes(len: usize) -> Vec<u8> {
-    let mut rng = rand::rng();
-    (0..len).map(|_| rng.random()).collect()
+    let mut rng = rand::thread_rng();
+    (0..len).map(|_| rng.r#gen::<u8>()).collect()
 }
 
 pub fn u24_be_bytes(value: usize) -> [u8; 3] {

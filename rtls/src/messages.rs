@@ -295,6 +295,83 @@ impl TryFrom<&[u8]> for Certificates {
     }
 }
 
+// struct {
+//  SignatureAndHashAlgorithm algorithm;
+//  opaque signature<0..2^16-1>;
+// } DigitallySigned;
+
+// struct {
+//     HashAlgorithm hash;
+//     SignatureAlgorithm signature;
+// } SignatureAndHashAlgorithm;
+//
+// ServerDHParams params;
+//    digitally-signed struct {
+//        opaque client_random[32];
+//        opaque server_random[32];
+//        ServerDHParams params;
+//    } signed_params;
+//
+// struct {
+//    opaque dh_p<1..2^16-1>;
+//    opaque dh_g<1..2^16-1>;
+//    opaque dh_Ys<1..2^16-1>;
+// } ServerDHParams
+
+#[derive(Debug)]
+pub struct ServerKeyExchange {
+    pub p: Vec<u8>,
+    pub g: Vec<u8>,
+    pub server_pubkey: Vec<u8>,
+    pub hash_algo: HashAlgo,
+    pub sig_algo: SigAlgo,
+    pub signature: Vec<u8>,
+}
+
+impl ToBytes for ServerKeyExchange {
+    fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::<u8>::new();
+        bytes.extend_from_slice(&(self.p.len() as u16).to_be_bytes());
+        bytes.extend_from_slice(&self.p);
+        bytes.extend_from_slice(&(self.g.len() as u16).to_be_bytes());
+        bytes.extend_from_slice(&self.g);
+        bytes.extend_from_slice(&(self.server_pubkey.len() as u16).to_be_bytes());
+        bytes.extend_from_slice(&self.server_pubkey);
+        bytes.push(self.hash_algo as u8);
+        bytes.push(self.sig_algo as u8);
+        bytes.extend_from_slice(&(self.signature.len() as u16).to_be_bytes());
+        bytes.extend_from_slice(&self.signature);
+        handshake_bytes(TLSHandshakeType::ServerKeyExchange, &bytes)
+    }
+}
+
+impl TryFrom<&[u8]> for ServerKeyExchange {
+    type Error = Box<dyn std::error::Error>;
+
+    fn try_from(buf: &[u8]) -> Result<Self, Self::Error> {
+        let p_len = u16::from_be_bytes([buf[0], buf[1]]) as usize;
+        let p = buf[2..2 + p_len].to_vec();
+
+        let mut idx = 2 + p_len;
+        let g_len = u16::from_be_bytes([buf[idx], buf[idx + 1]]) as usize;
+        let g = buf[idx + 2..idx + 2 + g_len].to_vec();
+
+        idx += 2 + g_len;
+        let pk_len = u16::from_be_bytes([buf[idx], buf[idx + 1]]) as usize;
+        let server_pubkey = buf[idx + 2..idx + 2 + pk_len].to_vec();
+
+        idx += 2 + pk_len;
+        let hash_algo = HashAlgo::try_from(buf[idx])?;
+        let sig_algo = SigAlgo::try_from(buf[idx + 1])?;
+
+        idx += 2;
+        let sig_len = u16::from_be_bytes([buf[idx], buf[idx + 1]]) as usize;
+        let signature = buf[idx + 2..idx + 2 + sig_len].to_vec();
+
+        return Ok(Self { p, g, server_pubkey, hash_algo, sig_algo, signature });
+    }
+}
+
 #[derive(Debug)]
 pub struct ClientKeyExchange {
     enc_pre_master_secret: Vec<u8>,
@@ -473,6 +550,7 @@ pub enum TLSHandshakeType {
     ServerHello = 2,
     NewSessionTicket = 4,
     Certificates = 11,
+    ServerKeyExchange = 12,
     ServerHelloDone = 14,
     ClientKeyExchange = 16,
     Finished = 20,
@@ -486,6 +564,7 @@ pub enum TLSHandshake {
     ServerHello(ServerHello),
     NewSessionTicket(NewSessionTicket),
     Certificates(Certificates),
+    ServerKeyExchange(ServerKeyExchange),
     ServerHelloDone,
     ClientKeyExchange(ClientKeyExchange),
     Finished(Finished),
@@ -568,6 +647,9 @@ pub fn try_parse_handshake(buf: &[u8]) -> TLSResult<(TLSHandshake, usize)> {
             TLSHandshakeType::Finished => {
                 let verify_data = buf[4..4 + length].to_vec();
                 Ok(TLSHandshake::Finished(Finished { verify_data }))
+            }
+            TLSHandshakeType::ServerKeyExchange => {
+                ServerKeyExchange::try_from(&buf[4..]).map(TLSHandshake::ServerKeyExchange)
             }
             _ => unimplemented!(),
         })?;

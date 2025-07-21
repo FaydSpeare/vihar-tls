@@ -1,19 +1,16 @@
 use std::collections::HashMap;
+use num_bigint::{BigUint, RandBigInt};
+use num_traits::{One, FromBytes};
+use rand::Rng;
 
 use enum_dispatch::enum_dispatch;
 use log::{debug, info};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    TLSResult,
-    alert::TLSAlert,
-    ciphersuite::{CipherSuiteMethods, get_cipher_suite},
-    connection::{ConnState, InitialConnState, SecureConnState, SecurityParams},
-    messages::{
-        ChangeCipherSpec, ClientKeyExchange, Finished, TLSHandshake, TLSHandshakeType,
-        TLSPlaintext, TlsMessage, ToBytes, handshake_bytes,
-    },
-    prf,
+    alert::TLSAlert, ciphersuite::{get_cipher_suite, CipherSuiteMethods, KeyExchangeAlgorithm}, connection::{ConnState, InitialConnState, SecureConnState, SecurityParams}, messages::{
+        handshake_bytes, ChangeCipherSpec, ClientKeyExchange, Finished, TLSHandshake, TLSHandshakeType, TLSPlaintext, TlsMessage, ToBytes
+    }, prf, TLSResult
 };
 
 fn client_verify_data(master_secret: &[u8], handshakes: &[u8]) -> Vec<u8> {
@@ -115,6 +112,7 @@ pub enum TlsState {
     AwaitingClientHello(AwaitingClientHelloState),
     AwaitingServerHello(AwaitingServerHelloState),
     AwaitingServerCertificate(AwaitingServerCertificateState),
+    AwaitingServerKeyExchange(AwaitingServerKeyExchangeState),
     AwaitingServerHelloDone(AwaitingServerHelloDoneState),
     // AwaitingClientKeyExchange,
     // AwaitingClientChangeCipherSpec,
@@ -363,6 +361,29 @@ impl HandleRecord for AwaitingServerCertificateState {
                 crate::encrypt_pre_master_secret(&certs.list[0].bytes)?;
 
             self.handshakes.extend_from_slice(&certs.to_bytes());
+
+            let cipher_suite = get_cipher_suite(u16::from_be_bytes(self.cipher_suite))?;
+            if let KeyExchangeAlgorithm::DheRsa = cipher_suite.params().key_exchange_algorithm {
+
+                return Ok((
+                    AwaitingServerKeyExchangeState {
+                        session_id: self.session_id,
+                        handshakes: self.handshakes,
+                        pre_master_secret,
+                        enc_pre_master_secret,
+                        client_random: self.client_random,
+                        server_random: self.server_random,
+                        secure_renegotiation: self.secure_renegotiation,
+                        extended_master_secret: self.extended_master_secret,
+                        session_ticket: self.session_ticket,
+                        cipher_suite: self.cipher_suite,
+                    }
+                    .into(),
+                    vec![],
+                ));
+
+            }
+
             return Ok((
                 AwaitingServerHelloDoneState {
                     session_id: self.session_id,
@@ -379,6 +400,79 @@ impl HandleRecord for AwaitingServerCertificateState {
                 .into(),
                 vec![],
             ));
+        }
+        panic!("invalid transition");
+    }
+}
+
+#[derive(Debug)]
+pub struct AwaitingServerKeyExchangeState {
+    session_id: Vec<u8>,
+    handshakes: Vec<u8>,
+    client_random: [u8; 32],
+    server_random: [u8; 32],
+    cipher_suite: [u8; 2],
+    secure_renegotiation: bool,
+    extended_master_secret: bool,
+    session_ticket: bool,
+    pre_master_secret: Vec<u8>,
+    enc_pre_master_secret: Vec<u8>,
+}
+
+fn compute_pre_master_secret(
+    p: &BigUint,
+    g: &BigUint,
+    server_pub: &BigUint, // Ys
+) -> (BigUint, BigUint) {
+    let mut rng = rand::thread_rng();
+
+    // Choose a random private key x: 2 <= x <= p-2
+    let one = BigUint::one();
+    let two = &one + &one;
+    let x = rng.gen_biguint_range(&two, &(p - &two));
+
+    // Client public key: Yc = g^x mod p
+    let client_pub = g.modpow(&x, p);
+
+    // Pre-master secret: (Ys)^x mod p
+    let pre_master_secret = server_pub.modpow(&x, p);
+
+    (client_pub, pre_master_secret)
+}
+
+impl HandleRecord for AwaitingServerKeyExchangeState {
+    fn handle(
+        mut self,
+        _ctx: &mut TlsContext,
+        msg: &TlsMessage,
+    ) -> TLSResult<(TlsState, Vec<TlsAction>)> {
+        if let TlsMessage::Handshake(TLSHandshake::ServerKeyExchange(kx)) = msg {
+            info!("Received ServerKeyExchange");
+
+            let (client_pubkey, pre_master_secret) = compute_pre_master_secret(
+                &BigUint::from_be_bytes(&kx.p),
+                &BigUint::from_be_bytes(&kx.g),
+                &BigUint::from_be_bytes(&kx.server_pubkey),
+            );
+
+            self.handshakes.extend_from_slice(&kx.to_bytes());
+
+            return Ok((
+                AwaitingServerHelloDoneState {
+                    session_id: self.session_id,
+                    handshakes: self.handshakes,
+                    pre_master_secret: pre_master_secret.to_bytes_be(),
+                    enc_pre_master_secret: client_pubkey.to_bytes_be(),
+                    client_random: self.client_random,
+                    server_random: self.server_random,
+                    secure_renegotiation: self.secure_renegotiation,
+                    extended_master_secret: self.extended_master_secret,
+                    session_ticket: self.session_ticket,
+                    cipher_suite: self.cipher_suite,
+                }
+                .into(),
+                vec![]
+            ))
         }
         panic!("invalid transition");
     }
