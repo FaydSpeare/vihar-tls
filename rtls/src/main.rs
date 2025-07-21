@@ -1,8 +1,6 @@
 use alert::{TLSAlert, TLSAlertDesc, TLSAlertLevel};
 use env_logger;
-use extensions::{
-    ALPNExt, ExtendedMasterSecretExt, HeartbeatExt, SecureRenegotationExt, SessionTicketExt,
-};
+use extensions::{ALPNExt, ExtendedMasterSecretExt, SecureRenegotationExt, SessionTicketExt};
 use log::{error, trace};
 use record::RecordLayer;
 use state_machine::{
@@ -11,15 +9,7 @@ use state_machine::{
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::Instant;
-
-use rsa::rand_core::{OsRng, RngCore};
-// use rand_chacha::ChaCha20Rng;
-// use rand_chacha::rand_core::{RngCore, SeedableRng};
-
-use rsa::pkcs8::DecodePublicKey;
-use rsa::{Pkcs1v15Encrypt, RsaPublicKey};
 use thiserror::Error;
-use x509_parser::parse_x509_certificate;
 
 mod alert;
 mod ciphersuite;
@@ -28,11 +18,13 @@ mod extensions;
 mod messages;
 mod prf;
 mod record;
+mod signature;
 mod state_machine;
 mod utils;
 
 use ciphersuite::{
-    CipherSuite, DheRsaAes128CbcSha, DheRsaAes128CbcSha256, RsaAes128CbcSha, RsaAes128CbcSha256, RsaAes256CbcSha, RsaAes256CbcSha256
+    CipherSuite, DheRsaAes128CbcSha, DheRsaAes128CbcSha256, RsaAes128CbcSha, RsaAes128CbcSha256,
+    RsaAes256CbcSha, RsaAes256CbcSha256,
 };
 use messages::*;
 
@@ -49,28 +41,6 @@ pub enum TLSError {
 }
 
 type TLSResult<T> = Result<T, Box<dyn std::error::Error>>;
-
-fn encrypt_pre_master_secret(cert_der: &[u8]) -> TLSResult<(Vec<u8>, Vec<u8>)> {
-    // Step 1: Parse the certificate and extract the public key
-    let (_, cert) = parse_x509_certificate(cert_der)?;
-    let spki = &cert.tbs_certificate.subject_pki;
-    let pub_key_der = spki.raw.as_ref();
-
-    // Step 2: Load RSA public key from DER (PKCS#1 format)
-    let rsa_pub = RsaPublicKey::from_public_key_der(pub_key_der)?;
-
-    // Step 3: Generate the 48-byte pre_master_secret
-    let mut pre_master = [0u8; 48];
-    //let mut rng = ChaCha20Rng::seed_from_u64(12345);
-    let mut rng = OsRng;
-    pre_master[0] = 0x03;
-    pre_master[1] = 0x03; // TLS 1.2
-    rng.fill_bytes(&mut pre_master[2..]);
-
-    // Step 4: Encrypt it with RSA using PKCS#1 v1.5 padding (TLS 1.2 requires this)
-    let encrypted = rsa_pub.encrypt(&mut rng, Pkcs1v15Encrypt, &pre_master)?;
-    Ok((pre_master.to_vec(), encrypted)) // return both raw and encrypted
-}
 
 struct TLSConnection {
     stream: TcpStream,
@@ -169,7 +139,6 @@ impl TLSConnection {
         }
 
         extensions.push(ExtendedMasterSecretExt::new().into());
-        //extensions.push(HeartbeatExt::new().into());
         extensions.push(ALPNExt::new(vec!["http/1.1".to_string()]).into());
 
         let client_hello = ClientHello::new(cipher_suites, extensions, session_id);
@@ -233,9 +202,22 @@ impl TLSConnection {
 }
 
 /*
+* Not TODO:
+* DH key exchange - not supported (doesn't provide forward secrecy)
+*
 * TODO:
-* session ticket unhappy paths
-* DH cipher suites
+* DSS signature
+* RC4 encryption
+* MD5 hash
+* 3DES_EDE_CBC encryption?
+* Certificate Request
+* Client Certificate
+* Certificate Verify
+*
+* avoid duplicate hex codes for extensions
+*
+* RFC5289 - Stronger SHA algorithms for EC
+* RFC4492 - Elliptic curve cipher suites
 *
 * DESIGN:
 * add direction to handle method of states
@@ -245,13 +227,14 @@ fn main() -> TLSResult<()> {
     env_logger::init();
 
     let suites: Vec<CipherSuite> = vec![
-        // RsaAes128CbcSha.into(),
-        // DheRsaAes128CbcSha.into(),
-        DheRsaAes128CbcSha256.into(),
+        //RsaAes128CbcSha.into(),
+        DheRsaAes128CbcSha.into(),
+        // DheRsaAes128CbcSha256.into(),
+        // DhRsaAes128CbcSha.into()
     ];
 
-    let domain = "challenges.re";
-    //let domain = "localhost";
+    //let domain = "google.com";
+    let domain = "localhost";
 
     let mut connection = TLSConnection::new(domain)?;
     let session_id = connection.handshake(&suites, None, None)?;
@@ -260,20 +243,19 @@ fn main() -> TLSResult<()> {
 
     let ctx = connection.handshake_state_machine.ctx.clone();
     let session_ticket = ctx.session_tickets.keys().last().cloned();
-    // connection.notify_close()?;
+    connection.notify_close()?;
 
-    // match session_ticket {
-    //     Some(session_ticket) => {
-    //         connection.notify_close()?;
-    //         connection = TLSConnection::new_with_context(domain, ctx)?;
-    //         connection.handshake(&suites, None, Some(session_ticket.to_vec()))?;
-    //     }
-    //     None => {}
-    // }
-    // let msg = connection.next_message()?;
-    // println!("{:?}", msg);
-    
-    
+    match session_ticket {
+        Some(mut session_ticket) => {
+            connection.notify_close()?;
+            connection = TLSConnection::new_with_context(domain, ctx)?;
+            connection.handshake(&suites, None, Some(session_ticket.to_vec()))?;
+        }
+        None => {}
+    }
+    let msg = connection.next_message()?;
+    println!("{:?}", msg);
+
     //let mut connection = TLSConnection::new_with_context(domain, ctx)?;
     //connection.handshake(&suites, Some(session_id), None)?;
 

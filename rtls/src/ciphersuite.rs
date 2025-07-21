@@ -2,6 +2,7 @@ use std::fmt::Debug;
 
 use aes::{cipher::{generic_array::GenericArray, BlockDecrypt, BlockEncrypt, KeyInit}, Aes128, Aes256};
 use enum_dispatch::enum_dispatch;
+use num_enum::TryFromPrimitive;
 use crate::{prf::hmac, TLSResult};
 
 use crate::utils;
@@ -164,20 +165,44 @@ pub struct CipherSuiteParams {
     pub key_exchange_algorithm: KeyExchangeAlgorithm,
 }
 
+#[derive(TryFromPrimitive)]
+#[repr(u16)]
+enum CipherSuiteId {
+    RsaAes128CbcSha = 0x002f,
+    RsaAes128CbcSha256 = 0x003c,
+    RsaAes256CbcSha = 0x0035,
+    RsaAes256CbcSha256 = 0x003d,
+    DheRsaAes128CbcSha = 0x0033,
+    DheRsaAes128CbcSha256 = 0x0067,
+}
+
 #[enum_dispatch]
 #[derive(Debug)]
 pub enum CipherSuite {
-    RsaAes128CbcSha(RsaAes128CbcSha),
-    RsaAes128CbcSha256(RsaAes128CbcSha256),
-    RsaAes256CbcSha(RsaAes256CbcSha),
-    RsaAes256CbcSha256(RsaAes256CbcSha256),
-    DheRsaAes128CbcSha(DheRsaAes128CbcSha),
-    DheRsaAes128CbcSha256(DheRsaAes128CbcSha256),
+    RsaAes128CbcSha,
+    RsaAes128CbcSha256,
+    RsaAes256CbcSha,
+    RsaAes256CbcSha256,
+    DheRsaAes128CbcSha,
+    DheRsaAes128CbcSha256,
+}
+
+impl CipherSuite {
+    pub fn from_u16(value: u16) -> TLSResult<CipherSuite> {
+        Ok(match CipherSuiteId::try_from(value)? {
+            CipherSuiteId::RsaAes128CbcSha => RsaAes128CbcSha.into(),
+            CipherSuiteId::RsaAes128CbcSha256 => RsaAes128CbcSha256.into(),
+            CipherSuiteId::RsaAes256CbcSha => RsaAes256CbcSha.into(),
+            CipherSuiteId::RsaAes256CbcSha256 => RsaAes256CbcSha256.into(),
+            CipherSuiteId::DheRsaAes128CbcSha => DheRsaAes128CbcSha.into(),
+            CipherSuiteId::DheRsaAes128CbcSha256 => DheRsaAes128CbcSha256.into(),
+        })
+    }
 }
 
 #[enum_dispatch(CipherSuite)]
 pub trait CipherSuiteMethods: Debug {
-    fn encode(&self) -> [u8; 2];
+    fn encode(&self) -> u16;
     fn params(&self) -> CipherSuiteParams;
 }
 
@@ -185,8 +210,8 @@ pub trait CipherSuiteMethods: Debug {
 pub struct RsaAes128CbcSha;
 
 impl CipherSuiteMethods for RsaAes128CbcSha {
-    fn encode(&self) -> [u8; 2] {
-        return [0x00, 0x2f];
+    fn encode(&self) -> u16 {
+        return CipherSuiteId::RsaAes128CbcSha as u16;
     }
 
     fn params(&self) -> CipherSuiteParams {
@@ -203,8 +228,8 @@ impl CipherSuiteMethods for RsaAes128CbcSha {
 pub struct RsaAes256CbcSha;
 
 impl CipherSuiteMethods for RsaAes256CbcSha {
-    fn encode(&self) -> [u8; 2] {
-        return [0x00, 0x35];
+    fn encode(&self) -> u16 {
+        return CipherSuiteId::RsaAes256CbcSha as u16;
     }
     fn params(&self) -> CipherSuiteParams {
         CipherSuiteParams {
@@ -220,8 +245,8 @@ impl CipherSuiteMethods for RsaAes256CbcSha {
 pub struct RsaAes128CbcSha256;
 
 impl CipherSuiteMethods for RsaAes128CbcSha256 {
-    fn encode(&self) -> [u8; 2] {
-        return [0x00, 0x3c];
+    fn encode(&self) -> u16 {
+        return CipherSuiteId::RsaAes128CbcSha256 as u16;
     }
     fn params(&self) -> CipherSuiteParams {
         CipherSuiteParams {
@@ -237,8 +262,8 @@ impl CipherSuiteMethods for RsaAes128CbcSha256 {
 pub struct RsaAes256CbcSha256;
 
 impl CipherSuiteMethods for RsaAes256CbcSha256 {
-    fn encode(&self) -> [u8; 2] {
-        return [0x00, 0x3d];
+    fn encode(&self) -> u16 {
+        return CipherSuiteId::RsaAes256CbcSha256 as u16;
     }
     fn params(&self) -> CipherSuiteParams {
         CipherSuiteParams {
@@ -251,28 +276,11 @@ impl CipherSuiteMethods for RsaAes256CbcSha256 {
 }
 
 #[derive(Debug)]
-pub struct RsaNullSha;
-
-impl CipherSuiteMethods for RsaNullSha {
-    fn encode(&self) -> [u8; 2] {
-        return [0x00, 0x02];
-    }
-    fn params(&self) -> CipherSuiteParams {
-        CipherSuiteParams {
-            name: "TLS_RSA_WITH_NULL_SHA",
-            mac_algorithm: MacAlgorithm::HmacSha1,
-            enc_algorithm: EncAlgorithm::None,
-            key_exchange_algorithm: KeyExchangeAlgorithm::Rsa,
-        }
-    }
-}
-
-#[derive(Debug)]
 pub struct DheRsaAes128CbcSha;
 
 impl CipherSuiteMethods for DheRsaAes128CbcSha {
-    fn encode(&self) -> [u8; 2] {
-        return [0x00, 0x33];
+    fn encode(&self) -> u16 {
+        return CipherSuiteId::DheRsaAes128CbcSha as u16;
     }
 
     fn params(&self) -> CipherSuiteParams {
@@ -289,8 +297,8 @@ impl CipherSuiteMethods for DheRsaAes128CbcSha {
 pub struct DheRsaAes128CbcSha256;
 
 impl CipherSuiteMethods for DheRsaAes128CbcSha256 {
-    fn encode(&self) -> [u8; 2] {
-        return [0x00, 0x67];
+    fn encode(&self) -> u16 {
+        return CipherSuiteId::DheRsaAes128CbcSha256 as u16;
     }
 
     fn params(&self) -> CipherSuiteParams {
@@ -300,18 +308,5 @@ impl CipherSuiteMethods for DheRsaAes128CbcSha256 {
             enc_algorithm: EncAlgorithm::Aes128Cbc,
             key_exchange_algorithm: KeyExchangeAlgorithm::DheRsa,
         }
-    }
-}
-
-
-pub fn get_cipher_suite(value: u16) -> TLSResult<CipherSuite> {
-    match value {
-        0x002f => Ok(RsaAes128CbcSha.into()),
-        0x0035 => Ok(RsaAes256CbcSha.into()),
-        0x003c => Ok(RsaAes128CbcSha256.into()),
-        0x003d => Ok(RsaAes256CbcSha256.into()),
-        0x0033 => Ok(DheRsaAes128CbcSha.into()),
-        0x0067 => Ok(DheRsaAes128CbcSha256.into()),
-        _ => Err("unsupported cipher suite".into())
     }
 }

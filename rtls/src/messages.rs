@@ -1,5 +1,5 @@
 use crate::alert::TLSAlert;
-use crate::ciphersuite::{CipherSuite, CipherSuiteMethods, get_cipher_suite};
+use crate::ciphersuite::{CipherSuite, CipherSuiteMethods};
 use crate::extensions::{
     EncodeExtension, Extension, HashAlgo, SigAlgo, SignatureAlgorithmsExt, decode_extensions,
 };
@@ -47,11 +47,11 @@ impl ClientHello {
         mut extensions: Vec<Extension>,
         session_id: Option<Vec<u8>>,
     ) -> Self {
-        let cipher_suites = suites.iter().map(|x| x.encode()).collect();
+        let cipher_suites = suites.iter().map(|x| x.encode().to_be_bytes()).collect();
         extensions.push(
             SignatureAlgorithmsExt::new_from_product(
                 vec![SigAlgo::Rsa],
-                vec![HashAlgo::Sha, HashAlgo::Sha256],
+                vec![HashAlgo::Sha1, HashAlgo::Sha256],
             )
             .into(),
         );
@@ -176,7 +176,7 @@ impl ToBytes for ServerHello {
         bytes.push(self.session_id.len() as u8); // SessionId
         bytes.extend_from_slice(&self.session_id); // SessionId bytes
 
-        bytes.extend_from_slice(&self.cipher_suite.encode());
+        bytes.extend_from_slice(&self.cipher_suite.encode().to_be_bytes());
 
         bytes.push(0); // Compression method
 
@@ -216,7 +216,7 @@ impl TryFrom<&[u8]> for ServerHello {
 
         let idx = 35 + session_len;
         let cipher_suite_id = u16::from_be_bytes([buf[idx], buf[idx + 1]]);
-        let cipher_suite = get_cipher_suite(cipher_suite_id)?;
+        let cipher_suite = CipherSuite::from_u16(cipher_suite_id)?;
         // println!("cipher_suite: 0x{:02X}{:02X}", buf[idx], buf[idx + 1]);
 
         let compression_method = buf[idx + 2];
@@ -326,6 +326,20 @@ pub struct ServerKeyExchange {
     pub hash_algo: HashAlgo,
     pub sig_algo: SigAlgo,
     pub signature: Vec<u8>,
+}
+
+impl ServerKeyExchange {
+
+    pub fn dh_params_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&(self.p.len() as u16).to_be_bytes());
+        bytes.extend_from_slice(&self.p);
+        bytes.extend_from_slice(&(self.g.len() as u16).to_be_bytes());
+        bytes.extend_from_slice(&self.g);
+        bytes.extend_from_slice(&(self.server_pubkey.len() as u16).to_be_bytes());
+        bytes.extend_from_slice(&self.server_pubkey);
+        bytes
+    }
 }
 
 impl ToBytes for ServerKeyExchange {

@@ -146,13 +146,19 @@ impl EncodeExtension for ExtendedMasterSecretExt {
 #[repr(u8)]
 pub enum SigAlgo {
     Rsa = 1,
+    Dsa = 2,
+    Ecdsa = 3,
 }
 
 #[derive(Debug, Copy, Clone, TryFromPrimitive)]
 #[repr(u8)]
 pub enum HashAlgo {
-    Sha = 2,
+    Md5 = 1,
+    Sha1 = 2,
+    Sha244 = 3,
     Sha256 = 4,
+    Sha384 = 5,
+    Sha512 = 6,
 }
 
 #[derive(Debug, Clone)]
