@@ -23,8 +23,7 @@ mod state_machine;
 mod utils;
 
 use ciphersuite::{
-    CipherSuite, DheRsaAes128CbcSha, DheRsaAes128CbcSha256, RsaAes128CbcSha, RsaAes128CbcSha256,
-    RsaAes256CbcSha, RsaAes256CbcSha256,
+    CipherSuite, DheDssAes128CbcSha, DheRsaAes128CbcSha, DheRsaAes128CbcSha256, RsaAes128CbcSha, RsaAes128CbcSha256, RsaAes256CbcSha, RsaAes256CbcSha256
 };
 use messages::*;
 
@@ -204,9 +203,9 @@ impl TLSConnection {
 /*
 * Not TODO:
 * DH key exchange - not supported (doesn't provide forward secrecy)
+* DSS not support these days. Working with openssl locally however.
 *
 * TODO:
-* DSS signature
 * RC4 encryption
 * MD5 hash
 * 3DES_EDE_CBC encryption?
@@ -228,13 +227,14 @@ fn main() -> TLSResult<()> {
 
     let suites: Vec<CipherSuite> = vec![
         //RsaAes128CbcSha.into(),
-        DheRsaAes128CbcSha.into(),
+        //DheRsaAes128CbcSha.into(),
+        DheDssAes128CbcSha.into()
         // DheRsaAes128CbcSha256.into(),
         // DhRsaAes128CbcSha.into()
     ];
 
-    //let domain = "google.com";
-    let domain = "localhost";
+    let domain = "example.com";
+    //let domain = "localhost";
 
     let mut connection = TLSConnection::new(domain)?;
     let session_id = connection.handshake(&suites, None, None)?;
@@ -243,7 +243,6 @@ fn main() -> TLSResult<()> {
 
     let ctx = connection.handshake_state_machine.ctx.clone();
     let session_ticket = ctx.session_tickets.keys().last().cloned();
-    connection.notify_close()?;
 
     match session_ticket {
         Some(mut session_ticket) => {

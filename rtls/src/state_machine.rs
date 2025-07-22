@@ -1,12 +1,13 @@
-use rsa::RsaPublicKey;
+use rsa::{RsaPublicKey, pkcs8::DecodePublicKey};
 use std::collections::HashMap;
 
 use enum_dispatch::enum_dispatch;
 use log::{debug, info};
 use sha2::{Digest, Sha256};
 
+use crate::extensions::{HashAlgo, SigAlgo};
 use crate::signature::{
-    get_dhe_pre_master_secret, get_rsa_pre_master_secret, rsa_public_key_from_cert, rsa_verify,
+    dsa_verify, get_dhe_pre_master_secret, get_rsa_pre_master_secret, public_key_from_cert, rsa_verify
 };
 use crate::{
     TLSResult,
@@ -342,25 +343,28 @@ impl HandleRecord for AwaitServerCertificate {
         if let TlsMessage::Handshake(TLSHandshake::Certificates(certs)) = msg {
             info!("Received ServerCertificate");
 
-            let rsa_public_key = rsa_public_key_from_cert(&certs.list[0].bytes)?;
 
+            let server_public_key = public_key_from_cert(&certs.list[0].bytes)?;
             self.handshakes.extend_from_slice(&certs.to_bytes());
 
             let cipher_suite = CipherSuite::from_u16(self.selected_cipher_suite_id)?;
-            if let KeyExchangeAlgorithm::DheRsa = cipher_suite.params().key_exchange_algorithm {
-                return Ok((
-                    AwaitServerKeyExchange {
-                        session_id: self.session_id,
-                        handshakes: self.handshakes,
-                        client_random: self.client_random,
-                        server_random: self.server_random,
-                        selected_cipher_suite_id: self.selected_cipher_suite_id,
-                        supported_extensions: self.supported_extensions,
-                        rsa_public_key,
-                    }
-                    .into(),
-                    vec![],
-                ));
+            match cipher_suite.params().key_exchange_algorithm {
+                KeyExchangeAlgorithm::DheRsa | KeyExchangeAlgorithm::DheDss => {
+                    return Ok((
+                        AwaitServerKeyExchange {
+                            session_id: self.session_id,
+                            handshakes: self.handshakes,
+                            client_random: self.client_random,
+                            server_random: self.server_random,
+                            selected_cipher_suite_id: self.selected_cipher_suite_id,
+                            supported_extensions: self.supported_extensions,
+                            server_public_key,
+                        }
+                        .into(),
+                        vec![],
+                    ));
+                }
+                _ => {}
             }
 
             return Ok((
@@ -371,7 +375,7 @@ impl HandleRecord for AwaitServerCertificate {
                     server_random: self.server_random,
                     selected_cipher_suite_id: self.selected_cipher_suite_id,
                     supported_extensions: self.supported_extensions,
-                    rsa_public_key,
+                    server_public_key,
                     secrets: None,
                 }
                 .into(),
@@ -390,7 +394,7 @@ pub struct AwaitServerKeyExchange {
     server_random: [u8; 32],
     selected_cipher_suite_id: u16,
     supported_extensions: SupportedExtensions,
-    rsa_public_key: RsaPublicKey,
+    server_public_key: Vec<u8>,
 }
 
 impl HandleRecord for AwaitServerKeyExchange {
@@ -402,16 +406,35 @@ impl HandleRecord for AwaitServerKeyExchange {
         if let TlsMessage::Handshake(TLSHandshake::ServerKeyExchange(kx)) = msg {
             info!("Received ServerKeyExchange");
 
-            let verified = rsa_verify(
-                &self.rsa_public_key,
-                &[
-                    self.client_random.as_ref(),
-                    self.server_random.as_ref(),
-                    &kx.dh_params_bytes(),
-                ]
-                .concat(),
-                &kx.signature,
-            )?;
+            let verified = match kx.sig_algo {
+                SigAlgo::Rsa => {
+                    let rsa_public_key = RsaPublicKey::from_public_key_der(&self.server_public_key)?;
+                    rsa_verify(
+                        &rsa_public_key,
+                        &[
+                            self.client_random.as_ref(),
+                            self.server_random.as_ref(),
+                            &kx.dh_params_bytes(),
+                        ]
+                        .concat(),
+                        &kx.signature,
+                    )?
+                }
+                SigAlgo::Dsa => {
+                    assert_eq!(kx.hash_algo, HashAlgo::Sha256);
+                    dsa_verify(
+                        &self.server_public_key,
+                        &[
+                            self.client_random.as_ref(),
+                            self.server_random.as_ref(),
+                            &kx.dh_params_bytes(),
+                        ]
+                        .concat(),
+                        &kx.signature,
+                    )?
+                },
+                _ => unimplemented!()
+            }; 
             assert!(verified, "Invalid ServerKeyExchange signature");
 
             self.handshakes.extend_from_slice(&kx.to_bytes());
@@ -423,7 +446,7 @@ impl HandleRecord for AwaitServerKeyExchange {
                     server_random: self.server_random,
                     selected_cipher_suite_id: self.selected_cipher_suite_id,
                     supported_extensions: self.supported_extensions,
-                    rsa_public_key: self.rsa_public_key,
+                    server_public_key: self.server_public_key,
                     secrets: Some(DheParams {
                         p: kx.p.clone(),
                         g: kx.g.clone(),
@@ -453,7 +476,7 @@ pub struct AwaitServerHelloDone {
     server_random: [u8; 32],
     selected_cipher_suite_id: u16,
     supported_extensions: SupportedExtensions,
-    rsa_public_key: RsaPublicKey,
+    server_public_key: Vec<u8>,
     secrets: Option<DheParams>,
 }
 
@@ -472,8 +495,11 @@ impl HandleRecord for AwaitServerHelloDone {
             let ciphersuite = CipherSuite::from_u16(self.selected_cipher_suite_id)?;
             let (pre_master_secret, key_exchange_data) =
                 match ciphersuite.params().key_exchange_algorithm {
-                    KeyExchangeAlgorithm::Rsa => get_rsa_pre_master_secret(&self.rsa_public_key)?,
-                    KeyExchangeAlgorithm::DheRsa => {
+                    KeyExchangeAlgorithm::Rsa => {
+                        let rsa_public_key = RsaPublicKey::from_public_key_der(&self.server_public_key)?;
+                        get_rsa_pre_master_secret(&rsa_public_key)?
+                    },
+                    KeyExchangeAlgorithm::DheRsa | KeyExchangeAlgorithm::DheDss => {
                         let DheParams { p, g, public_key } = self.secrets.as_ref().unwrap();
                         get_dhe_pre_master_secret(p, g, public_key)
                     }

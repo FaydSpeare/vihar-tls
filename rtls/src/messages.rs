@@ -50,7 +50,7 @@ impl ClientHello {
         let cipher_suites = suites.iter().map(|x| x.encode().to_be_bytes()).collect();
         extensions.push(
             SignatureAlgorithmsExt::new_from_product(
-                vec![SigAlgo::Rsa],
+                vec![SigAlgo::Rsa, SigAlgo::Dsa],
                 vec![HashAlgo::Sha1, HashAlgo::Sha256],
             )
             .into(),
