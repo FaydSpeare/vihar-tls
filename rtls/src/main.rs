@@ -1,7 +1,7 @@
 use alert::{TLSAlert, TLSAlertDesc, TLSAlertLevel};
 use env_logger;
 use extensions::{ALPNExt, ExtendedMasterSecretExt, SecureRenegotationExt, SessionTicketExt};
-use log::{error, trace};
+use log::{error, info, trace};
 use record::RecordLayer;
 use state_machine::{
     ConnStates, TlsAction, TlsContext, TlsEntity, TlsHandshakeStateMachine, TlsState,
@@ -21,9 +21,10 @@ mod record;
 mod signature;
 mod state_machine;
 mod utils;
+mod gcm;
 
 use ciphersuite::{
-    CipherSuite, DheDssAes128CbcSha, DheRsaAes128CbcSha, DheRsaAes128CbcSha256, RsaAes128CbcSha, RsaAes128CbcSha256, RsaAes256CbcSha, RsaAes256CbcSha256
+    CipherSuite, DheDssAes128CbcSha, DheRsaAes128CbcSha, DheRsaAes128CbcSha256, DheRsaAes128GcmSha256, RsaAes128CbcSha, RsaAes128CbcSha256, RsaAes128GcmSha256, RsaAes256CbcSha, RsaAes256CbcSha256
 };
 use messages::*;
 
@@ -50,6 +51,7 @@ struct TLSConnection {
 
 impl TLSConnection {
     pub fn new(domain: &str) -> TLSResult<Self> {
+        info!("Establishing TLS with {}", domain);
         let port = if domain == "localhost" { "4433" } else { "443" };
         Ok(Self {
             stream: TcpStream::connect(format!("{domain}:{port}"))?,
@@ -60,6 +62,7 @@ impl TLSConnection {
     }
 
     pub fn new_with_context(domain: &str, ctx: TlsContext) -> TLSResult<Self> {
+        info!("Establishing TLS with {}", domain);
         let port = if domain == "localhost" { "4433" } else { "443" };
         Ok(Self {
             stream: TcpStream::connect(format!("{domain}:{port}"))?,
@@ -204,10 +207,9 @@ impl TLSConnection {
 * Not TODO:
 * DH key exchange - not supported (doesn't provide forward secrecy)
 * DSS not support these days. Working with openssl locally however.
+* RC4 prohibited. Why?
 *
 * TODO:
-* RC4 encryption
-* MD5 hash
 * 3DES_EDE_CBC encryption?
 * Certificate Request
 * Client Certificate
@@ -215,6 +217,8 @@ impl TLSConnection {
 *
 * avoid duplicate hex codes for extensions
 *
+* RFC5116 - AEAD
+* RFC5288 - AES-GCM
 * RFC5289 - Stronger SHA algorithms for EC
 * RFC4492 - Elliptic curve cipher suites
 *
@@ -225,15 +229,22 @@ impl TLSConnection {
 fn main() -> TLSResult<()> {
     env_logger::init();
 
+    //let x = gcm::gf_mul(3, 1 << 51);
+
+    //gcm::main();
+    //return Ok(());
+
     let suites: Vec<CipherSuite> = vec![
         //RsaAes128CbcSha.into(),
         //DheRsaAes128CbcSha.into(),
-        DheDssAes128CbcSha.into()
+        //DheDssAes128CbcSha.into()
         // DheRsaAes128CbcSha256.into(),
         // DhRsaAes128CbcSha.into()
+        //RsaAes128GcmSha256.into(),
+        DheRsaAes128GcmSha256.into()
     ];
 
-    let domain = "example.com";
+    let domain = "challenges.re";
     //let domain = "localhost";
 
     let mut connection = TLSConnection::new(domain)?;

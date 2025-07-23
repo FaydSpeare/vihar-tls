@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 aes = "0.8.4"
+aes-gcm = "0.10.3"
 base64 = "0.22.1"
 dsa = "0.6.3"
 enum_dispatch = "0.3.13"

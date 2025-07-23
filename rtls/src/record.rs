@@ -1,11 +1,7 @@
 use crate::{
-    TLSError, TLSResult,
-    alert::try_parse_alert,
-    connection::ConnState,
-    messages::{
-        ProtocolVersion, TLSCiphertext, TLSContentType, TLSPlaintext, TlsMessage,
-        try_parse_handshake,
-    },
+    alert::try_parse_alert, ciphersuite::EncAlgorithm, connection::ConnState, messages::{
+        try_parse_handshake, ProtocolVersion, TLSCiphertext, TLSContentType, TLSPlaintext, TlsMessage
+    }, TLSError, TLSResult
 };
 
 pub struct RecordLayer {
@@ -59,32 +55,39 @@ impl RecordLayer {
         conn_state: &mut ConnState,
         ciphertext: TLSCiphertext,
     ) -> TLSResult<TLSPlaintext> {
-        let decrypted = conn_state.decrypt(&ciphertext.fragment);
+        let decrypted = conn_state.decrypt(&ciphertext);
         match conn_state {
             ConnState::Initial(_) => Ok(TLSPlaintext::new(ciphertext.content_type, decrypted)),
             ConnState::Secure(secure_state) => {
-                let len = decrypted.len();
-                let padding = decrypted[len - 1] as usize;
-                let mac_len = secure_state.params.mac_algorithm.mac_length();
-                let fragment = decrypted[..len - padding - 1 - mac_len].to_vec();
-                let mac = decrypted[len - padding - 1 - mac_len..len - padding - 1].to_vec();
+                match secure_state.params.enc_algorithm {
+                    EncAlgorithm::Aes128Gcm => {
+                        Ok(TLSPlaintext::new(ciphertext.content_type, decrypted))
+                    },
+                    _ => {
+                        let len = decrypted.len();
+                        let padding = decrypted[len - 1] as usize;
+                        let mac_len = secure_state.params.mac_algorithm.mac_length();
+                        let fragment = decrypted[..len - padding - 1 - mac_len].to_vec();
+                        let mac = decrypted[len - padding - 1 - mac_len..len - padding - 1].to_vec();
 
-                let mut bytes = Vec::<u8>::new();
-                bytes.extend_from_slice(&(secure_state.seq_num - 1).to_be_bytes());
-                bytes.push(ciphertext.content_type as u8);
-                bytes.extend([3, 3]);
-                bytes.extend((fragment.len() as u16).to_be_bytes());
-                bytes.extend_from_slice(&fragment);
+                        let mut bytes = Vec::<u8>::new();
+                        bytes.extend_from_slice(&(secure_state.seq_num - 1).to_be_bytes());
+                        bytes.push(ciphertext.content_type as u8);
+                        bytes.extend([3, 3]);
+                        bytes.extend((fragment.len() as u16).to_be_bytes());
+                        bytes.extend_from_slice(&fragment);
 
-                assert_eq!(
-                    secure_state
-                        .params
-                        .mac_algorithm
-                        .mac(&secure_state.mac_key, &bytes),
-                    mac,
-                    "bad_record_mac"
-                );
-                Ok(TLSPlaintext::new(ciphertext.content_type, fragment))
+                        assert_eq!(
+                            secure_state
+                                .params
+                                .mac_algorithm
+                                .mac(&secure_state.mac_key, &bytes),
+                            mac,
+                            "bad_record_mac"
+                        );
+                        Ok(TLSPlaintext::new(ciphertext.content_type, fragment))
+                    }
+                }
             }
         }
     }

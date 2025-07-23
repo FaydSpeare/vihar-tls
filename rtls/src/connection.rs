@@ -1,6 +1,7 @@
 use log::debug;
 
 use crate::ciphersuite::{EncAlgorithm, MacAlgorithm};
+use crate::gcm::{decrypt_aes_128_gcm, encrypt_aes_128_gcm};
 use crate::prf::prf_sha256;
 use crate::messages::{TLSCiphertext, TLSContentType, TLSPlaintext};
 use crate::{utils, TLSResult};
@@ -11,6 +12,8 @@ pub struct DerivedKeys {
     pub server_mac_key: Vec<u8>,
     pub client_enc_key: Vec<u8>,
     pub server_enc_key: Vec<u8>,
+    pub client_write_iv: Vec<u8>,
+    pub server_write_iv: Vec<u8>,
 }
 
 #[derive(Debug, Clone)]
@@ -27,12 +30,13 @@ impl SecurityParams {
     pub fn derive_keys(&self) -> DerivedKeys {
         let mac_key_len = self.mac_algorithm.key_length();
         let enc_key_len = self.enc_algorithm.key_length();
+        let fixed_iv_len = self.enc_algorithm.fixed_iv_length();
 
         let key_block = prf_sha256(
             &self.master_secret,
             b"key expansion",
             &[self.server_random.as_slice(), self.client_random.as_slice()].concat(),
-            2 * mac_key_len + 2 * enc_key_len,
+            2 * mac_key_len + 2 * enc_key_len + 2 * fixed_iv_len,
         );
 
         let mut offset = 0;
@@ -43,12 +47,18 @@ impl SecurityParams {
         let client_enc_key = key_block[offset..offset + enc_key_len].to_vec();
         offset += enc_key_len;
         let server_enc_key = key_block[offset..offset + enc_key_len].to_vec();
+        offset += enc_key_len;
+        let client_write_iv = key_block[offset..offset + fixed_iv_len].to_vec();
+        offset += fixed_iv_len;
+        let server_write_iv = key_block[offset..offset + fixed_iv_len].to_vec();
 
         DerivedKeys {
             client_mac_key,
             server_mac_key,
             client_enc_key,
             server_enc_key,
+            client_write_iv,
+            server_write_iv
         }
     }
 }
@@ -65,8 +75,8 @@ impl InitialConnState {
         ciphertext
     }
 
-    pub fn decrypt(&mut self, ciphertext: &[u8]) -> Vec<u8> {
-        let plaintext = ciphertext.to_vec();
+    pub fn decrypt(&mut self, ciphertext: &TLSCiphertext) -> Vec<u8> {
+        let plaintext = ciphertext.fragment.to_vec();
         self.seq_num += 1;
         plaintext
     }
@@ -77,32 +87,68 @@ pub struct SecureConnState {
     pub params: SecurityParams,
     pub mac_key: Vec<u8>,
     pub enc_key: Vec<u8>,
+    pub write_iv: Vec<u8>,
     pub seq_num: u64,
 }
 
 impl SecureConnState {
-    pub fn new(params: SecurityParams, enc_key: Vec<u8>, mac_key: Vec<u8>) -> Self {
+    pub fn new(params: SecurityParams, enc_key: Vec<u8>, mac_key: Vec<u8>, write_iv: Vec<u8>) -> Self {
         Self {
             params,
             enc_key,
             mac_key,
+            write_iv,
             seq_num: 0,
         }
     }
 
-    pub fn decrypt(&mut self, ciphertext: &[u8]) -> Vec<u8> {
-        let (iv, ciphertext) = ciphertext.split_at(self.params.enc_algorithm.iv_length());
-        let plaintext = self.params
-            .enc_algorithm
-            .decrypt(ciphertext, &self.enc_key, iv);
+    pub fn decrypt(&mut self, ciphertext: &TLSCiphertext) -> Vec<u8> {
+        let content_type = ciphertext.content_type;
+        let plaintext = match self.params.enc_algorithm {
+            EncAlgorithm::Aes128Gcm => {
+                let (explicit, ciphertext) = ciphertext.fragment.split_at(self.params.enc_algorithm.record_iv_length());
+                let iv = [&self.write_iv, explicit].concat();
+                let mut aad = Vec::<u8>::new();
+                aad.extend_from_slice(&self.seq_num.to_be_bytes());
+                aad.push(content_type as u8);
+                aad.extend([3, 3]);
+                // Remeber the -16 to remove the tag length
+                aad.extend(((ciphertext.len() - 16) as u16).to_be_bytes());
+                decrypt_aes_128_gcm(&self.enc_key, &iv, ciphertext, &aad)
+            },
+            _ => {
+                let (iv, ciphertext) = ciphertext.fragment.split_at(self.params.enc_algorithm.record_iv_length());
+                self.params
+                    .enc_algorithm
+                    .decrypt(ciphertext, &self.enc_key, iv, b"")
+            },
+        };
         self.seq_num += 1;
         plaintext
     }
 
     pub fn encrypt(&mut self, plaintext: TLSPlaintext) -> TLSCiphertext {
-        let ciphertext = self.encrypt_fragment(plaintext.content_type, &plaintext.fragment);
+        let ciphertext = match self.params.enc_algorithm {
+            EncAlgorithm::Aes128Gcm => self.encrypt_fragment_gcm(plaintext.content_type, &plaintext.fragment),
+            _ => self.encrypt_fragment(plaintext.content_type, &plaintext.fragment)
+        };
         self.seq_num += 1;
         TLSCiphertext::new(plaintext.content_type, ciphertext)
+    }
+
+    pub fn encrypt_fragment_gcm(&self, content_type: TLSContentType, fragment: &[u8]) -> Vec<u8> {
+        let implicit: [u8; 4]  = self.write_iv.clone().try_into().unwrap();
+        let explicit = utils::get_random_bytes(self.params.enc_algorithm.record_iv_length());
+        let nonce = [&implicit[..], &explicit[..]].concat();
+        assert_eq!(nonce.len(), 12);
+
+        let mut aad = Vec::<u8>::new();
+        aad.extend_from_slice(&self.seq_num.to_be_bytes());
+        aad.push(content_type as u8);
+        aad.extend([3, 3]);
+        aad.extend((fragment.len() as u16).to_be_bytes());
+        let aead_ciphertext = encrypt_aes_128_gcm(&self.enc_key, &nonce, fragment, &aad);
+        [&explicit, &aead_ciphertext[..]].concat()
     }
 
     pub fn encrypt_fragment(&self, content_type: TLSContentType, fragment: &[u8]) -> Vec<u8> {
@@ -130,11 +176,11 @@ impl SecureConnState {
         plaintext.push(padding_len as u8);
 
         // Encrypt
-        let iv = utils::get_random_bytes(self.params.enc_algorithm.iv_length());
+        let iv = utils::get_random_bytes(self.params.enc_algorithm.record_iv_length());
         let ciphertext = self
             .params
             .enc_algorithm
-            .encrypt(&plaintext, &self.enc_key, &iv);
+            .encrypt(&plaintext, &self.enc_key, &iv, b"");
 
         let mut encrypted = Vec::<u8>::new();
         encrypted.extend_from_slice(&iv);
@@ -214,7 +260,7 @@ impl ConnState {
         }
     }
 
-    pub fn decrypt(&mut self, ciphertext: &[u8]) -> Vec<u8> {
+    pub fn decrypt(&mut self, ciphertext: &TLSCiphertext) -> Vec<u8> {
         match self {
             Self::Initial(state) => state.decrypt(ciphertext),
             Self::Secure(state) => state.decrypt(ciphertext),

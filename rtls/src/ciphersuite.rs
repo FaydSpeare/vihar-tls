@@ -3,7 +3,7 @@ use std::fmt::Debug;
 use aes::{cipher::{generic_array::GenericArray, BlockDecrypt, BlockEncrypt, KeyInit}, Aes128, Aes256};
 use enum_dispatch::enum_dispatch;
 use num_enum::TryFromPrimitive;
-use crate::{prf::hmac, TLSResult};
+use crate::{gcm::{decrypt_aes_128_gcm, encrypt_aes_128_gcm}, prf::hmac, TLSResult};
 
 use crate::utils;
 
@@ -110,6 +110,7 @@ pub enum EncAlgorithm {
     None,
     Aes128Cbc,
     Aes256Cbc,
+    Aes128Gcm,
 }
 
 impl EncAlgorithm {
@@ -118,6 +119,7 @@ impl EncAlgorithm {
             Self::None => 16,
             Self::Aes128Cbc => 16,
             Self::Aes256Cbc => 32,
+            Self::Aes128Gcm => 16,
         }
     }
 
@@ -126,26 +128,40 @@ impl EncAlgorithm {
             Self::None => 16,
             Self::Aes128Cbc => 16,
             Self::Aes256Cbc => 16,
+            Self::Aes128Gcm => 16,
         }
     }
 
-    pub fn iv_length(&self) -> usize {
-        self.block_length()
+    pub fn record_iv_length(&self) -> usize {
+        match self {
+            Self::Aes128Gcm => 8,
+            _ => self.block_length()
+        }
+        
     }
 
-    pub fn decrypt(&self, ciphertext: &[u8], key: &[u8], iv: &[u8]) -> Vec<u8> {
+    pub fn fixed_iv_length(&self) -> usize {
+        match self {
+            Self::Aes128Gcm => 4,
+            _ => 0
+        }
+    }
+
+    pub fn decrypt(&self, ciphertext: &[u8], key: &[u8], iv: &[u8], aad: &[u8]) -> Vec<u8> {
         match self {
             Self::None => ciphertext.to_vec(),
             Self::Aes128Cbc => decrypt_aes_128_cbc(ciphertext, key, iv),
             Self::Aes256Cbc => decrypt_aes_256_cbc(ciphertext, key, iv),
+            Self::Aes128Gcm => decrypt_aes_128_gcm(key, iv, ciphertext, aad),
         }
     }
 
-    pub fn encrypt(&self, plaintext: &[u8], key: &[u8], iv: &[u8]) -> Vec<u8> {
+    pub fn encrypt(&self, plaintext: &[u8], key: &[u8], iv: &[u8], aad: &[u8]) -> Vec<u8> {
         match self {
             Self::None => plaintext.to_vec(),
             Self::Aes128Cbc => encrypt_aes_128_cbc(plaintext, key, iv),
             Self::Aes256Cbc => encrypt_aes_256_cbc(plaintext, key, iv),
+            Self::Aes128Gcm => encrypt_aes_128_gcm(key, iv, plaintext, aad),
         }
     }
 }
@@ -176,6 +192,8 @@ enum CipherSuiteId {
     DheRsaAes128CbcSha = 0x0033,
     DheRsaAes128CbcSha256 = 0x0067,
     DheDssAes128CbcSha = 0x0032,
+    RsaAes128GcmSha256 = 0x009c,
+    DheRsaAes128GcmSha256 = 0x009e,
 }
 
 #[enum_dispatch]
@@ -188,6 +206,8 @@ pub enum CipherSuite {
     DheRsaAes128CbcSha,
     DheRsaAes128CbcSha256,
     DheDssAes128CbcSha,
+    RsaAes128GcmSha256,
+    DheRsaAes128GcmSha256,
 }
 
 impl CipherSuite {
@@ -200,6 +220,8 @@ impl CipherSuite {
             CipherSuiteId::DheRsaAes128CbcSha => DheRsaAes128CbcSha.into(),
             CipherSuiteId::DheRsaAes128CbcSha256 => DheRsaAes128CbcSha256.into(),
             CipherSuiteId::DheDssAes128CbcSha => DheDssAes128CbcSha.into(),
+            CipherSuiteId::RsaAes128GcmSha256 => RsaAes128GcmSha256.into(),
+            CipherSuiteId::DheRsaAes128GcmSha256 => DheRsaAes128GcmSha256.into(),
         })
     }
 }
@@ -329,6 +351,43 @@ impl CipherSuiteMethods for DheDssAes128CbcSha {
             mac_algorithm: MacAlgorithm::HmacSha1,
             enc_algorithm: EncAlgorithm::Aes128Cbc,
             key_exchange_algorithm: KeyExchangeAlgorithm::DheDss,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct RsaAes128GcmSha256;
+
+impl CipherSuiteMethods for RsaAes128GcmSha256 {
+    fn encode(&self) -> u16 {
+        return CipherSuiteId::RsaAes128GcmSha256 as u16;
+    }
+
+    fn params(&self) -> CipherSuiteParams {
+        CipherSuiteParams {
+            name: "TLS_RSA_WITH_AES_128_GCM_SHA256",
+            mac_algorithm: MacAlgorithm::None,
+            enc_algorithm: EncAlgorithm::Aes128Gcm,
+            key_exchange_algorithm: KeyExchangeAlgorithm::Rsa,
+        }
+    }
+}
+
+
+#[derive(Debug)]
+pub struct DheRsaAes128GcmSha256;
+
+impl CipherSuiteMethods for DheRsaAes128GcmSha256 {
+    fn encode(&self) -> u16 {
+        return CipherSuiteId::DheRsaAes128GcmSha256 as u16;
+    }
+
+    fn params(&self) -> CipherSuiteParams {
+        CipherSuiteParams {
+            name: "TLS_DHE_RSA_WITH_AES_128_GCM_SHA256",
+            mac_algorithm: MacAlgorithm::None,
+            enc_algorithm: EncAlgorithm::Aes128Gcm,
+            key_exchange_algorithm: KeyExchangeAlgorithm::DheRsa,
         }
     }
 }

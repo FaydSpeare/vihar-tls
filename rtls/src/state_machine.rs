@@ -525,6 +525,7 @@ impl HandleRecord for AwaitServerHelloDone {
                 params.clone(),
                 keys.client_enc_key,
                 keys.client_mac_key,
+                keys.client_write_iv
             ));
 
             let verify_data = client_verify_data(&master_secret, &self.handshakes);
@@ -775,6 +776,7 @@ impl HandleRecord for AwaitServerChangeCipher {
                 self.params.clone(),
                 keys.server_enc_key,
                 keys.server_mac_key,
+                keys.server_write_iv,
             ));
 
             return Ok((
@@ -845,6 +847,7 @@ impl HandleRecord for AwaitServerFinished {
                     self.params.clone(),
                     keys.client_enc_key,
                     keys.client_mac_key,
+                    keys.client_write_iv,
                 ));
 
                 let verify_data = client_verify_data(&self.params.master_secret, &self.handshakes);
