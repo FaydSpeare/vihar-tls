@@ -3,33 +3,23 @@ use std::collections::HashMap;
 
 use enum_dispatch::enum_dispatch;
 use log::{debug, info};
-use sha2::{Digest, Sha256};
 
+use crate::ciphersuite::PrfAlgorithm;
 use crate::extensions::{HashAlgo, SigAlgo};
 use crate::signature::{
-    dsa_verify, get_dhe_pre_master_secret, get_rsa_pre_master_secret, public_key_from_cert, rsa_verify
+    dsa_verify, get_dhe_pre_master_secret, get_rsa_pre_master_secret, public_key_from_cert,
+    rsa_verify,
 };
 use crate::{
     TLSResult,
     alert::TLSAlert,
-    ciphersuite::{CipherSuiteMethods, KeyExchangeAlgorithm, CipherSuite},
+    ciphersuite::{CipherSuite, CipherSuiteMethods, KeyExchangeAlgorithm},
     connection::{ConnState, InitialConnState, SecureConnState, SecurityParams},
     messages::{
         ChangeCipherSpec, ClientKeyExchange, Finished, TLSHandshake, TLSHandshakeType,
         TLSPlaintext, TlsMessage, ToBytes, handshake_bytes,
     },
-    prf,
 };
-
-fn client_verify_data(master_secret: &[u8], handshakes: &[u8]) -> Vec<u8> {
-    let seed = Sha256::digest(handshakes).to_vec();
-    prf::prf_sha256(&master_secret, b"client finished", &seed, 12)
-}
-
-fn server_verify_data(master_secret: &[u8], handshakes: &[u8]) -> Vec<u8> {
-    let seed = Sha256::digest(handshakes).to_vec();
-    prf::prf_sha256(&master_secret, b"server finished", &seed, 12)
-}
 
 #[derive(Debug, Clone)]
 pub struct SessionInfo {
@@ -238,6 +228,7 @@ impl HandleRecord for AwaitServerHello {
                     server_random: hello.random.as_bytes(),
                     enc_algorithm: ciphersuite.params().enc_algorithm,
                     mac_algorithm: ciphersuite.params().mac_algorithm,
+                    prf_algorithm: ciphersuite.params().prf_algorithm,
                     master_secret: resumption.master_secret,
                 };
 
@@ -343,7 +334,6 @@ impl HandleRecord for AwaitServerCertificate {
         if let TlsMessage::Handshake(TLSHandshake::Certificates(certs)) = msg {
             info!("Received ServerCertificate");
 
-
             let server_public_key = public_key_from_cert(&certs.list[0].bytes)?;
             self.handshakes.extend_from_slice(&certs.to_bytes());
 
@@ -408,7 +398,8 @@ impl HandleRecord for AwaitServerKeyExchange {
 
             let verified = match kx.sig_algo {
                 SigAlgo::Rsa => {
-                    let rsa_public_key = RsaPublicKey::from_public_key_der(&self.server_public_key)?;
+                    let rsa_public_key =
+                        RsaPublicKey::from_public_key_der(&self.server_public_key)?;
                     rsa_verify(
                         &rsa_public_key,
                         &[
@@ -432,9 +423,9 @@ impl HandleRecord for AwaitServerKeyExchange {
                         .concat(),
                         &kx.signature,
                     )?
-                },
-                _ => unimplemented!()
-            }; 
+                }
+                _ => unimplemented!(),
+            };
             assert!(verified, "Invalid ServerKeyExchange signature");
 
             self.handshakes.extend_from_slice(&kx.to_bytes());
@@ -496,9 +487,10 @@ impl HandleRecord for AwaitServerHelloDone {
             let (pre_master_secret, key_exchange_data) =
                 match ciphersuite.params().key_exchange_algorithm {
                     KeyExchangeAlgorithm::Rsa => {
-                        let rsa_public_key = RsaPublicKey::from_public_key_der(&self.server_public_key)?;
+                        let rsa_public_key =
+                            RsaPublicKey::from_public_key_der(&self.server_public_key)?;
                         get_rsa_pre_master_secret(&rsa_public_key)?
-                    },
+                    }
                     KeyExchangeAlgorithm::DheRsa | KeyExchangeAlgorithm::DheDss => {
                         let DheParams { p, g, public_key } = self.secrets.as_ref().unwrap();
                         get_dhe_pre_master_secret(p, g, public_key)
@@ -511,7 +503,8 @@ impl HandleRecord for AwaitServerHelloDone {
 
             let change_cipher_spec = ChangeCipherSpec::new();
 
-            let master_secret = self.calculate_master_secret(&pre_master_secret);
+            let master_secret = self
+                .calculate_master_secret(&pre_master_secret, ciphersuite.params().prf_algorithm);
             let params = SecurityParams {
                 cipher_suite_id: self.selected_cipher_suite_id,
                 client_random: self.client_random,
@@ -519,16 +512,17 @@ impl HandleRecord for AwaitServerHelloDone {
                 master_secret,
                 mac_algorithm: ciphersuite.params().mac_algorithm,
                 enc_algorithm: ciphersuite.params().enc_algorithm,
+                prf_algorithm: ciphersuite.params().prf_algorithm,
             };
             let keys = params.derive_keys();
             let write = ConnState::Secure(SecureConnState::new(
                 params.clone(),
                 keys.client_enc_key,
                 keys.client_mac_key,
-                keys.client_write_iv
+                keys.client_write_iv,
             ));
 
-            let verify_data = client_verify_data(&master_secret, &self.handshakes);
+            let verify_data = params.client_verify_data(&self.handshakes);
             let client_finished = Finished::new(verify_data.clone());
             self.handshakes
                 .extend_from_slice(&client_finished.to_bytes());
@@ -576,12 +570,9 @@ impl HandleRecord for AwaitServerHelloDone {
 }
 
 impl AwaitServerHelloDone {
-    fn calculate_master_secret(&self, pre_master_secret: &[u8]) -> [u8; 48] {
+    fn calculate_master_secret(&self, pre_master_secret: &[u8], prf: PrfAlgorithm) -> [u8; 48] {
         let (label, seed): (&[u8], Vec<u8>) = if self.supported_extensions.extended_master_secret {
-            (
-                b"extended master secret",
-                Sha256::digest(&self.handshakes).to_vec(),
-            )
+            (b"extended master secret", prf.hash(&self.handshakes))
         } else {
             (
                 b"master secret",
@@ -589,7 +580,7 @@ impl AwaitServerHelloDone {
             )
         };
 
-        let master_secret: [u8; 48] = crate::prf::prf_sha256(pre_master_secret, label, &seed, 48)
+        let master_secret: [u8; 48] = prf.prf(pre_master_secret, label, &seed, 48)
             .try_into()
             .unwrap();
         master_secret
@@ -667,6 +658,7 @@ impl HandleRecord for AwaitNewSessionTicketOrCertificate {
                 server_random: self.server_random,
                 enc_algorithm: ciphersuite.params().enc_algorithm,
                 mac_algorithm: ciphersuite.params().mac_algorithm,
+                prf_algorithm: ciphersuite.params().prf_algorithm,
                 master_secret: self.session_ticket_resumption.master_secret,
             };
 
@@ -719,6 +711,7 @@ impl HandleRecord for AwaitServerChangeCipherOrCertificate {
                 server_random: self.server_random,
                 enc_algorithm: ciphersuite.params().enc_algorithm,
                 mac_algorithm: ciphersuite.params().mac_algorithm,
+                prf_algorithm: ciphersuite.params().prf_algorithm,
                 master_secret: self.session_ticket_resumption.master_secret,
             };
 
@@ -815,7 +808,7 @@ impl HandleRecord for AwaitServerFinished {
         if let TlsMessage::Handshake(TLSHandshake::Finished(finished)) = msg {
             info!("Received ServerFinished");
 
-            let verify_data = server_verify_data(&self.params.master_secret, &self.handshakes);
+            let verify_data = self.params.server_verify_data(&self.handshakes);
             assert_eq!(verify_data, finished.verify_data);
             self.handshakes.extend_from_slice(&finished.to_bytes());
 
@@ -850,7 +843,7 @@ impl HandleRecord for AwaitServerFinished {
                     keys.client_write_iv,
                 ));
 
-                let verify_data = client_verify_data(&self.params.master_secret, &self.handshakes);
+                let verify_data = self.params.client_verify_data(&self.handshakes);
                 let client_finished = Finished::new(verify_data.clone());
 
                 info!("Sent ChangeCipherSpec");

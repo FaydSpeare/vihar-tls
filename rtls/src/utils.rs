@@ -25,3 +25,14 @@ pub fn u24_be_bytes(value: usize) -> [u8; 3] {
         (value & 0xFF) as u8,
     ]
 }
+
+pub fn hex_to_bytes(hex: &str) -> Vec<u8> {
+    // Remove whitespace and newlines
+    let clean_hex: String = hex.chars().filter(|c| !c.is_whitespace()).collect();
+
+    // Convert every 2 hex chars into a u8
+    (0..clean_hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&clean_hex[i..i + 2], 16).expect("Invalid hex"))
+        .collect()
+}

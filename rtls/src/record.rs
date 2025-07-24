@@ -1,7 +1,8 @@
 use crate::{
-    alert::try_parse_alert, ciphersuite::EncAlgorithm, connection::ConnState, messages::{
-        try_parse_handshake, ProtocolVersion, TLSCiphertext, TLSContentType, TLSPlaintext, TlsMessage
-    }, TLSError, TLSResult
+    TLSError, TLSResult,
+    alert::try_parse_alert,
+    connection::ConnState,
+    messages::{ProtocolVersion, TLSCiphertext, TLSContentType, TlsMessage, try_parse_handshake},
 };
 
 pub struct RecordLayer {

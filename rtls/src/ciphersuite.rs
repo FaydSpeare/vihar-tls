@@ -3,7 +3,8 @@ use std::fmt::Debug;
 use aes::{cipher::{generic_array::GenericArray, BlockDecrypt, BlockEncrypt, KeyInit}, Aes128, Aes256};
 use enum_dispatch::enum_dispatch;
 use num_enum::TryFromPrimitive;
-use crate::{gcm::{decrypt_aes_128_gcm, encrypt_aes_128_gcm}, prf::hmac, TLSResult};
+use sha2::{Digest, Sha256, Sha384};
+use crate::{gcm::{encrypt_aes_gcm, decrypt_aes_gcm}, prf::{hmac, prf_sha256, prf_sha384, HmacHashAlgo}, TLSResult};
 
 use crate::utils;
 
@@ -98,11 +99,35 @@ impl MacAlgorithm {
 
     pub fn mac(&self, key: &[u8], seed: &[u8]) -> Vec<u8> {
         match self {
-            Self::HmacSha1 => hmac(key, seed, true),
-            Self::HmacSha256 => hmac(key, seed, false),
+            Self::HmacSha1 => hmac(key, seed, HmacHashAlgo::Sha1),
+            Self::HmacSha256 => hmac(key, seed, HmacHashAlgo::Sha256),
             _ => unreachable!()
         }
     }
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum PrfAlgorithm {
+    Sha256,
+    Sha384,
+}
+
+impl PrfAlgorithm {
+
+    pub fn prf(&self, secret: &[u8], label: &[u8], seed: &[u8], len: usize) -> Vec<u8> {
+        match self {
+            Self::Sha256 => prf_sha256(secret, label, seed, len),
+            Self::Sha384 => prf_sha384(secret, label, seed, len),
+        }
+    }
+
+    pub fn hash(&self, data: &[u8]) -> Vec<u8> {
+        match self {
+            Self::Sha256 => Sha256::digest(data).to_vec(),
+            Self::Sha384 => Sha384::digest(data).to_vec(),
+        }
+    }
+
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -117,6 +142,7 @@ pub enum EncAlgorithm {
     Aes128Cbc,
     Aes256Cbc,
     Aes128Gcm,
+    Aes256Gcm,
 }
 
 impl EncAlgorithm {
@@ -125,6 +151,7 @@ impl EncAlgorithm {
             Self::Aes128Cbc => 16,
             Self::Aes256Cbc => 32,
             Self::Aes128Gcm => 16,
+            Self::Aes256Gcm => 32,
         }
     }
 
@@ -133,12 +160,14 @@ impl EncAlgorithm {
             Self::Aes128Cbc => 16,
             Self::Aes256Cbc => 16,
             Self::Aes128Gcm => 16,
+            Self::Aes256Gcm => 16,
         }
     }
 
     pub fn record_iv_length(&self) -> usize {
         match self {
             Self::Aes128Gcm => 8,
+            Self::Aes256Gcm => 8,
             _ => self.block_length()
         }
         
@@ -147,6 +176,7 @@ impl EncAlgorithm {
     pub fn fixed_iv_length(&self) -> usize {
         match self {
             Self::Aes128Gcm => 4,
+            Self::Aes256Gcm => 4,
             _ => 0
         }
     }
@@ -156,6 +186,7 @@ impl EncAlgorithm {
             Self::Aes128Cbc => CipherType::Block,
             Self::Aes256Cbc => CipherType::Block,
             Self::Aes128Gcm => CipherType::Aead,
+            Self::Aes256Gcm => CipherType::Aead,
         }
     }
 
@@ -164,7 +195,10 @@ impl EncAlgorithm {
             Self::Aes128Cbc => decrypt_aes_128_cbc(ciphertext, key, iv),
             Self::Aes256Cbc => decrypt_aes_256_cbc(ciphertext, key, iv),
             Self::Aes128Gcm => {
-                decrypt_aes_128_gcm(key, iv, ciphertext, aad.expect("GCM missing additional data"))
+                decrypt_aes_gcm::<Aes128>(key, iv, ciphertext, aad.expect("GCM missing additional data"))
+            },
+            Self::Aes256Gcm => {
+                decrypt_aes_gcm::<Aes256>(key, iv, ciphertext, aad.expect("GCM missing additional data"))
             },
         }
     }
@@ -174,7 +208,10 @@ impl EncAlgorithm {
             Self::Aes128Cbc => encrypt_aes_128_cbc(plaintext, key, iv),
             Self::Aes256Cbc => encrypt_aes_256_cbc(plaintext, key, iv),
             Self::Aes128Gcm => {
-                encrypt_aes_128_gcm(key, iv, plaintext, aad.expect("GCM missing additional data"))
+                encrypt_aes_gcm::<Aes128>(key, iv, plaintext, aad.expect("GCM missing additional data"))
+            },
+            Self::Aes256Gcm => {
+                encrypt_aes_gcm::<Aes256>(key, iv, plaintext, aad.expect("GCM missing additional data"))
             },
         }
     }
@@ -194,6 +231,7 @@ pub struct CipherSuiteParams {
     pub mac_algorithm: MacAlgorithm,
     pub enc_algorithm: EncAlgorithm,
     pub key_exchange_algorithm: KeyExchangeAlgorithm,
+    pub prf_algorithm: PrfAlgorithm
 }
 
 #[derive(TryFromPrimitive)]
@@ -207,6 +245,7 @@ enum CipherSuiteId {
     DheRsaAes128CbcSha256 = 0x0067,
     DheDssAes128CbcSha = 0x0032,
     RsaAes128GcmSha256 = 0x009c,
+    RsaAes256GcmSha384 = 0x009d,
     DheRsaAes128GcmSha256 = 0x009e,
 }
 
@@ -221,6 +260,7 @@ pub enum CipherSuite {
     DheRsaAes128CbcSha256,
     DheDssAes128CbcSha,
     RsaAes128GcmSha256,
+    RsaAes256GcmSha384,
     DheRsaAes128GcmSha256,
 }
 
@@ -235,6 +275,7 @@ impl CipherSuite {
             CipherSuiteId::DheRsaAes128CbcSha256 => DheRsaAes128CbcSha256.into(),
             CipherSuiteId::DheDssAes128CbcSha => DheDssAes128CbcSha.into(),
             CipherSuiteId::RsaAes128GcmSha256 => RsaAes128GcmSha256.into(),
+            CipherSuiteId::RsaAes256GcmSha384 => RsaAes256GcmSha384.into(),
             CipherSuiteId::DheRsaAes128GcmSha256 => DheRsaAes128GcmSha256.into(),
         })
     }
@@ -260,6 +301,7 @@ impl CipherSuiteMethods for RsaAes128CbcSha {
             mac_algorithm: MacAlgorithm::HmacSha1,
             enc_algorithm: EncAlgorithm::Aes128Cbc,
             key_exchange_algorithm: KeyExchangeAlgorithm::Rsa,
+            prf_algorithm: PrfAlgorithm::Sha256,
         }
     }
 }
@@ -277,6 +319,7 @@ impl CipherSuiteMethods for RsaAes256CbcSha {
             mac_algorithm: MacAlgorithm::HmacSha1,
             enc_algorithm: EncAlgorithm::Aes256Cbc,
             key_exchange_algorithm: KeyExchangeAlgorithm::Rsa,
+            prf_algorithm: PrfAlgorithm::Sha256,
         }
     }
 }
@@ -294,6 +337,7 @@ impl CipherSuiteMethods for RsaAes128CbcSha256 {
             mac_algorithm: MacAlgorithm::HmacSha256,
             enc_algorithm: EncAlgorithm::Aes128Cbc,
             key_exchange_algorithm: KeyExchangeAlgorithm::Rsa,
+            prf_algorithm: PrfAlgorithm::Sha256,
         }
     }
 }
@@ -311,6 +355,7 @@ impl CipherSuiteMethods for RsaAes256CbcSha256 {
             mac_algorithm: MacAlgorithm::HmacSha256,
             enc_algorithm: EncAlgorithm::Aes256Cbc,
             key_exchange_algorithm: KeyExchangeAlgorithm::Rsa,
+            prf_algorithm: PrfAlgorithm::Sha256,
         }
     }
 }
@@ -329,6 +374,7 @@ impl CipherSuiteMethods for DheRsaAes128CbcSha {
             mac_algorithm: MacAlgorithm::HmacSha1,
             enc_algorithm: EncAlgorithm::Aes128Cbc,
             key_exchange_algorithm: KeyExchangeAlgorithm::DheRsa,
+            prf_algorithm: PrfAlgorithm::Sha256,
         }
     }
 }
@@ -347,6 +393,7 @@ impl CipherSuiteMethods for DheRsaAes128CbcSha256 {
             mac_algorithm: MacAlgorithm::HmacSha256,
             enc_algorithm: EncAlgorithm::Aes128Cbc,
             key_exchange_algorithm: KeyExchangeAlgorithm::DheRsa,
+            prf_algorithm: PrfAlgorithm::Sha256,
         }
     }
 }
@@ -365,6 +412,7 @@ impl CipherSuiteMethods for DheDssAes128CbcSha {
             mac_algorithm: MacAlgorithm::HmacSha1,
             enc_algorithm: EncAlgorithm::Aes128Cbc,
             key_exchange_algorithm: KeyExchangeAlgorithm::DheDss,
+            prf_algorithm: PrfAlgorithm::Sha256,
         }
     }
 }
@@ -383,6 +431,26 @@ impl CipherSuiteMethods for RsaAes128GcmSha256 {
             mac_algorithm: MacAlgorithm::None,
             enc_algorithm: EncAlgorithm::Aes128Gcm,
             key_exchange_algorithm: KeyExchangeAlgorithm::Rsa,
+            prf_algorithm: PrfAlgorithm::Sha256,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct RsaAes256GcmSha384;
+
+impl CipherSuiteMethods for RsaAes256GcmSha384 {
+    fn encode(&self) -> u16 {
+        return CipherSuiteId::RsaAes256GcmSha384 as u16;
+    }
+
+    fn params(&self) -> CipherSuiteParams {
+        CipherSuiteParams {
+            name: "TLS_RSA_WITH_AES_256_GCM_SHA384",
+            mac_algorithm: MacAlgorithm::None,
+            enc_algorithm: EncAlgorithm::Aes256Gcm,
+            key_exchange_algorithm: KeyExchangeAlgorithm::Rsa,
+            prf_algorithm: PrfAlgorithm::Sha384,
         }
     }
 }
@@ -402,6 +470,7 @@ impl CipherSuiteMethods for DheRsaAes128GcmSha256 {
             mac_algorithm: MacAlgorithm::None,
             enc_algorithm: EncAlgorithm::Aes128Gcm,
             key_exchange_algorithm: KeyExchangeAlgorithm::DheRsa,
+            prf_algorithm: PrfAlgorithm::Sha256,
         }
     }
 }

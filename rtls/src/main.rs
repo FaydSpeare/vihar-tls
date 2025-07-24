@@ -24,7 +24,7 @@ mod utils;
 mod gcm;
 
 use ciphersuite::{
-    CipherSuite, DheDssAes128CbcSha, DheRsaAes128CbcSha, DheRsaAes128CbcSha256, DheRsaAes128GcmSha256, RsaAes128CbcSha, RsaAes128CbcSha256, RsaAes128GcmSha256, RsaAes256CbcSha, RsaAes256CbcSha256
+    CipherSuite, DheDssAes128CbcSha, DheRsaAes128CbcSha, DheRsaAes128CbcSha256, DheRsaAes128GcmSha256, RsaAes128CbcSha, RsaAes128CbcSha256, RsaAes128GcmSha256, RsaAes256CbcSha, RsaAes256CbcSha256, RsaAes256GcmSha384
 };
 use messages::*;
 
@@ -140,7 +140,7 @@ impl TLSConnection {
             Some(ticket) => extensions.push(SessionTicketExt::resume(ticket).into()),
         }
 
-        extensions.push(ExtendedMasterSecretExt::new().into());
+        //extensions.push(ExtendedMasterSecretExt::new().into());
         extensions.push(ALPNExt::new(vec!["http/1.1".to_string()]).into());
 
         let client_hello = ClientHello::new(cipher_suites, extensions, session_id);
@@ -240,7 +240,8 @@ fn main() -> TLSResult<()> {
         //DheDssAes128CbcSha.into()
         // DheRsaAes128CbcSha256.into(),
         // DhRsaAes128CbcSha.into()
-        RsaAes128GcmSha256.into(),
+        //RsaAes128GcmSha256.into(),
+        RsaAes256GcmSha384.into(),
         //DheRsaAes128GcmSha256.into()
     ];
 

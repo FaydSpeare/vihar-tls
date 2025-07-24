@@ -1,10 +1,9 @@
-use log::debug;
+use sha2::{Sha256, Digest};
 
-use crate::ciphersuite::{CipherType, EncAlgorithm, MacAlgorithm};
-use crate::gcm::{decrypt_aes_128_gcm, encrypt_aes_128_gcm};
-use crate::messages::{TLSCiphertext, TLSContentType, TLSPlaintext};
+use crate::ciphersuite::{CipherType, EncAlgorithm, MacAlgorithm, PrfAlgorithm};
+use crate::messages::{TLSCiphertext, TLSPlaintext};
 use crate::prf::prf_sha256;
-use crate::{TLSResult, utils};
+use crate::utils;
 
 #[derive(Debug, Clone)]
 pub struct DerivedKeys {
@@ -21,18 +20,30 @@ pub struct SecurityParams {
     pub cipher_suite_id: u16,
     pub enc_algorithm: EncAlgorithm,
     pub mac_algorithm: MacAlgorithm,
+    pub prf_algorithm: PrfAlgorithm,
     pub client_random: [u8; 32],
     pub server_random: [u8; 32],
     pub master_secret: [u8; 48],
 }
 
 impl SecurityParams {
+    
+    pub fn client_verify_data(&self, handshakes: &[u8]) -> Vec<u8> {
+        let seed = self.prf_algorithm.hash(handshakes);
+        self.prf_algorithm.prf(&self.master_secret, b"client finished", &seed, 12)
+    }
+
+    pub fn server_verify_data(&self, handshakes: &[u8]) -> Vec<u8> {
+        let seed = self.prf_algorithm.hash(handshakes);
+        self.prf_algorithm.prf(&self.master_secret, b"server finished", &seed, 12)
+    }
+
     pub fn derive_keys(&self) -> DerivedKeys {
         let mac_key_len = self.mac_algorithm.key_length();
         let enc_key_len = self.enc_algorithm.key_length();
         let fixed_iv_len = self.enc_algorithm.fixed_iv_length();
 
-        let key_block = prf_sha256(
+        let key_block = self.prf_algorithm.prf(
             &self.master_secret,
             b"key expansion",
             &[self.server_random.as_slice(), self.client_random.as_slice()].concat(),
@@ -70,9 +81,8 @@ pub struct InitialConnState {
 
 impl InitialConnState {
     pub fn encrypt(&mut self, plaintext: TLSPlaintext) -> TLSCiphertext {
-        let ciphertext = TLSCiphertext::new(plaintext.content_type, plaintext.fragment);
         self.seq_num += 1;
-        ciphertext
+        TLSCiphertext::new(plaintext.content_type, plaintext.fragment)
     }
 
     pub fn decrypt(&mut self, ciphertext: &TLSCiphertext) -> TLSPlaintext {
@@ -151,25 +161,6 @@ impl SecureConnState {
             .decrypt(ciphertext, &self.enc_key, &iv, Some(&aad))
     }
 
-    fn encrypt_aead_cipher(&self, plaintext: &TLSPlaintext) -> Vec<u8> {
-        let implicit: [u8; 4] = self.write_iv.clone().try_into().unwrap();
-        let explicit = utils::get_random_bytes(self.params.enc_algorithm.record_iv_length());
-        let nonce = [&implicit[..], &explicit[..]].concat();
-        assert_eq!(nonce.len(), 12);
-
-        let mut aad = Vec::<u8>::new();
-        aad.extend_from_slice(&self.seq_num.to_be_bytes());
-        aad.push(plaintext.content_type as u8);
-        aad.extend([plaintext.version.major, plaintext.version.minor]);
-        aad.extend((plaintext.fragment.len() as u16).to_be_bytes());
-        let aead_ciphertext = self.params.enc_algorithm.encrypt(
-            &plaintext.fragment,
-            &self.enc_key,
-            &nonce,
-            Some(&aad),
-        );
-        [&explicit, &aead_ciphertext[..]].concat()
-    }
 
     fn encrypt_block_cipher(&self, plaintext: &TLSPlaintext) -> Vec<u8> {
         let mut bytes = Vec::<u8>::new();
@@ -205,14 +196,24 @@ impl SecureConnState {
         fragment
     }
 
-    pub fn decrypt(&mut self, ciphertext: &TLSCiphertext) -> TLSPlaintext {
-        let fragment = match self.params.enc_algorithm.cipher_type() {
-            CipherType::Block => self.decrypt_block_cipher(ciphertext),
-            CipherType::Aead => self.decrypt_aead_cipher(ciphertext),
-            CipherType::Stream => unimplemented!(),
-        };
-        self.seq_num += 1;
-        TLSPlaintext::new(ciphertext.content_type, fragment)
+    fn encrypt_aead_cipher(&self, plaintext: &TLSPlaintext) -> Vec<u8> {
+        let implicit: [u8; 4] = self.write_iv.clone().try_into().unwrap();
+        let explicit = utils::get_random_bytes(self.params.enc_algorithm.record_iv_length());
+        let nonce = [&implicit[..], &explicit[..]].concat();
+        assert_eq!(nonce.len(), 12);
+
+        let mut aad = Vec::<u8>::new();
+        aad.extend_from_slice(&self.seq_num.to_be_bytes());
+        aad.push(plaintext.content_type as u8);
+        aad.extend([plaintext.version.major, plaintext.version.minor]);
+        aad.extend((plaintext.fragment.len() as u16).to_be_bytes());
+        let aead_ciphertext = self.params.enc_algorithm.encrypt(
+            &plaintext.fragment,
+            &self.enc_key,
+            &nonce,
+            Some(&aad),
+        );
+        [&explicit, &aead_ciphertext[..]].concat()
     }
 
     pub fn encrypt(&mut self, plaintext: &TLSPlaintext) -> TLSCiphertext {
@@ -224,6 +225,17 @@ impl SecureConnState {
         self.seq_num += 1;
         TLSCiphertext::new(plaintext.content_type, ciphertext)
     }
+
+    pub fn decrypt(&mut self, ciphertext: &TLSCiphertext) -> TLSPlaintext {
+        let fragment = match self.params.enc_algorithm.cipher_type() {
+            CipherType::Block => self.decrypt_block_cipher(ciphertext),
+            CipherType::Aead => self.decrypt_aead_cipher(ciphertext),
+            CipherType::Stream => unimplemented!(),
+        };
+        self.seq_num += 1;
+        TLSPlaintext::new(ciphertext.content_type, fragment)
+    }
+
 }
 
 #[derive(Debug, Clone)]
