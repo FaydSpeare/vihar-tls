@@ -106,8 +106,14 @@ impl MacAlgorithm {
 }
 
 #[derive(Debug, Copy, Clone)]
+pub enum CipherType {
+    Stream,
+    Block,
+    Aead,
+}
+
+#[derive(Debug, Copy, Clone)]
 pub enum EncAlgorithm {
-    None,
     Aes128Cbc,
     Aes256Cbc,
     Aes128Gcm,
@@ -116,7 +122,6 @@ pub enum EncAlgorithm {
 impl EncAlgorithm {
     pub fn key_length(&self) -> usize {
         match self {
-            Self::None => 16,
             Self::Aes128Cbc => 16,
             Self::Aes256Cbc => 32,
             Self::Aes128Gcm => 16,
@@ -125,7 +130,6 @@ impl EncAlgorithm {
 
     pub fn block_length(&self) -> usize {
         match self {
-            Self::None => 16,
             Self::Aes128Cbc => 16,
             Self::Aes256Cbc => 16,
             Self::Aes128Gcm => 16,
@@ -147,21 +151,31 @@ impl EncAlgorithm {
         }
     }
 
-    pub fn decrypt(&self, ciphertext: &[u8], key: &[u8], iv: &[u8], aad: &[u8]) -> Vec<u8> {
+    pub fn cipher_type(&self) -> CipherType {
         match self {
-            Self::None => ciphertext.to_vec(),
-            Self::Aes128Cbc => decrypt_aes_128_cbc(ciphertext, key, iv),
-            Self::Aes256Cbc => decrypt_aes_256_cbc(ciphertext, key, iv),
-            Self::Aes128Gcm => decrypt_aes_128_gcm(key, iv, ciphertext, aad),
+            Self::Aes128Cbc => CipherType::Block,
+            Self::Aes256Cbc => CipherType::Block,
+            Self::Aes128Gcm => CipherType::Aead,
         }
     }
 
-    pub fn encrypt(&self, plaintext: &[u8], key: &[u8], iv: &[u8], aad: &[u8]) -> Vec<u8> {
+    pub fn decrypt(&self, ciphertext: &[u8], key: &[u8], iv: &[u8], aad: Option<&[u8]>) -> Vec<u8> {
         match self {
-            Self::None => plaintext.to_vec(),
+            Self::Aes128Cbc => decrypt_aes_128_cbc(ciphertext, key, iv),
+            Self::Aes256Cbc => decrypt_aes_256_cbc(ciphertext, key, iv),
+            Self::Aes128Gcm => {
+                decrypt_aes_128_gcm(key, iv, ciphertext, aad.expect("GCM missing additional data"))
+            },
+        }
+    }
+
+    pub fn encrypt(&self, plaintext: &[u8], key: &[u8], iv: &[u8], aad: Option<&[u8]>) -> Vec<u8> {
+        match self {
             Self::Aes128Cbc => encrypt_aes_128_cbc(plaintext, key, iv),
             Self::Aes256Cbc => encrypt_aes_256_cbc(plaintext, key, iv),
-            Self::Aes128Gcm => encrypt_aes_128_gcm(key, iv, plaintext, aad),
+            Self::Aes128Gcm => {
+                encrypt_aes_128_gcm(key, iv, plaintext, aad.expect("GCM missing additional data"))
+            },
         }
     }
 }

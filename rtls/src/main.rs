@@ -240,34 +240,35 @@ fn main() -> TLSResult<()> {
         //DheDssAes128CbcSha.into()
         // DheRsaAes128CbcSha256.into(),
         // DhRsaAes128CbcSha.into()
-        //RsaAes128GcmSha256.into(),
-        DheRsaAes128GcmSha256.into()
+        RsaAes128GcmSha256.into(),
+        //DheRsaAes128GcmSha256.into()
     ];
 
-    let domain = "challenges.re";
+    let domain = "facebook.com";
     //let domain = "localhost";
 
     let mut connection = TLSConnection::new(domain)?;
     let session_id = connection.handshake(&suites, None, None)?;
+    let ctx = connection.handshake_state_machine.ctx.clone();
 
     // println!("{:?}", connection.handshake_state_machine.ctx);
 
-    let ctx = connection.handshake_state_machine.ctx.clone();
-    let session_ticket = ctx.session_tickets.keys().last().cloned();
+    //let session_ticket = ctx.session_tickets.keys().last().cloned();
 
-    match session_ticket {
-        Some(mut session_ticket) => {
-            connection.notify_close()?;
-            connection = TLSConnection::new_with_context(domain, ctx)?;
-            connection.handshake(&suites, None, Some(session_ticket.to_vec()))?;
-        }
-        None => {}
-    }
+    //match session_ticket {
+    //    Some(session_ticket) => {
+    //        connection.notify_close()?;
+    //        connection = TLSConnection::new_with_context(domain, ctx)?;
+    //        connection.handshake(&suites, None, Some(session_ticket.to_vec()))?;
+    //    }
+    //    None => {}
+    //}
+
+    let mut connection = TLSConnection::new_with_context(domain, ctx)?;
+    connection.handshake(&suites, Some(session_id), None)?;
+
     let msg = connection.next_message()?;
     println!("{:?}", msg);
-
-    //let mut connection = TLSConnection::new_with_context(domain, ctx)?;
-    //connection.handshake(&suites, Some(session_id), None)?;
 
     Ok(())
 

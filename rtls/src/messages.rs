@@ -603,7 +603,7 @@ impl TLSPlaintext {
     pub fn new(content_type: TLSContentType, fragment: Vec<u8>) -> Self {
         Self {
             content_type,
-            version: ProtocolVersion { major: 3, minor: 1 },
+            version: ProtocolVersion { major: 3, minor: 3 },
             fragment,
         }
     }
