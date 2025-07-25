@@ -1,6 +1,6 @@
 use alert::{TLSAlert, TLSAlertDesc, TLSAlertLevel};
 use env_logger;
-use extensions::{ALPNExt, ExtendedMasterSecretExt, SecureRenegotationExt, SessionTicketExt};
+use extensions::{ALPNExt, ExtendedMasterSecretExt, SecureRenegotationExt, SessionTicketExt, SupportedGroupsExt};
 use log::{error, info, trace};
 use record::RecordLayer;
 use state_machine::{
@@ -140,7 +140,8 @@ impl TLSConnection {
             Some(ticket) => extensions.push(SessionTicketExt::resume(ticket).into()),
         }
 
-        //extensions.push(ExtendedMasterSecretExt::new().into());
+        extensions.push(SupportedGroupsExt::new(vec![0x0017, 0x0018, 0x0019, 0x0100, 0x0101, 0x0102, 0x0103, 0x0104]).into());
+        extensions.push(ExtendedMasterSecretExt::new().into());
         extensions.push(ALPNExt::new(vec!["http/1.1".to_string()]).into());
 
         let client_hello = ClientHello::new(cipher_suites, extensions, session_id);
@@ -235,18 +236,19 @@ fn main() -> TLSResult<()> {
     //return Ok(());
 
     let suites: Vec<CipherSuite> = vec![
+        RsaAes256CbcSha256.into()
         //RsaAes128CbcSha.into(),
         //DheRsaAes128CbcSha.into(),
         //DheDssAes128CbcSha.into()
         // DheRsaAes128CbcSha256.into(),
         // DhRsaAes128CbcSha.into()
         //RsaAes128GcmSha256.into(),
-        RsaAes256GcmSha384.into(),
+        //RsaAes256GcmSha384.into(),
         //DheRsaAes128GcmSha256.into()
     ];
 
-    let domain = "facebook.com";
-    //let domain = "localhost";
+    //let domain = "facebook.com";
+    let domain = "localhost";
 
     let mut connection = TLSConnection::new(domain)?;
     let session_id = connection.handshake(&suites, None, None)?;

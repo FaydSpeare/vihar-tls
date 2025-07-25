@@ -1,81 +1,12 @@
 use std::fmt::Debug;
 
-use aes::{cipher::{generic_array::GenericArray, BlockDecrypt, BlockEncrypt, KeyInit}, Aes128, Aes256};
+use crate::{
+    gcm::{decrypt_aes_cbc, decrypt_aes_gcm, encrypt_aes_cbc, encrypt_aes_gcm}, prf::{hmac, prf_sha256, prf_sha384, HmacHashAlgo}, TLSResult
+};
+use aes::{Aes128, Aes256};
 use enum_dispatch::enum_dispatch;
 use num_enum::TryFromPrimitive;
 use sha2::{Digest, Sha256, Sha384};
-use crate::{gcm::{encrypt_aes_gcm, decrypt_aes_gcm}, prf::{hmac, prf_sha256, prf_sha384, HmacHashAlgo}, TLSResult};
-
-use crate::utils;
-
-const AES128_BLOCKSIZE: usize = 16;
-const AES256_BLOCKSIZE: usize = 16;
-
-fn decrypt_aes_128_cbc(ciphertext: &[u8], key: &[u8], iv: &[u8]) -> Vec<u8> {
-    let mut plaintext = Vec::<u8>::new();
-    let mut state = iv;
-    let cipher = Aes128::new(&GenericArray::from_slice(key));
-
-    assert!(ciphertext.len() % AES128_BLOCKSIZE == 0);
-    for ct_block in ciphertext.chunks_exact(AES128_BLOCKSIZE) {
-        let mut block = GenericArray::clone_from_slice(ct_block);
-        cipher.decrypt_block(&mut block);
-        let pt_block = utils::xor_bytes(&block, state);
-        plaintext.extend_from_slice(&pt_block);
-        state = ct_block;
-    }
-
-    plaintext
-}
-
-pub fn encrypt_aes_128_cbc(plaintext: &[u8], key: &[u8], iv: &[u8]) -> Vec<u8> {
-    let mut ciphertext = Vec::<u8>::new();
-    let mut state = iv.to_vec();
-    let cipher = Aes128::new(&GenericArray::from_slice(key));
-
-    assert!(plaintext.len() % AES128_BLOCKSIZE == 0);
-    for pt_block in plaintext.chunks_exact(AES128_BLOCKSIZE) {
-        let input_block = utils::xor_bytes(pt_block, &state);
-        let mut block = GenericArray::clone_from_slice(&input_block);
-        cipher.encrypt_block(&mut block);
-        ciphertext.extend_from_slice(&block);
-        state = block.to_vec();
-    }
-    ciphertext
-}
-
-pub fn encrypt_aes_256_cbc(plaintext: &[u8], key: &[u8], iv: &[u8]) -> Vec<u8> {
-    let mut ciphertext = Vec::<u8>::new();
-    let mut state = iv.to_vec();
-    let cipher = Aes256::new(&GenericArray::from_slice(key));
-
-    assert!(plaintext.len() % AES256_BLOCKSIZE == 0);
-    for pt_block in plaintext.chunks_exact(AES256_BLOCKSIZE) {
-        let input_block = utils::xor_bytes(pt_block, &state);
-        let mut block = GenericArray::clone_from_slice(&input_block);
-        cipher.encrypt_block(&mut block);
-        ciphertext.extend_from_slice(&block);
-        state = block.to_vec();
-    }
-    ciphertext
-}
-
-fn decrypt_aes_256_cbc(ciphertext: &[u8], key: &[u8], iv: &[u8]) -> Vec<u8> {
-    let mut plaintext = Vec::<u8>::new();
-    let mut state = iv;
-    let cipher = Aes256::new(&GenericArray::from_slice(key));
-
-    assert!(ciphertext.len() % AES256_BLOCKSIZE == 0);
-    for ct_block in ciphertext.chunks_exact(AES256_BLOCKSIZE) {
-        let mut block = GenericArray::clone_from_slice(ct_block);
-        cipher.decrypt_block(&mut block);
-        let pt_block = utils::xor_bytes(&block, state);
-        plaintext.extend_from_slice(&pt_block);
-        state = ct_block;
-    }
-
-    plaintext
-}
 
 #[derive(Debug, Copy, Clone)]
 pub enum MacAlgorithm {
@@ -101,7 +32,7 @@ impl MacAlgorithm {
         match self {
             Self::HmacSha1 => hmac(key, seed, HmacHashAlgo::Sha1),
             Self::HmacSha256 => hmac(key, seed, HmacHashAlgo::Sha256),
-            _ => unreachable!()
+            _ => unreachable!(),
         }
     }
 }
@@ -113,7 +44,6 @@ pub enum PrfAlgorithm {
 }
 
 impl PrfAlgorithm {
-
     pub fn prf(&self, secret: &[u8], label: &[u8], seed: &[u8], len: usize) -> Vec<u8> {
         match self {
             Self::Sha256 => prf_sha256(secret, label, seed, len),
@@ -127,7 +57,6 @@ impl PrfAlgorithm {
             Self::Sha384 => Sha384::digest(data).to_vec(),
         }
     }
-
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -168,16 +97,15 @@ impl EncAlgorithm {
         match self {
             Self::Aes128Gcm => 8,
             Self::Aes256Gcm => 8,
-            _ => self.block_length()
+            _ => self.block_length(),
         }
-        
     }
 
     pub fn fixed_iv_length(&self) -> usize {
         match self {
             Self::Aes128Gcm => 4,
             Self::Aes256Gcm => 4,
-            _ => 0
+            _ => 0,
         }
     }
 
@@ -192,27 +120,39 @@ impl EncAlgorithm {
 
     pub fn decrypt(&self, ciphertext: &[u8], key: &[u8], iv: &[u8], aad: Option<&[u8]>) -> Vec<u8> {
         match self {
-            Self::Aes128Cbc => decrypt_aes_128_cbc(ciphertext, key, iv),
-            Self::Aes256Cbc => decrypt_aes_256_cbc(ciphertext, key, iv),
-            Self::Aes128Gcm => {
-                decrypt_aes_gcm::<Aes128>(key, iv, ciphertext, aad.expect("GCM missing additional data"))
-            },
-            Self::Aes256Gcm => {
-                decrypt_aes_gcm::<Aes256>(key, iv, ciphertext, aad.expect("GCM missing additional data"))
-            },
+            Self::Aes128Cbc => decrypt_aes_cbc::<Aes128>(ciphertext, key, iv),
+            Self::Aes256Cbc => decrypt_aes_cbc::<Aes256>(ciphertext, key, iv),
+            Self::Aes128Gcm => decrypt_aes_gcm::<Aes128>(
+                key,
+                iv,
+                ciphertext,
+                aad.expect("GCM missing additional data"),
+            ),
+            Self::Aes256Gcm => decrypt_aes_gcm::<Aes256>(
+                key,
+                iv,
+                ciphertext,
+                aad.expect("GCM missing additional data"),
+            ),
         }
     }
 
     pub fn encrypt(&self, plaintext: &[u8], key: &[u8], iv: &[u8], aad: Option<&[u8]>) -> Vec<u8> {
         match self {
-            Self::Aes128Cbc => encrypt_aes_128_cbc(plaintext, key, iv),
-            Self::Aes256Cbc => encrypt_aes_256_cbc(plaintext, key, iv),
-            Self::Aes128Gcm => {
-                encrypt_aes_gcm::<Aes128>(key, iv, plaintext, aad.expect("GCM missing additional data"))
-            },
-            Self::Aes256Gcm => {
-                encrypt_aes_gcm::<Aes256>(key, iv, plaintext, aad.expect("GCM missing additional data"))
-            },
+            Self::Aes128Cbc => encrypt_aes_cbc::<Aes128>(plaintext, key, iv),
+            Self::Aes256Cbc => encrypt_aes_cbc::<Aes256>(plaintext, key, iv),
+            Self::Aes128Gcm => encrypt_aes_gcm::<Aes128>(
+                key,
+                iv,
+                plaintext,
+                aad.expect("GCM missing additional data"),
+            ),
+            Self::Aes256Gcm => encrypt_aes_gcm::<Aes256>(
+                key,
+                iv,
+                plaintext,
+                aad.expect("GCM missing additional data"),
+            ),
         }
     }
 }
@@ -231,7 +171,7 @@ pub struct CipherSuiteParams {
     pub mac_algorithm: MacAlgorithm,
     pub enc_algorithm: EncAlgorithm,
     pub key_exchange_algorithm: KeyExchangeAlgorithm,
-    pub prf_algorithm: PrfAlgorithm
+    pub prf_algorithm: PrfAlgorithm,
 }
 
 #[derive(TryFromPrimitive)]
@@ -454,7 +394,6 @@ impl CipherSuiteMethods for RsaAes256GcmSha384 {
         }
     }
 }
-
 
 #[derive(Debug)]
 pub struct DheRsaAes128GcmSha256;

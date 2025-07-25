@@ -1,5 +1,39 @@
 use crate::utils;
-use aes::cipher::{BlockEncrypt, KeyInit, generic_array::GenericArray};
+use aes::cipher::{generic_array::GenericArray, BlockDecrypt, BlockEncrypt, BlockSizeUser, KeyInit};
+
+
+pub fn encrypt_aes_cbc<C: KeyInit + BlockEncrypt + BlockSizeUser>(plaintext: &[u8], key: &[u8], iv: &[u8]) -> Vec<u8> {
+    let mut ciphertext = Vec::<u8>::new();
+    let mut state = iv.to_vec();
+    let cipher = C::new(&GenericArray::from_slice(key));
+
+    assert!(plaintext.len() % C::block_size() == 0);
+    for pt_block in plaintext.chunks_exact(C::block_size()) {
+        let input_block = utils::xor_bytes(pt_block, &state);
+        let mut block = GenericArray::clone_from_slice(&input_block);
+        cipher.encrypt_block(&mut block);
+        ciphertext.extend_from_slice(&block);
+        state = block.to_vec();
+    }
+    ciphertext
+}
+
+pub fn decrypt_aes_cbc<C: KeyInit + BlockDecrypt>(ciphertext: &[u8], key: &[u8], iv: &[u8]) -> Vec<u8> {
+    let mut plaintext = Vec::<u8>::new();
+    let mut state = iv;
+    let cipher = C::new(&GenericArray::from_slice(key));
+
+    assert!(ciphertext.len() % C::block_size() == 0);
+    for ct_block in ciphertext.chunks_exact(C::block_size()) {
+        let mut block = GenericArray::clone_from_slice(ct_block);
+        cipher.decrypt_block(&mut block);
+        let pt_block = utils::xor_bytes(&block, state);
+        plaintext.extend_from_slice(&pt_block);
+        state = ct_block;
+    }
+
+    plaintext
+}
 
 fn encrypt_aes_block<C: BlockEncrypt + KeyInit>(key: &[u8], plaintext: &[u8]) -> [u8; 16] {
     let aes = C::new(&GenericArray::from_slice(key));

@@ -14,6 +14,7 @@ pub enum Extension {
     ExtendedMasterSecret(ExtendedMasterSecretExt),
     Heartbeat(HeartbeatExt),
     ALPN(ALPNExt),
+    SupportedGroups(SupportedGroupsExt),
 }
 
 #[enum_dispatch(Extension)]
@@ -33,6 +34,7 @@ pub fn decode_extensions(bytes: &[u8]) -> TLSResult<Vec<Extension>> {
         0x0017 => ExtendedMasterSecretExt::decode(bytes),
         0x000f => HeartbeatExt::decode(bytes)?,
         0x0010 => ALPNExt::decode(bytes)?,
+        0x000a => SupportedGroupsExt::decode(bytes)?,
         _ => return Err(format!("unimplemented extension type: {id:#x}").into()),
     };
     let mut extensions: Vec<Extension> = vec![ext];
@@ -282,6 +284,45 @@ impl EncodeExtension for ALPNExt {
         bytes.extend_from_slice(&((protocols_bytes.len() + 2) as u16).to_be_bytes());
         bytes.extend_from_slice(&(protocols_bytes.len() as u16).to_be_bytes());
         bytes.extend_from_slice(&protocols_bytes);
+        bytes
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SupportedGroupsExt {
+    named_groups: Vec<u16>,
+}
+
+impl SupportedGroupsExt {
+    pub fn new(named_groups: Vec<u16>) -> Self {
+        Self { named_groups }
+    }
+
+    fn decode(bytes: &[u8]) -> TLSResult<(Extension, usize)> {
+        let extension_len = u16::from_be_bytes([bytes[2], bytes[3]]) as usize;
+        let groups_len = u16::from_be_bytes([bytes[4], bytes[5]]) as usize;
+        let mut named_groups = Vec::<u16>::new();
+        for i in 0..(groups_len / 2) {
+            let group = u16::from_be_bytes([bytes[6 + 2 * i], bytes[7 + 2 * i]]);
+            named_groups.push(group);
+        }
+        Ok((Self { named_groups }.into(), 4 + extension_len))
+    }
+}
+
+impl EncodeExtension for SupportedGroupsExt {
+    fn encode(&self) -> Vec<u8> {
+        let groups_bytes: Vec<u8> = self
+            .named_groups
+            .iter()
+            .map(|x| x.to_be_bytes())
+            .flatten()
+            .collect();
+        let mut bytes = Vec::<u8>::new();
+        bytes.extend_from_slice(&[0x00, 0x0a]);
+        bytes.extend_from_slice(&((groups_bytes.len() + 2) as u16).to_be_bytes());
+        bytes.extend_from_slice(&(groups_bytes.len() as u16).to_be_bytes());
+        bytes.extend_from_slice(&groups_bytes);
         bytes
     }
 }

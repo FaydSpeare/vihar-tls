@@ -227,7 +227,7 @@ impl TryFrom<&[u8]> for ServerHello {
         } else {
             vec![]
         };
-        // println!("ServerHello Extensions: {:#?}", extensions);
+        println!("ServerHello Extensions: {:#?}", extensions);
 
         Ok(Self {
             server_version: ProtocolVersion { major, minor },
@@ -317,6 +317,12 @@ impl TryFrom<&[u8]> for Certificates {
 //    opaque dh_g<1..2^16-1>;
 //    opaque dh_Ys<1..2^16-1>;
 // } ServerDHParams
+
+pub enum ECCurveType {}
+pub enum NamedCurve {}
+pub struct ECParams {}
+pub struct ECPoint {}
+pub struct ServerECDHParams {}
 
 #[derive(Debug)]
 pub struct ServerKeyExchange {

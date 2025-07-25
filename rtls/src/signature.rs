@@ -8,8 +8,7 @@ use rsa::{
     rand_core::{OsRng, RngCore},
     signature::Verifier,
 };
-use sha1::{Sha1, Digest};
-use sha2::Sha256;
+use sha2::{Sha256, Digest};
 use x509_parser::parse_x509_certificate;
 
 pub fn public_key_from_cert(cert_der: &[u8]) -> TLSResult<Vec<u8>> {
