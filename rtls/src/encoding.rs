@@ -55,8 +55,21 @@ impl<'a> Reader<'a> {
         Ok(&self.buffer[self.pos..self.pos + n])
     }
 
-    pub fn consumed(&self) -> bool {
+    pub fn is_consumed(&self) -> bool {
         self.pos == self.buffer.len()
+    }
+
+    pub fn bytes_consumed(&self) -> usize {
+        self.pos
+    }
+
+    pub fn consume_rest(&mut self) -> Result<&'a [u8], CodingError> {
+        if self.pos >= self.buffer.len() {
+            return Err(CodingError::RanOutOfData);
+        }
+        let slice = &self.buffer[self.pos..];
+        self.pos = self.buffer.len();
+        Ok(slice)
     }
 }
 
@@ -206,7 +219,7 @@ impl<'a, L: VecLen, T: TlsCodable> Iterator for TlsListIter<'a, L, T> {
     type Item = Result<T, CodingError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        (!self.reader.consumed()).then_some(T::read_from(&mut self.reader))
+        (!self.reader.is_consumed()).then_some(T::read_from(&mut self.reader))
     }
 }
 
@@ -232,7 +245,6 @@ pub struct LengthPrefixedVec<L: VecLen, T: TlsCodable, C: Cardinality> {
     _l: PhantomData<L>,
     _c: PhantomData<C>,
 }
-
 
 impl<L: VecLen, T: TlsCodable, C: Cardinality> LengthPrefixedVec<L, T, C> {
     // pub fn to_vec(self) -> Vec<T> {
@@ -320,7 +332,7 @@ impl<T: TlsCodable> TlsCodable for Option<T> {
         }
     }
     fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
-        Ok((!reader.consumed()).then_some(T::read_from(reader)?))
+        Ok((!reader.is_consumed()).then_some(T::read_from(reader)?))
     }
 }
 

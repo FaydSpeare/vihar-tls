@@ -244,10 +244,10 @@ fn main() -> TLSResult<()> {
 
     //playground::main();
 
-    let suites: Vec<CipherSuiteId> = vec![CipherSuiteId::RsaAes128CbcSha];
+    let suites: Vec<CipherSuiteId> = vec![CipherSuiteId::DheRsaAes128CbcSha];
 
-    let domain = "google.com";
-    //let domain = "localhost";
+    //let domain = "facebook.com";
+    let domain = "localhost";
 
     let mut connection = TLSConnection::new(domain)?;
     let session_id = connection.handshake(&suites, None, None)?;

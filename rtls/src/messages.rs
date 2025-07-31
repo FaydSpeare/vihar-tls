@@ -320,27 +320,6 @@ impl TryFrom<&[u8]> for Certificate {
         let mut reader = Reader::new(buf);
         let list = CeritificateList::read_from(&mut reader)?;
         Ok(Self { list })
-
-        // let cert_bytes = u32::from_be_bytes([0, buf[0], buf[1], buf[2]]) as usize;
-
-        // let slice = &buf[3..];
-        // if cert_bytes > slice.len() {
-        //     return Err(TLSError::NeedData.into());
-        // }
-
-        // let mut idx = 0;
-        // let mut certs: Vec<Certificate> = vec![];
-
-        // while idx < cert_bytes {
-        //     let cert_len =
-        //         u32::from_be_bytes([0, slice[idx], slice[idx + 1], slice[idx + 2]]) as usize;
-        //     certs.push(Certificate {
-        //         bytes: slice[idx + 3..idx + 3 + cert_len].to_vec(),
-        //     });
-        //     idx += 3 + cert_len;
-        // }
-
-        // return Ok(Self { list: certs });
     }
 }
 
@@ -423,14 +402,17 @@ impl TryFrom<&[u8]> for Certificate {
 //     pub signature: Vec<u8>,
 // }
 
+type DHParam = LengthPrefixedVec<u16, u8, NonEmpty>;
+type Signature = LengthPrefixedVec<u16, u8, MaybeEmpty>;
+
 #[derive(Debug)]
 pub struct ServerKeyExchange {
-    pub p: Vec<u8>,
-    pub g: Vec<u8>,
-    pub server_pubkey: Vec<u8>,
+    pub p: DHParam,
+    pub g: DHParam,
+    pub server_pubkey: DHParam,
     pub hash_algo: HashAlgo,
     pub sig_algo: SigAlgo,
-    pub signature: Vec<u8>,
+    pub signature: Signature,
 }
 
 impl ServerKeyExchange {
@@ -446,46 +428,22 @@ impl ServerKeyExchange {
     }
 }
 
-impl ToBytes for ServerKeyExchange {
-    fn to_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::<u8>::new();
-        bytes.extend_from_slice(&(self.p.len() as u16).to_be_bytes());
-        bytes.extend_from_slice(&self.p);
-        bytes.extend_from_slice(&(self.g.len() as u16).to_be_bytes());
-        bytes.extend_from_slice(&self.g);
-        bytes.extend_from_slice(&(self.server_pubkey.len() as u16).to_be_bytes());
-        bytes.extend_from_slice(&self.server_pubkey);
-        bytes.push(u8::from(self.hash_algo));
-        bytes.push(u8::from(self.sig_algo));
-        bytes.extend_from_slice(&(self.signature.len() as u16).to_be_bytes());
-        bytes.extend_from_slice(&self.signature);
-        handshake_bytes(TlsHandshakeType::ServerKeyExchange, &bytes)
+impl TlsCodable for ServerKeyExchange {
+    fn write_to(&self, bytes: &mut Vec<u8>) {
+        self.p.write_to(bytes);
+        self.g.write_to(bytes);
+        self.server_pubkey.write_to(bytes);
+        self.hash_algo.write_to(bytes);
+        self.sig_algo.write_to(bytes);
+        self.signature.write_to(bytes);
     }
-}
-
-impl TryFrom<&[u8]> for ServerKeyExchange {
-    type Error = Box<dyn std::error::Error>;
-
-    fn try_from(buf: &[u8]) -> Result<Self, Self::Error> {
-        let p_len = u16::from_be_bytes([buf[0], buf[1]]) as usize;
-        let p = buf[2..2 + p_len].to_vec();
-
-        let mut idx = 2 + p_len;
-        let g_len = u16::from_be_bytes([buf[idx], buf[idx + 1]]) as usize;
-        let g = buf[idx + 2..idx + 2 + g_len].to_vec();
-
-        idx += 2 + g_len;
-        let pk_len = u16::from_be_bytes([buf[idx], buf[idx + 1]]) as usize;
-        let server_pubkey = buf[idx + 2..idx + 2 + pk_len].to_vec();
-
-        idx += 2 + pk_len;
-        let hash_algo = HashAlgo::try_from(buf[idx])?;
-        let sig_algo = SigAlgo::try_from(buf[idx + 1])?;
-
-        idx += 2;
-        let sig_len = u16::from_be_bytes([buf[idx], buf[idx + 1]]) as usize;
-        let signature = buf[idx + 2..idx + 2 + sig_len].to_vec();
-
+    fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
+        let p = DHParam::read_from(reader)?;
+        let g = DHParam::read_from(reader)?;
+        let server_pubkey = DHParam::read_from(reader)?;
+        let hash_algo = HashAlgo::read_from(reader)?;
+        let sig_algo = SigAlgo::read_from(reader)?;
+        let signature = Signature::read_from(reader)?;
         return Ok(Self {
             p,
             g,
@@ -497,7 +455,43 @@ impl TryFrom<&[u8]> for ServerKeyExchange {
     }
 }
 
-#[derive(Debug)]
+impl ToBytes for ServerKeyExchange {
+    fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::<u8>::new();
+        self.p.write_to(&mut bytes);
+        self.g.write_to(&mut bytes);
+        self.server_pubkey.write_to(&mut bytes);
+        self.hash_algo.write_to(&mut bytes);
+        self.sig_algo.write_to(&mut bytes);
+        self.signature.write_to(&mut bytes);
+        handshake_bytes(TlsHandshakeType::ServerKeyExchange, &bytes)
+    }
+}
+
+impl TryFrom<&[u8]> for ServerKeyExchange {
+    type Error = Box<dyn std::error::Error>;
+
+    fn try_from(buf: &[u8]) -> Result<Self, Self::Error> {
+        let mut reader = Reader::new(buf);
+        let p = DHParam::read_from(&mut reader)?;
+        let g = DHParam::read_from(&mut reader)?;
+        let server_pubkey = DHParam::read_from(&mut reader)?;
+        let hash_algo = HashAlgo::read_from(&mut reader)?;
+        let sig_algo = SigAlgo::read_from(&mut reader)?;
+        let signature = Signature::read_from(&mut reader)?;
+        return Ok(Self {
+            p,
+            g,
+            server_pubkey,
+            hash_algo,
+            sig_algo,
+            signature,
+        });
+    }
+}
+
+// TODO: split into enum
+#[derive(Debug, Clone)]
 pub struct ClientKeyExchange {
     enc_pre_master_secret: Vec<u8>,
 }
@@ -507,6 +501,20 @@ impl ClientKeyExchange {
         Self {
             enc_pre_master_secret: enc_pre_master_secret.to_vec(),
         }
+    }
+}
+
+impl TlsCodable for ClientKeyExchange {
+    fn write_to(&self, bytes: &mut Vec<u8>) {
+        bytes.extend((self.enc_pre_master_secret.len() as u16).to_be_bytes());
+        bytes.extend_from_slice(&self.enc_pre_master_secret);
+    }
+    fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
+        let len = u16::read_from(reader)?;
+        let secret = reader.consume(len.into())?;
+        Ok(Self {
+            enc_pre_master_secret: secret.to_vec(),
+        })
     }
 }
 
@@ -560,6 +568,16 @@ impl Finished {
 impl From<Finished> for TlsMessage {
     fn from(value: Finished) -> Self {
         TlsMessage::Handshake(TlsHandshake::Finished(value))
+    }
+}
+
+impl TlsCodable for Finished {
+    fn write_to(&self, bytes: &mut Vec<u8>) {
+        bytes.extend_from_slice(&self.verify_data);
+    }
+    fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
+        let verify_data = reader.consume_rest()?.to_vec();
+        Ok(Self { verify_data })
     }
 }
 
@@ -735,10 +753,10 @@ impl TlsCodable for TlsHandshake {
             Self::ServerHello(h) => h.write_to(&mut writer),
             Self::NewSessionTicket(h) => h.write_to(&mut writer),
             Self::Certificates(h) => h.write_to(&mut writer),
-            Self::ServerKeyExchange(_) => unimplemented!(),
-            Self::ServerHelloDone => unimplemented!(),
-            Self::ClientKeyExchange(_) => unimplemented!(),
-            Self::Finished(_) => unimplemented!(),
+            Self::ServerKeyExchange(h) => h.write_to(&mut writer),
+            Self::ServerHelloDone => {}
+            Self::ClientKeyExchange(h) => h.write_to(&mut writer),
+            Self::Finished(h) => h.write_to(&mut writer),
         }
 
         writer.finalize_length_prefix();
@@ -761,10 +779,16 @@ impl TlsCodable for TlsHandshake {
             TlsHandshakeType::Certificates => {
                 Certificate::read_from(&mut subreader).map(TlsHandshake::Certificates)
             }
-            TlsHandshakeType::ServerKeyExchange => unimplemented!(),
-            TlsHandshakeType::ServerHelloDone => unimplemented!(),
-            TlsHandshakeType::ClientKeyExchange => unimplemented!(),
-            TlsHandshakeType::Finished => unimplemented!(),
+            TlsHandshakeType::ServerKeyExchange => {
+                ServerKeyExchange::read_from(&mut subreader).map(TlsHandshake::ServerKeyExchange)
+            }
+            TlsHandshakeType::ServerHelloDone => Ok(TlsHandshake::ServerHelloDone),
+            TlsHandshakeType::ClientKeyExchange => {
+                ClientKeyExchange::read_from(&mut subreader).map(TlsHandshake::ClientKeyExchange)
+            }
+            TlsHandshakeType::Finished => {
+                Finished::read_from(&mut subreader).map(TlsHandshake::Finished)
+            }
             _ => unimplemented!(),
         }
     }

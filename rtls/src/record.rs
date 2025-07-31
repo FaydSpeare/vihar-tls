@@ -4,7 +4,11 @@ use crate::{
     TLSError, TLSResult,
     alert::try_parse_alert,
     connection::ConnState,
-    messages::{ProtocolVersion, TLSCiphertext, TLSContentType, TlsMessage, try_parse_handshake},
+    encoding::{Reader, TlsCodable},
+    messages::{
+        ProtocolVersion, TLSCiphertext, TLSContentType, TlsHandshake, TlsMessage,
+        try_parse_handshake,
+    },
 };
 
 pub struct RecordLayer {
@@ -82,12 +86,13 @@ impl RecordLayer {
                 }
                 TLSContentType::Handshake => {
                     self.handshake_buffer.extend(plaintext.fragment);
-                    match try_parse_handshake(&self.handshake_buffer) {
-                        Ok((handshake, len)) => {
-                            self.handshake_buffer.drain(..len);
+                    let mut reader = Reader::new(&self.handshake_buffer);
+                    match TlsHandshake::read_from(&mut reader) {
+                        Ok(handshake) => {
+                            self.handshake_buffer.drain(..reader.bytes_consumed());
                             return Ok(TlsMessage::Handshake(handshake));
-                        },
-                        Err(e) => trace!("Handshake parsing failed: {e}")
+                        }
+                        Err(e) => trace!("Handshake parsing failed: {e}"),
                     }
                 }
             }

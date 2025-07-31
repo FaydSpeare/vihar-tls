@@ -18,8 +18,8 @@ use crate::{
     connection::{ConnState, InitialConnState, SecureConnState, SecurityParams},
     encoding::TlsCodable,
     messages::{
-        ChangeCipherSpec, ClientKeyExchange, Finished, TLSPlaintext, TlsHandshake,
-        TlsHandshakeType, TlsMessage, ToBytes, handshake_bytes,
+        ChangeCipherSpec, ClientKeyExchange, Finished, TLSPlaintext, TlsHandshake, TlsMessage,
+        ToBytes,
     },
 };
 
@@ -408,62 +408,65 @@ impl HandleRecord for AwaitServerKeyExchange {
         _ctx: &mut TlsContext,
         msg: &TlsMessage,
     ) -> TLSResult<(TlsState, Vec<TlsAction>)> {
-        if let TlsMessage::Handshake(TlsHandshake::ServerKeyExchange(kx)) = msg {
-            info!("Received ServerKeyExchange");
+        let TlsMessage::Handshake(handshake) = msg else {
+            panic!("invalid transition");
+        };
 
-            let verified = match kx.sig_algo {
-                SigAlgo::Rsa => {
-                    let rsa_public_key =
-                        RsaPublicKey::from_public_key_der(&self.server_public_key)?;
-                    rsa_verify(
-                        &rsa_public_key,
-                        &[
-                            self.client_random.as_ref(),
-                            self.server_random.as_ref(),
-                            &kx.dh_params_bytes(),
-                        ]
-                        .concat(),
-                        &kx.signature,
-                    )?
-                }
-                SigAlgo::Dsa => {
-                    assert_eq!(kx.hash_algo, HashAlgo::Sha256);
-                    dsa_verify(
-                        &self.server_public_key,
-                        &[
-                            self.client_random.as_ref(),
-                            self.server_random.as_ref(),
-                            &kx.dh_params_bytes(),
-                        ]
-                        .concat(),
-                        &kx.signature,
-                    )?
-                }
-                _ => unimplemented!(),
-            };
-            assert!(verified, "Invalid ServerKeyExchange signature");
+        let TlsHandshake::ServerKeyExchange(kx) = handshake else {
+            panic!("invalid transition");
+        };
+        info!("Received ServerKeyExchange");
 
-            self.handshakes.extend_from_slice(&kx.to_bytes());
-            return Ok((
-                AwaitServerHelloDone {
-                    session_id: self.session_id,
-                    handshakes: self.handshakes,
-                    client_random: self.client_random,
-                    server_random: self.server_random,
-                    selected_cipher_suite_id: self.selected_cipher_suite_id,
-                    supported_extensions: self.supported_extensions,
-                    server_public_key: self.server_public_key,
-                    secrets: Some(DheParams {
-                        p: kx.p.clone(),
-                        g: kx.g.clone(),
-                        public_key: kx.server_pubkey.clone(),
-                    }),
-                }
-                .into(),
-                vec![],
-            ));
-        }
-        panic!("invalid transition");
+        let verified = match kx.sig_algo {
+            SigAlgo::Rsa => {
+                let rsa_public_key = RsaPublicKey::from_public_key_der(&self.server_public_key)?;
+                rsa_verify(
+                    &rsa_public_key,
+                    &[
+                        self.client_random.as_ref(),
+                        self.server_random.as_ref(),
+                        &kx.dh_params_bytes(),
+                    ]
+                    .concat(),
+                    &kx.signature,
+                )?
+            }
+            SigAlgo::Dsa => {
+                assert_eq!(kx.hash_algo, HashAlgo::Sha256);
+                dsa_verify(
+                    &self.server_public_key,
+                    &[
+                        self.client_random.as_ref(),
+                        self.server_random.as_ref(),
+                        &kx.dh_params_bytes(),
+                    ]
+                    .concat(),
+                    &kx.signature,
+                )?
+            }
+            _ => unimplemented!(),
+        };
+        assert!(verified, "Invalid ServerKeyExchange signature");
+        handshake.write_to(&mut self.handshakes);
+
+        Ok((
+            AwaitServerHelloDone {
+                session_id: self.session_id,
+                handshakes: self.handshakes,
+                client_random: self.client_random,
+                server_random: self.server_random,
+                selected_cipher_suite_id: self.selected_cipher_suite_id,
+                supported_extensions: self.supported_extensions,
+                server_public_key: self.server_public_key,
+                secrets: Some(DheParams {
+                    p: kx.p.to_vec(),
+                    g: kx.g.to_vec(),
+                    public_key: kx.server_pubkey.to_vec(),
+                }),
+            }
+            .into(),
+            vec![],
+        ))
     }
 }
 
@@ -492,84 +495,73 @@ impl HandleRecord for AwaitServerHelloDone {
         _ctx: &mut TlsContext,
         msg: &TlsMessage,
     ) -> TLSResult<(TlsState, Vec<TlsAction>)> {
-        if let TlsMessage::Handshake(TlsHandshake::ServerHelloDone) = msg {
-            info!("Received ServerHelloDone");
+        let TlsMessage::Handshake(handshake) = msg else {
+            panic!("invalid transition");
+        };
 
-            self.handshakes
-                .extend_from_slice(&handshake_bytes(TlsHandshakeType::ServerHelloDone, &[]));
+        let TlsHandshake::ServerHelloDone = handshake else {
+            panic!("invalid transition");
+        };
 
-            let ciphersuite = CipherSuite::from(self.selected_cipher_suite_id);
-            let (pre_master_secret, key_exchange_data) =
-                match ciphersuite.params().key_exchange_algorithm {
-                    KeyExchangeAlgorithm::Rsa => {
-                        let rsa_public_key =
-                            RsaPublicKey::from_public_key_der(&self.server_public_key)?;
-                        get_rsa_pre_master_secret(&rsa_public_key)?
-                    }
-                    KeyExchangeAlgorithm::DheRsa | KeyExchangeAlgorithm::DheDss => {
-                        let DheParams { p, g, public_key } = self.secrets.as_ref().unwrap();
-                        get_dhe_pre_master_secret(p, g, public_key)
-                    }
-                    KeyExchangeAlgorithm::EcdheRsa => unimplemented!(),
-                };
+        info!("Received ServerHelloDone");
+        handshake.write_to(&mut self.handshakes);
 
-            let client_key_exchange = ClientKeyExchange::new(&key_exchange_data);
-            self.handshakes
-                .extend_from_slice(&client_key_exchange.to_bytes());
-
-            let change_cipher_spec = ChangeCipherSpec::new();
-
-            let master_secret = self
-                .calculate_master_secret(&pre_master_secret, ciphersuite.params().prf_algorithm);
-            let params = SecurityParams {
-                cipher_suite_id: self.selected_cipher_suite_id,
-                client_random: self.client_random,
-                server_random: self.server_random,
-                master_secret,
-                mac_algorithm: ciphersuite.params().mac_algorithm,
-                enc_algorithm: ciphersuite.params().enc_algorithm,
-                prf_algorithm: ciphersuite.params().prf_algorithm,
+        let ciphersuite = CipherSuite::from(self.selected_cipher_suite_id);
+        let (pre_master_secret, key_exchange_data) =
+            match ciphersuite.params().key_exchange_algorithm {
+                KeyExchangeAlgorithm::Rsa => {
+                    let rsa_public_key =
+                        RsaPublicKey::from_public_key_der(&self.server_public_key)?;
+                    get_rsa_pre_master_secret(&rsa_public_key)?
+                }
+                KeyExchangeAlgorithm::DheRsa | KeyExchangeAlgorithm::DheDss => {
+                    let DheParams { p, g, public_key } = self.secrets.as_ref().unwrap();
+                    get_dhe_pre_master_secret(p, g, public_key)
+                }
+                KeyExchangeAlgorithm::EcdheRsa => unimplemented!(),
             };
-            let keys = params.derive_keys();
-            let write = ConnState::Secure(SecureConnState::new(
-                params.clone(),
-                keys.client_enc_key,
-                keys.client_mac_key,
-                keys.client_write_iv,
-            ));
 
-            let verify_data = params.client_verify_data(&self.handshakes);
-            let client_finished = Finished::new(verify_data.clone());
-            self.handshakes
-                .extend_from_slice(&client_finished.to_bytes());
+        let client_kx = ClientKeyExchange::new(&key_exchange_data);
+        TlsHandshake::ClientKeyExchange(client_kx.clone()).write_to(&mut self.handshakes);
 
-            info!("Sent ClientKeyExchange");
-            info!("Sent ChangeCipherSuite");
-            info!("Sent ClientFinished");
-            let actions = vec![
-                TlsAction::SendPlaintext(client_key_exchange.into()),
-                TlsAction::SendPlaintext(change_cipher_spec.into()),
-                TlsAction::ChangeCipherSpec(TlsEntity::Client, write),
-                TlsAction::SendPlaintext(client_finished.into()),
-            ];
+        let change_cipher_spec = ChangeCipherSpec::new();
 
-            if self.supported_extensions.session_ticket {
-                return Ok((
-                    AwaitNewSessionTicket {
-                        session_id: self.session_id,
-                        handshakes: self.handshakes,
-                        supported_extensions: self.supported_extensions,
-                        client_verify_data: Some(verify_data),
-                        params,
-                        is_session_resumption: false,
-                    }
-                    .into(),
-                    actions,
-                ));
-            }
+        let master_secret =
+            self.calculate_master_secret(&pre_master_secret, ciphersuite.params().prf_algorithm);
+        let params = SecurityParams {
+            cipher_suite_id: self.selected_cipher_suite_id,
+            client_random: self.client_random,
+            server_random: self.server_random,
+            master_secret,
+            mac_algorithm: ciphersuite.params().mac_algorithm,
+            enc_algorithm: ciphersuite.params().enc_algorithm,
+            prf_algorithm: ciphersuite.params().prf_algorithm,
+        };
+        let keys = params.derive_keys();
+        let write = ConnState::Secure(SecureConnState::new(
+            params.clone(),
+            keys.client_enc_key,
+            keys.client_mac_key,
+            keys.client_write_iv,
+        ));
 
+        let verify_data = params.client_verify_data(&self.handshakes);
+        let client_finished = Finished::new(verify_data.clone());
+        TlsHandshake::Finished(client_finished.clone()).write_to(&mut self.handshakes);
+
+        info!("Sent ClientKeyExchange");
+        info!("Sent ChangeCipherSuite");
+        info!("Sent ClientFinished");
+        let actions = vec![
+            TlsAction::SendPlaintext(client_kx.into()),
+            TlsAction::SendPlaintext(change_cipher_spec.into()),
+            TlsAction::ChangeCipherSpec(TlsEntity::Client, write),
+            TlsAction::SendPlaintext(client_finished.into()),
+        ];
+
+        if self.supported_extensions.session_ticket {
             return Ok((
-                AwaitServerChangeCipher {
+                AwaitNewSessionTicket {
                     session_id: self.session_id,
                     handshakes: self.handshakes,
                     supported_extensions: self.supported_extensions,
@@ -581,7 +573,19 @@ impl HandleRecord for AwaitServerHelloDone {
                 actions,
             ));
         }
-        panic!("invalid transition");
+
+        Ok((
+            AwaitServerChangeCipher {
+                session_id: self.session_id,
+                handshakes: self.handshakes,
+                supported_extensions: self.supported_extensions,
+                client_verify_data: Some(verify_data),
+                params,
+                is_session_resumption: false,
+            }
+            .into(),
+            actions,
+        ))
     }
 }
 
@@ -782,31 +786,31 @@ impl HandleRecord for AwaitServerChangeCipher {
         _ctx: &mut TlsContext,
         msg: &TlsMessage,
     ) -> TLSResult<(TlsState, Vec<TlsAction>)> {
-        if let TlsMessage::ChangeCipherSpec = msg {
-            info!("Received ChangeCipherSpec");
+        let TlsMessage::ChangeCipherSpec = msg else {
+            panic!("invalid transition");
+        };
 
-            let keys = self.params.derive_keys();
-            let read = ConnState::Secure(SecureConnState::new(
-                self.params.clone(),
-                keys.server_enc_key,
-                keys.server_mac_key,
-                keys.server_write_iv,
-            ));
+        info!("Received ChangeCipherSpec");
+        let keys = self.params.derive_keys();
+        let read = ConnState::Secure(SecureConnState::new(
+            self.params.clone(),
+            keys.server_enc_key,
+            keys.server_mac_key,
+            keys.server_write_iv,
+        ));
 
-            return Ok((
-                AwaitServerFinished {
-                    session_id: self.session_id,
-                    handshakes: self.handshakes,
-                    supported_extensions: self.supported_extensions,
-                    client_verify_data: self.client_verify_data,
-                    params: self.params,
-                    is_session_resumption: self.is_session_resumption,
-                }
-                .into(),
-                vec![TlsAction::ChangeCipherSpec(TlsEntity::Server, read)],
-            ));
-        }
-        panic!("invalid transition");
+        Ok((
+            AwaitServerFinished {
+                session_id: self.session_id,
+                handshakes: self.handshakes,
+                supported_extensions: self.supported_extensions,
+                client_verify_data: self.client_verify_data,
+                params: self.params,
+                is_session_resumption: self.is_session_resumption,
+            }
+            .into(),
+            vec![TlsAction::ChangeCipherSpec(TlsEntity::Server, read)],
+        ))
     }
 }
 
@@ -826,66 +830,70 @@ impl HandleRecord for AwaitServerFinished {
         ctx: &mut TlsContext,
         msg: &TlsMessage,
     ) -> TLSResult<(TlsState, Vec<TlsAction>)> {
-        if let TlsMessage::Handshake(TlsHandshake::Finished(finished)) = msg {
-            info!("Received ServerFinished");
+        let TlsMessage::Handshake(handshake) = msg else {
+            panic!("invalid transition");
+        };
 
-            let verify_data = self.params.server_verify_data(&self.handshakes);
-            assert_eq!(verify_data, finished.verify_data);
-            self.handshakes.extend_from_slice(&finished.to_bytes());
+        let TlsHandshake::Finished(finished) = handshake else {
+            panic!("invalid transition");
+        };
 
-            if !self.is_session_resumption {
-                info!("Handshake complete! (full)");
+        info!("Received ServerFinished");
+        let verify_data = self.params.server_verify_data(&self.handshakes);
+        assert_eq!(verify_data, finished.verify_data);
+        handshake.write_to(&mut self.handshakes);
 
-                ctx.sessions.insert(
-                    self.session_id.clone(),
-                    SessionInfo {
-                        master_secret: self.params.master_secret,
-                        cipher_suite: self.params.cipher_suite_id,
-                    },
-                );
+        if !self.is_session_resumption {
+            info!("Handshake complete! (full)");
 
-                return Ok((
-                    EstablishedState {
-                        session_id: self.session_id,
-                        supported_extensions: self.supported_extensions,
-                        client_verify_data: self.client_verify_data.unwrap(),
-                    }
-                    .into(),
-                    vec![],
-                ));
-            } else {
-                let change_cipher_spec = ChangeCipherSpec::new();
+            ctx.sessions.insert(
+                self.session_id.clone(),
+                SessionInfo {
+                    master_secret: self.params.master_secret,
+                    cipher_suite: self.params.cipher_suite_id,
+                },
+            );
 
-                let keys = self.params.derive_keys();
-                let write = ConnState::Secure(SecureConnState::new(
-                    self.params.clone(),
-                    keys.client_enc_key,
-                    keys.client_mac_key,
-                    keys.client_write_iv,
-                ));
-
-                let verify_data = self.params.client_verify_data(&self.handshakes);
-                let client_finished = Finished::new(verify_data.clone());
-
-                info!("Sent ChangeCipherSpec");
-                info!("Sent ClientFinished");
-                info!("Handshake complete! (abbreviated)");
-                return Ok((
-                    EstablishedState {
-                        session_id: self.session_id,
-                        supported_extensions: self.supported_extensions,
-                        client_verify_data: verify_data,
-                    }
-                    .into(),
-                    vec![
-                        TlsAction::SendPlaintext(change_cipher_spec.into()),
-                        TlsAction::ChangeCipherSpec(TlsEntity::Client, write),
-                        TlsAction::SendPlaintext(client_finished.into()),
-                    ],
-                ));
-            }
+            return Ok((
+                EstablishedState {
+                    session_id: self.session_id,
+                    supported_extensions: self.supported_extensions,
+                    client_verify_data: self.client_verify_data.unwrap(),
+                }
+                .into(),
+                vec![],
+            ));
         }
-        panic!("invalid transition");
+
+        let change_cipher_spec = ChangeCipherSpec::new();
+
+        let keys = self.params.derive_keys();
+        let write = ConnState::Secure(SecureConnState::new(
+            self.params.clone(),
+            keys.client_enc_key,
+            keys.client_mac_key,
+            keys.client_write_iv,
+        ));
+
+        let verify_data = self.params.client_verify_data(&self.handshakes);
+        let client_finished = Finished::new(verify_data.clone());
+
+        info!("Sent ChangeCipherSpec");
+        info!("Sent ClientFinished");
+        info!("Handshake complete! (abbreviated)");
+        Ok((
+            EstablishedState {
+                session_id: self.session_id,
+                supported_extensions: self.supported_extensions,
+                client_verify_data: verify_data,
+            }
+            .into(),
+            vec![
+                TlsAction::SendPlaintext(change_cipher_spec.into()),
+                TlsAction::ChangeCipherSpec(TlsEntity::Client, write),
+                TlsAction::SendPlaintext(client_finished.into()),
+            ],
+        ))
     }
 }
 
@@ -902,18 +910,23 @@ impl HandleRecord for EstablishedState {
         _ctx: &mut TlsContext,
         msg: &TlsMessage,
     ) -> TLSResult<(TlsState, Vec<TlsAction>)> {
-        if let TlsMessage::Handshake(TlsHandshake::ClientHello(hello)) = msg {
-            return Ok((
-                AwaitServerHello {
-                    handshakes: hello.to_bytes(),
-                    client_random: hello.random.as_bytes(),
-                    session_id_resumption: None,
-                    session_ticket_resumption: None,
-                }
-                .into(),
-                vec![TlsAction::SendPlaintext(hello.clone().into())],
-            ));
-        }
-        panic!("invalid transition");
+        let TlsMessage::Handshake(handshake) = msg else {
+            panic!("invalid transition");
+        };
+
+        let TlsHandshake::ClientHello(hello) = handshake else {
+            panic!("invalid transition");
+        };
+
+        Ok((
+            AwaitServerHello {
+                handshakes: handshake.get_encoding(),
+                client_random: hello.random.as_bytes(),
+                session_id_resumption: None,
+                session_ticket_resumption: None,
+            }
+            .into(),
+            vec![TlsAction::SendPlaintext(hello.clone().into())],
+        ))
     }
 }

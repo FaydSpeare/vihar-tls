@@ -111,14 +111,14 @@ impl TlsCodable for Extensions {
         }
     }
     fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
-        if reader.consumed() {
+        if reader.is_consumed() {
             return Ok(Self(None));
         }
 
         let extensions_len = u16::read_from(reader)?.into();
         let mut sub_reader = reader.consume(extensions_len).map(Reader::new)?;
         let mut extensions = vec![];
-        while !sub_reader.consumed() {
+        while !sub_reader.is_consumed() {
             extensions.push(Extension::read_from(&mut sub_reader)?);
         }
         Ok(Self(Some(extensions.try_into()?)))
