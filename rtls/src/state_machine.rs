@@ -16,9 +16,10 @@ use crate::{
     alert::TLSAlert,
     ciphersuite::{CipherSuite, CipherSuiteMethods, KeyExchangeAlgorithm},
     connection::{ConnState, InitialConnState, SecureConnState, SecurityParams},
+    encoding::TlsCodable,
     messages::{
-        ChangeCipherSpec, ClientKeyExchange, Finished, TLSHandshake, TLSHandshakeType,
-        TLSPlaintext, TlsMessage, ToBytes, handshake_bytes,
+        ChangeCipherSpec, ClientKeyExchange, Finished, TLSPlaintext, TlsHandshake,
+        TlsHandshakeType, TlsMessage, ToBytes, handshake_bytes,
     },
 };
 
@@ -148,30 +149,35 @@ impl HandleRecord for AwaitClientHello {
         _ctx: &mut TlsContext,
         msg: &TlsMessage,
     ) -> TLSResult<(TlsState, Vec<TlsAction>)> {
-        if let TlsMessage::Handshake(TLSHandshake::ClientHello(hello)) = msg {
-            info!("Sent ClientHello");
+        let TlsMessage::Handshake(handshake) = msg else {
+            panic!("invalid transition");
+        };
 
-            return Ok((
-                AwaitServerHello {
-                    handshakes: hello.to_bytes(),
-                    client_random: hello.random.as_bytes(),
-                    session_id_resumption: (!hello.session_id.is_empty()).then(|| {
-                        let session_info = _ctx.sessions.get(&hello.session_id).unwrap();
-                        SessionIdResumption {
-                            master_secret: session_info.master_secret,
-                            cipher_suite: session_info.cipher_suite,
-                            session_id: hello.session_id.clone(),
-                        }
-                    }),
-                    session_ticket_resumption: hello
-                        .session_ticket()
-                        .and_then(|ticket| _ctx.session_tickets.get(&ticket).cloned()),
-                }
-                .into(),
-                vec![TlsAction::SendPlaintext(hello.clone().into())],
-            ));
-        }
-        panic!("invalid transition");
+        let TlsHandshake::ClientHello(hello) = handshake else {
+            panic!("invalid transition");
+        };
+
+        info!("Sent ClientHello");
+        return Ok((
+            AwaitServerHello {
+                handshakes: handshake.get_encoding(),
+                client_random: hello.random.as_bytes(),
+                session_id_resumption: (!hello.session_id.is_empty()).then(|| {
+                    let session_info = _ctx.sessions.get(&hello.session_id).unwrap();
+                    SessionIdResumption {
+                        master_secret: session_info.master_secret,
+                        cipher_suite: session_info.cipher_suite,
+                        session_id: hello.session_id.clone(),
+                    }
+                }),
+                session_ticket_resumption: hello
+                    .extensions
+                    .get_session_ticket()
+                    .and_then(|ticket| _ctx.session_tickets.get(&ticket).cloned()),
+            }
+            .into(),
+            vec![TlsAction::SendPlaintext(hello.clone().into())],
+        ));
     }
 }
 
@@ -203,92 +209,76 @@ impl HandleRecord for AwaitServerHello {
         _ctx: &mut TlsContext,
         msg: &TlsMessage,
     ) -> TLSResult<(TlsState, Vec<TlsAction>)> {
-        if let TlsMessage::Handshake(TLSHandshake::ServerHello(hello)) = msg {
-            info!("Received ServerHello");
-            self.handshakes.extend_from_slice(&hello.to_bytes());
+        let TlsMessage::Handshake(handshake) = msg else {
+            panic!("invalid transition");
+        };
 
-            let supported_extensions = SupportedExtensions {
-                secure_renegotiation: hello.supports_secure_renegotiation(),
-                extended_master_secret: hello.supports_extended_master_secret(),
-                session_ticket: hello.supports_session_ticket(),
+        let TlsHandshake::ServerHello(hello) = handshake else {
+            panic!("invalid transition");
+        };
+
+        info!("Received ServerHello");
+        handshake.write_to(&mut self.handshakes);
+
+        let supported_extensions = SupportedExtensions {
+            secure_renegotiation: hello.supports_secure_renegotiation(),
+            extended_master_secret: hello.supports_extended_master_secret(),
+            session_ticket: hello.supports_session_ticket(),
+        };
+
+        // If the server echoed back the session-id sent by the client we're
+        // now doing an abbreviated handshake.
+        if self
+            .session_id_resumption
+            .as_ref()
+            .map_or(false, |x| x.session_id == hello.session_id)
+        {
+            let resumption = self.session_id_resumption.unwrap();
+            let ciphersuite = CipherSuite::from(resumption.cipher_suite);
+            let params = SecurityParams {
+                cipher_suite_id: resumption.cipher_suite,
+                client_random: self.client_random,
+                server_random: hello.random.as_bytes(),
+                enc_algorithm: ciphersuite.params().enc_algorithm,
+                mac_algorithm: ciphersuite.params().mac_algorithm,
+                prf_algorithm: ciphersuite.params().prf_algorithm,
+                master_secret: resumption.master_secret,
             };
 
-            // If the server echoed back the session-id sent by the client we're
-            // now doing an abbreviated handshake.
-            if self
-                .session_id_resumption
-                .as_ref()
-                .map_or(false, |x| x.session_id == hello.session_id)
-            {
-                let resumption = self.session_id_resumption.unwrap();
-                let ciphersuite = CipherSuite::from(resumption.cipher_suite);
-                let params = SecurityParams {
-                    cipher_suite_id: resumption.cipher_suite,
-                    client_random: self.client_random,
-                    server_random: hello.random.as_bytes(),
-                    enc_algorithm: ciphersuite.params().enc_algorithm,
-                    mac_algorithm: ciphersuite.params().mac_algorithm,
-                    prf_algorithm: ciphersuite.params().prf_algorithm,
-                    master_secret: resumption.master_secret,
-                };
-
-                return Ok((
-                    AwaitServerChangeCipher {
-                        session_id: hello.session_id.clone(),
-                        handshakes: self.handshakes,
-                        supported_extensions,
-                        params,
-                        client_verify_data: None,
-                        is_session_resumption: true,
-                    }
-                    .into(),
-                    vec![],
-                ));
-            }
-
-            // Attempting session resumption with session-ticket
-            if let Some(resumption) = self.session_ticket_resumption {
-                // Server will issue a new ticket, but did it accept the session ticket we sent?
-                if hello.supports_session_ticket() {
-                    // We can only tell if the session ticket was accepted by the
-                    // server based on what it sends next. It either:
-                    //
-                    // (1) rejects the session ticket, but will issue a new session ticket
-                    // later. For now it will proceed with a full handshake.
-                    //
-                    // (2) accepts the session ticket, as well as issue a new session ticket.
-                    //
-                    return Ok((
-                        AwaitNewSessionTicketOrCertificate {
-                            session_id: hello.session_id.clone(),
-                            handshakes: self.handshakes,
-                            client_random: self.client_random,
-                            server_random: hello.random.as_bytes(),
-                            selected_cipher_suite_id: hello.cipher_suite,
-                            supported_extensions,
-                            session_ticket_resumption: resumption,
-                        }
-                        .into(),
-                        vec![],
-                    ));
+            return Ok((
+                AwaitServerChangeCipher {
+                    session_id: hello.session_id.clone(),
+                    handshakes: self.handshakes,
+                    supported_extensions,
+                    params,
+                    client_verify_data: None,
+                    is_session_resumption: true,
                 }
+                .into(),
+                vec![],
+            ));
+        }
 
+        // Attempting session resumption with session-ticket
+        if let Some(resumption) = self.session_ticket_resumption {
+            // Server will issue a new ticket, but did it accept the session ticket we sent?
+            if hello.supports_session_ticket() {
                 // We can only tell if the session ticket was accepted by the
                 // server based on what it sends next. It either:
                 //
-                // (1) rejects the session ticket, and won't issue a new session ticket
-                // and thus will proceed with a full handshake.
+                // (1) rejects the session ticket, but will issue a new session ticket
+                // later. For now it will proceed with a full handshake.
                 //
-                // (2) accepts the session ticket, and won't issue a new session ticket.
+                // (2) accepts the session ticket, as well as issue a new session ticket.
                 //
                 return Ok((
-                    AwaitServerChangeCipherOrCertificate {
+                    AwaitNewSessionTicketOrCertificate {
                         session_id: hello.session_id.clone(),
+                        handshakes: self.handshakes,
                         client_random: self.client_random,
                         server_random: hello.random.as_bytes(),
                         selected_cipher_suite_id: hello.cipher_suite,
                         supported_extensions,
-                        handshakes: self.handshakes,
                         session_ticket_resumption: resumption,
                     }
                     .into(),
@@ -296,23 +286,44 @@ impl HandleRecord for AwaitServerHello {
                 ));
             }
 
-            // Boring... no session resumption, we're doing a full handshake.
-            let cipher_suite = CipherSuite::from(hello.cipher_suite);
-            debug!("Selected CipherSuite: {}", cipher_suite.params().name);
+            // We can only tell if the session ticket was accepted by the
+            // server based on what it sends next. It either:
+            //
+            // (1) rejects the session ticket, and won't issue a new session ticket
+            // and thus will proceed with a full handshake.
+            //
+            // (2) accepts the session ticket, and won't issue a new session ticket.
+            //
             return Ok((
-                AwaitServerCertificate {
+                AwaitServerChangeCipherOrCertificate {
                     session_id: hello.session_id.clone(),
-                    handshakes: self.handshakes,
                     client_random: self.client_random,
                     server_random: hello.random.as_bytes(),
                     selected_cipher_suite_id: hello.cipher_suite,
                     supported_extensions,
+                    handshakes: self.handshakes,
+                    session_ticket_resumption: resumption,
                 }
                 .into(),
                 vec![],
             ));
         }
-        panic!("invalid transition");
+
+        // Boring... no session resumption, we're doing a full handshake.
+        let cipher_suite = CipherSuite::from(hello.cipher_suite);
+        debug!("Selected CipherSuite: {}", cipher_suite.params().name);
+        return Ok((
+            AwaitServerCertificate {
+                session_id: hello.session_id.clone(),
+                handshakes: self.handshakes,
+                client_random: self.client_random,
+                server_random: hello.random.as_bytes(),
+                selected_cipher_suite_id: hello.cipher_suite,
+                supported_extensions,
+            }
+            .into(),
+            vec![],
+        ));
     }
 }
 
@@ -332,48 +343,51 @@ impl HandleRecord for AwaitServerCertificate {
         _ctx: &mut TlsContext,
         msg: &TlsMessage,
     ) -> TLSResult<(TlsState, Vec<TlsAction>)> {
-        if let TlsMessage::Handshake(TLSHandshake::Certificates(certs)) = msg {
-            info!("Received ServerCertificate");
+        let TlsMessage::Handshake(handshake) = msg else {
+            panic!("invalid transition");
+        };
 
-            let server_public_key = public_key_from_cert(&certs.list[0].bytes)?;
-            self.handshakes.extend_from_slice(&certs.to_bytes());
+        let TlsHandshake::Certificates(certs) = handshake else {
+            panic!("invalid transition");
+        };
 
-            let cipher_suite = CipherSuite::from(self.selected_cipher_suite_id);
-            match cipher_suite.params().key_exchange_algorithm {
-                KeyExchangeAlgorithm::DheRsa | KeyExchangeAlgorithm::DheDss => {
-                    return Ok((
-                        AwaitServerKeyExchange {
-                            session_id: self.session_id,
-                            handshakes: self.handshakes,
-                            client_random: self.client_random,
-                            server_random: self.server_random,
-                            selected_cipher_suite_id: self.selected_cipher_suite_id,
-                            supported_extensions: self.supported_extensions,
-                            server_public_key,
-                        }
-                        .into(),
-                        vec![],
-                    ));
-                }
-                _ => {}
+        handshake.write_to(&mut self.handshakes);
+        let server_public_key = public_key_from_cert(&certs.list[0])?;
+
+        let cipher_suite = CipherSuite::from(self.selected_cipher_suite_id);
+        match cipher_suite.params().key_exchange_algorithm {
+            KeyExchangeAlgorithm::DheRsa | KeyExchangeAlgorithm::DheDss => {
+                return Ok((
+                    AwaitServerKeyExchange {
+                        session_id: self.session_id,
+                        handshakes: self.handshakes,
+                        client_random: self.client_random,
+                        server_random: self.server_random,
+                        selected_cipher_suite_id: self.selected_cipher_suite_id,
+                        supported_extensions: self.supported_extensions,
+                        server_public_key,
+                    }
+                    .into(),
+                    vec![],
+                ));
             }
-
-            return Ok((
-                AwaitServerHelloDone {
-                    session_id: self.session_id,
-                    handshakes: self.handshakes,
-                    client_random: self.client_random,
-                    server_random: self.server_random,
-                    selected_cipher_suite_id: self.selected_cipher_suite_id,
-                    supported_extensions: self.supported_extensions,
-                    server_public_key,
-                    secrets: None,
-                }
-                .into(),
-                vec![],
-            ));
+            _ => {}
         }
-        panic!("invalid transition");
+
+        return Ok((
+            AwaitServerHelloDone {
+                session_id: self.session_id,
+                handshakes: self.handshakes,
+                client_random: self.client_random,
+                server_random: self.server_random,
+                selected_cipher_suite_id: self.selected_cipher_suite_id,
+                supported_extensions: self.supported_extensions,
+                server_public_key,
+                secrets: None,
+            }
+            .into(),
+            vec![],
+        ));
     }
 }
 
@@ -394,7 +408,7 @@ impl HandleRecord for AwaitServerKeyExchange {
         _ctx: &mut TlsContext,
         msg: &TlsMessage,
     ) -> TLSResult<(TlsState, Vec<TlsAction>)> {
-        if let TlsMessage::Handshake(TLSHandshake::ServerKeyExchange(kx)) = msg {
+        if let TlsMessage::Handshake(TlsHandshake::ServerKeyExchange(kx)) = msg {
             info!("Received ServerKeyExchange");
 
             let verified = match kx.sig_algo {
@@ -478,11 +492,11 @@ impl HandleRecord for AwaitServerHelloDone {
         _ctx: &mut TlsContext,
         msg: &TlsMessage,
     ) -> TLSResult<(TlsState, Vec<TlsAction>)> {
-        if let TlsMessage::Handshake(TLSHandshake::ServerHelloDone) = msg {
+        if let TlsMessage::Handshake(TlsHandshake::ServerHelloDone) = msg {
             info!("Received ServerHelloDone");
 
             self.handshakes
-                .extend_from_slice(&handshake_bytes(TLSHandshakeType::ServerHelloDone, &[]));
+                .extend_from_slice(&handshake_bytes(TlsHandshakeType::ServerHelloDone, &[]));
 
             let ciphersuite = CipherSuite::from(self.selected_cipher_suite_id);
             let (pre_master_secret, key_exchange_data) =
@@ -495,7 +509,7 @@ impl HandleRecord for AwaitServerHelloDone {
                     KeyExchangeAlgorithm::DheRsa | KeyExchangeAlgorithm::DheDss => {
                         let DheParams { p, g, public_key } = self.secrets.as_ref().unwrap();
                         get_dhe_pre_master_secret(p, g, public_key)
-                    },
+                    }
                     KeyExchangeAlgorithm::EcdheRsa => unimplemented!(),
                 };
 
@@ -582,7 +596,8 @@ impl AwaitServerHelloDone {
             )
         };
 
-        let master_secret: [u8; 48] = prf.prf(pre_master_secret, label, &seed, 48)
+        let master_secret: [u8; 48] = prf
+            .prf(pre_master_secret, label, &seed, 48)
             .try_into()
             .unwrap();
         master_secret
@@ -596,7 +611,6 @@ pub struct AwaitNewSessionTicket {
     supported_extensions: SupportedExtensions,
     params: SecurityParams,
     is_session_resumption: bool,
-
     client_verify_data: Option<Vec<u8>>,
 }
 
@@ -606,32 +620,37 @@ impl HandleRecord for AwaitNewSessionTicket {
         _ctx: &mut TlsContext,
         msg: &TlsMessage,
     ) -> TLSResult<(TlsState, Vec<TlsAction>)> {
-        if let TlsMessage::Handshake(TLSHandshake::NewSessionTicket(ticket)) = msg {
-            info!("Received NewSessionTicket");
-            self.handshakes.extend_from_slice(&ticket.to_bytes());
+        let TlsMessage::Handshake(handshake) = msg else {
+            panic!("invalid transition");
+        };
 
-            _ctx.session_tickets.insert(
-                ticket.ticket.clone(),
-                SessionTicketInfo {
-                    cipher_suite: self.params.cipher_suite_id,
-                    master_secret: self.params.master_secret,
-                },
-            );
+        let TlsHandshake::NewSessionTicket(ticket) = handshake else {
+            panic!("invalid transition");
+        };
 
-            return Ok((
-                AwaitServerChangeCipher {
-                    session_id: self.session_id,
-                    handshakes: self.handshakes,
-                    supported_extensions: self.supported_extensions,
-                    client_verify_data: self.client_verify_data,
-                    params: self.params,
-                    is_session_resumption: self.is_session_resumption,
-                }
-                .into(),
-                vec![],
-            ));
-        }
-        panic!("invalid transition");
+        info!("Received NewSessionTicket");
+        handshake.write_to(&mut self.handshakes);
+
+        _ctx.session_tickets.insert(
+            ticket.ticket.to_vec(),
+            SessionTicketInfo {
+                cipher_suite: self.params.cipher_suite_id,
+                master_secret: self.params.master_secret,
+            },
+        );
+
+        return Ok((
+            AwaitServerChangeCipher {
+                session_id: self.session_id,
+                handshakes: self.handshakes,
+                supported_extensions: self.supported_extensions,
+                client_verify_data: self.client_verify_data,
+                params: self.params,
+                is_session_resumption: self.is_session_resumption,
+            }
+            .into(),
+            vec![],
+        ));
     }
 }
 
@@ -652,7 +671,7 @@ impl HandleRecord for AwaitNewSessionTicketOrCertificate {
         ctx: &mut TlsContext,
         msg: &TlsMessage,
     ) -> TLSResult<(TlsState, Vec<TlsAction>)> {
-        if let TlsMessage::Handshake(TLSHandshake::NewSessionTicket(_)) = msg {
+        if let TlsMessage::Handshake(TlsHandshake::NewSessionTicket(_)) = msg {
             let ciphersuite = CipherSuite::from(self.session_ticket_resumption.cipher_suite);
             let params = SecurityParams {
                 cipher_suite_id: self.session_ticket_resumption.cipher_suite,
@@ -673,7 +692,7 @@ impl HandleRecord for AwaitNewSessionTicketOrCertificate {
                 params,
             }
             .handle(ctx, msg);
-        } else if let TlsMessage::Handshake(TLSHandshake::Certificates(_)) = msg {
+        } else if let TlsMessage::Handshake(TlsHandshake::Certificates(_)) = msg {
             return AwaitServerCertificate {
                 session_id: self.session_id,
                 handshakes: self.handshakes,
@@ -726,7 +745,7 @@ impl HandleRecord for AwaitServerChangeCipherOrCertificate {
                 is_session_resumption: true,
             }
             .handle(ctx, msg);
-        } else if let TlsMessage::Handshake(TLSHandshake::Certificates(_)) = msg {
+        } else if let TlsMessage::Handshake(TlsHandshake::Certificates(_)) = msg {
             return AwaitServerCertificate {
                 session_id: self.session_id,
                 handshakes: self.handshakes,
@@ -807,7 +826,7 @@ impl HandleRecord for AwaitServerFinished {
         ctx: &mut TlsContext,
         msg: &TlsMessage,
     ) -> TLSResult<(TlsState, Vec<TlsAction>)> {
-        if let TlsMessage::Handshake(TLSHandshake::Finished(finished)) = msg {
+        if let TlsMessage::Handshake(TlsHandshake::Finished(finished)) = msg {
             info!("Received ServerFinished");
 
             let verify_data = self.params.server_verify_data(&self.handshakes);
@@ -883,7 +902,7 @@ impl HandleRecord for EstablishedState {
         _ctx: &mut TlsContext,
         msg: &TlsMessage,
     ) -> TLSResult<(TlsState, Vec<TlsAction>)> {
-        if let TlsMessage::Handshake(TLSHandshake::ClientHello(hello)) = msg {
+        if let TlsMessage::Handshake(TlsHandshake::ClientHello(hello)) = msg {
             return Ok((
                 AwaitServerHello {
                     handshakes: hello.to_bytes(),

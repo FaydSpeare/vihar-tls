@@ -1,14 +1,16 @@
 use std::fmt::Debug;
 
-use crate::encoding::{CodingError, LengthPrefixedVec, NonEmpty, Reader, TlsCodable};
+use crate::encoding::{
+    CodingError, LengthPrefixWriter, LengthPrefixedVec, MaybeEmpty, NonEmpty, Reader,
+    RedefineableCardinality, TlsCodable,
+};
 
 #[derive(Debug, Clone)]
 pub enum Extension {
     SecureRenegotiation(SecureRenegotationExt),
     SignatureAlgorithms(SignatureAlgorithmsExt),
-    // SessionTicket(SessionTicketExt),
+    SessionTicket(SessionTicketExt),
     // ExtendedMasterSecret(ExtendedMasterSecretExt),
-    // Heartbeat(HeartbeatExt),
     // ALPN(ALPNExt),
     // SupportedGroups(SupportedGroupsExt),
 }
@@ -18,6 +20,7 @@ impl TlsCodable for Extension {
         match self {
             Self::SecureRenegotiation(ext) => ext.write_to(bytes),
             Self::SignatureAlgorithms(ext) => ext.write_to(bytes),
+            Self::SessionTicket(ext) => ext.write_to(bytes),
         }
     }
     fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
@@ -25,9 +28,9 @@ impl TlsCodable for Extension {
         let ext: Extension = match ext_type {
             SignatureAlgorithmsExt::TYPE => SignatureAlgorithmsExt::read_from(reader)?.into(),
             SecureRenegotationExt::TYPE => SecureRenegotationExt::read_from(reader)?.into(),
+            SessionTicketExt::TYPE => SessionTicketExt::read_from(reader)?.into(),
             // 0x0023 => SessionTicketExt::decode(bytes),
             // 0x0017 => ExtendedMasterSecretExt::decode(bytes),
-            // 0x000f => HeartbeatExt::decode(bytes)?,
             // 0x0010 => ALPNExt::decode(bytes)?,
             // 0x000a => SupportedGroupsExt::decode(bytes)?,
             _ => return Err(CodingError::UnknownExtensionType(ext_type)),
@@ -45,6 +48,12 @@ impl From<SecureRenegotationExt> for Extension {
 impl From<SignatureAlgorithmsExt> for Extension {
     fn from(value: SignatureAlgorithmsExt) -> Self {
         Self::SignatureAlgorithms(value)
+    }
+}
+
+impl From<SessionTicketExt> for Extension {
+    fn from(value: SessionTicketExt) -> Self {
+        Self::SessionTicket(value)
     }
 }
 
@@ -71,6 +80,28 @@ impl Extensions {
                 .any(|x| matches!(x, Extension::SecureRenegotiation(_))),
         }
     }
+
+    pub fn includes_session_ticket(&self) -> bool {
+        match &self.0 {
+            None => false,
+            Some(extensions) => extensions
+                .iter()
+                .any(|x| matches!(x, Extension::SessionTicket(_))),
+        }
+    }
+
+    pub fn get_session_ticket(&self) -> Option<Vec<u8>> {
+        match &self.0 {
+            None => None,
+            Some(extensions) => extensions.iter().find_map(|ext| {
+                if let Extension::SessionTicket(SessionTicketExt::Resumption(ticket)) = ext {
+                    Some(ticket.to_vec())
+                } else {
+                    None
+                }
+            }),
+        }
+    }
 }
 
 impl TlsCodable for Extensions {
@@ -85,7 +116,7 @@ impl TlsCodable for Extensions {
         }
 
         let extensions_len = u16::read_from(reader)?.into();
-        let mut sub_reader = reader.take(extensions_len).map(Reader::new)?;
+        let mut sub_reader = reader.consume(extensions_len).map(Reader::new)?;
         let mut extensions = vec![];
         while !sub_reader.consumed() {
             extensions.push(Extension::read_from(&mut sub_reader)?);
@@ -120,66 +151,65 @@ impl TlsExtensionType for SecureRenegotationExt {
 impl TlsCodable for SecureRenegotationExt {
     fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
         let _ext_len = u16::read_from(reader)?;
-        let renegotiation_info_len = u8::read_from(reader)?;
-        if renegotiation_info_len == 0 {
+        let renegotiation_info = LengthPrefixedVec::<u8, u8, MaybeEmpty>::read_from(reader)?;
+        if renegotiation_info.len() == 0 {
             return Ok(Self::Initial);
         }
-
-        reader.go_back(1)?;
-        let renegotiation_info = LengthPrefixedVec::<u8, u8, NonEmpty>::read_from(reader)?;
-        Ok(Self::Renegotiation(renegotiation_info))
+        Ok(Self::Renegotiation(
+            renegotiation_info.redefine_cardinality()?,
+        ))
     }
 
     fn write_to(&self, bytes: &mut Vec<u8>) {
         Self::TYPE.write_to(bytes);
-
-        let info_len = match self {
-            Self::Initial => 0,
-            Self::Renegotiation(info) => info.len(),
-        };
-
-        let ext_len: u16 = (info_len + 1) as u16; // TODO: could error
-        ext_len.write_to(bytes);
+        let mut writer = LengthPrefixWriter::<u16>::new(bytes);
         match self {
-            Self::Initial => bytes.push(0u8),
-            Self::Renegotiation(info) => info.write_to(bytes),
+            Self::Initial => writer.push(0u8),
+            Self::Renegotiation(info) => info.write_to(&mut writer),
         };
+        writer.finalize_length_prefix();
     }
 }
 
-// #[derive(Debug, Clone)]
-// pub struct SessionTicketExt {
-//     pub ticket: Option<Vec<u8>>,
-// }
-//
-// impl SessionTicketExt {
-//     pub fn new() -> Self {
-//         Self { ticket: None }
-//     }
-//
-//     pub fn resume(ticket: Vec<u8>) -> Self {
-//         Self {
-//             ticket: Some(ticket),
-//         }
-//     }
-//
-//     fn decode(bytes: &[u8]) -> (Extension, usize) {
-//         let extension_len = u16::from_be_bytes([bytes[2], bytes[3]]) as usize;
-//         assert_eq!(extension_len, 0);
-//         (Self { ticket: None }.into(), 4 + extension_len)
-//     }
-// }
-//
-// impl EncodeExtension for SessionTicketExt {
-//     fn encode(&self) -> Vec<u8> {
-//         let ticket_bytes = self.ticket.as_ref().map_or(vec![], |t| t.clone());
-//         let mut bytes = Vec::<u8>::new();
-//         bytes.extend_from_slice(&[0x00, 0x23]);
-//         bytes.extend_from_slice(&(ticket_bytes.len() as u16).to_be_bytes());
-//         bytes.extend_from_slice(&ticket_bytes);
-//         bytes
-//     }
-// }
+type SessionTicket = LengthPrefixedVec<u16, u8, MaybeEmpty>;
+
+#[derive(Debug, Clone)]
+pub enum SessionTicketExt {
+    Empty,
+    Resumption(SessionTicket),
+}
+
+impl TlsExtensionType for SessionTicketExt {
+    const TYPE: u16 = 0x0023;
+}
+
+impl SessionTicketExt {
+    pub fn new() -> Self {
+        Self::Empty
+    }
+
+    pub fn resume(ticket: Vec<u8>) -> Result<Self, CodingError> {
+        Ok(Self::Resumption(ticket.try_into()?))
+    }
+}
+
+impl TlsCodable for SessionTicketExt {
+    fn write_to(&self, bytes: &mut Vec<u8>) {
+        Self::TYPE.write_to(bytes);
+        match self {
+            Self::Empty => 0u16.write_to(bytes),
+            Self::Resumption(ticket) => ticket.write_to(bytes),
+        };
+    }
+    fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
+        let ext_len = u16::read_from(reader)?;
+        if ext_len == 0 {
+            return Ok(Self::Empty);
+        }
+        let ticket = SessionTicket::read_from(reader)?;
+        Ok(Self::Resumption(ticket))
+    }
+}
 
 // #[derive(Debug, Clone)]
 // pub struct ExtendedMasterSecretExt {}
@@ -271,10 +301,9 @@ impl TlsCodable for SignatureAlgorithmsExt {
 
     fn write_to(&self, bytes: &mut Vec<u8>) {
         Self::TYPE.write_to(bytes);
-        let algorithms_len = (self.algorithms.len() * 2) as u16; // TODO: remove hardcoded value
-        let ext_len = algorithms_len + 2;
-        ext_len.write_to(bytes);
-        self.algorithms.write_to(bytes);
+        let mut writer = LengthPrefixWriter::<u16>::new(bytes);
+        self.algorithms.write_to(&mut writer);
+        writer.finalize_length_prefix();
     }
 }
 

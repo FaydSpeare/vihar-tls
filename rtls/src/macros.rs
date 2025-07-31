@@ -19,8 +19,8 @@ macro_rules! tls_codable_enum {
                 match value {
                     $(
                         $enum_name::$enum_var => $enum_val
-                    ),*,
-                    $enum_name::Unknown(v) => v,
+                    ),*
+                    ,$enum_name::Unknown(v) => v,
                 }
             }
         }

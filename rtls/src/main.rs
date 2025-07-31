@@ -1,6 +1,6 @@
 use alert::{TLSAlert, TLSAlertDesc, TLSAlertLevel};
 use env_logger;
-use extensions::SecureRenegotationExt;
+use extensions::{SecureRenegotationExt, SessionTicketExt};
 use log::{error, info, trace};
 use record::RecordLayer;
 use state_machine::{
@@ -140,10 +140,10 @@ impl TLSConnection {
             _ => vec![SecureRenegotationExt::initial().into()],
         };
 
-        // match session_ticket {
-        //     None => extensions.push(SessionTicketExt::new().into()),
-        //     Some(ticket) => extensions.push(SessionTicketExt::resume(ticket).into()),
-        // }
+        match session_ticket {
+            None => extensions.push(SessionTicketExt::new().into()),
+            Some(ticket) => extensions.push(SessionTicketExt::resume(ticket)?.into()),
+        }
 
         // extensions.push(
         //     SupportedGroupsExt::new(vec![
@@ -246,7 +246,7 @@ fn main() -> TLSResult<()> {
 
     let suites: Vec<CipherSuiteId> = vec![CipherSuiteId::RsaAes128CbcSha];
 
-    let domain = "facebook.com";
+    let domain = "google.com";
     //let domain = "localhost";
 
     let mut connection = TLSConnection::new(domain)?;
@@ -255,19 +255,19 @@ fn main() -> TLSResult<()> {
 
     // println!("{:?}", connection.handshake_state_machine.ctx);
 
-    //let session_ticket = ctx.session_tickets.keys().last().cloned();
+    let session_ticket = ctx.session_tickets.keys().last().cloned();
 
-    //match session_ticket {
-    //    Some(session_ticket) => {
-    //        connection.notify_close()?;
-    //        connection = TLSConnection::new_with_context(domain, ctx)?;
-    //        connection.handshake(&suites, None, Some(session_ticket.to_vec()))?;
-    //    }
-    //    None => {}
-    //}
+    match session_ticket {
+        Some(session_ticket) => {
+            connection.notify_close()?;
+            connection = TLSConnection::new_with_context(domain, ctx)?;
+            connection.handshake(&suites, None, Some(session_ticket.to_vec()))?;
+        }
+        None => {}
+    }
 
-    let mut connection = TLSConnection::new_with_context(domain, ctx)?;
-    connection.handshake(&suites, Some(session_id), None)?;
+    // let mut connection = TLSConnection::new_with_context(domain, ctx)?;
+    // connection.handshake(&suites, Some(session_id), None)?;
 
     let msg = connection.next_message()?;
     println!("{:?}", msg);
