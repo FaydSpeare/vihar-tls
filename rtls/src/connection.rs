@@ -1,8 +1,5 @@
-use sha2::{Sha256, Digest};
-
-use crate::ciphersuite::{CipherType, EncAlgorithm, MacAlgorithm, PrfAlgorithm};
+use crate::ciphersuite::{CipherSuiteId, CipherType, EncAlgorithm, MacAlgorithm, PrfAlgorithm};
 use crate::messages::{TLSCiphertext, TLSPlaintext};
-use crate::prf::prf_sha256;
 use crate::utils;
 
 #[derive(Debug, Clone)]
@@ -17,7 +14,7 @@ pub struct DerivedKeys {
 
 #[derive(Debug, Clone)]
 pub struct SecurityParams {
-    pub cipher_suite_id: u16,
+    pub cipher_suite_id: CipherSuiteId,
     pub enc_algorithm: EncAlgorithm,
     pub mac_algorithm: MacAlgorithm,
     pub prf_algorithm: PrfAlgorithm,
@@ -27,15 +24,16 @@ pub struct SecurityParams {
 }
 
 impl SecurityParams {
-    
     pub fn client_verify_data(&self, handshakes: &[u8]) -> Vec<u8> {
         let seed = self.prf_algorithm.hash(handshakes);
-        self.prf_algorithm.prf(&self.master_secret, b"client finished", &seed, 12)
+        self.prf_algorithm
+            .prf(&self.master_secret, b"client finished", &seed, 12)
     }
 
     pub fn server_verify_data(&self, handshakes: &[u8]) -> Vec<u8> {
         let seed = self.prf_algorithm.hash(handshakes);
-        self.prf_algorithm.prf(&self.master_secret, b"server finished", &seed, 12)
+        self.prf_algorithm
+            .prf(&self.master_secret, b"server finished", &seed, 12)
     }
 
     pub fn derive_keys(&self) -> DerivedKeys {
@@ -161,7 +159,6 @@ impl SecureConnState {
             .decrypt(ciphertext, &self.enc_key, &iv, Some(&aad))
     }
 
-
     fn encrypt_block_cipher(&self, plaintext: &TLSPlaintext) -> Vec<u8> {
         let mut bytes = Vec::<u8>::new();
         bytes.extend_from_slice(&self.seq_num.to_be_bytes());
@@ -235,7 +232,6 @@ impl SecureConnState {
         self.seq_num += 1;
         TLSPlaintext::new(ciphertext.content_type, fragment)
     }
-
 }
 
 #[derive(Debug, Clone)]

@@ -1,9 +1,7 @@
 use crate::alert::TLSAlert;
-use crate::ciphersuite::{CipherSuite, CipherSuiteId, CipherSuiteMethods, KeyExchangeAlgorithm};
-use crate::extensions::{
-    EncodeExtension, Extension, HashAlgo, SigAlgo, SignatureAlgorithmsExt, decode_extensions,
-};
-use crate::encoding::{CodingError, Reader, TlsCodable, U16PrefixedVec, U8PrefixedVec};
+use crate::ciphersuite::CipherSuiteId;
+use crate::encoding::{CodingError, LengthPrefixedVec, MaybeEmpty, NonEmpty, Reader, TlsCodable};
+use crate::extensions::{Extension, Extensions, HashAlgo, SigAlgo, SignatureAlgorithmsExt};
 use crate::utils;
 use crate::{TLSError, TLSResult};
 use num_enum::TryFromPrimitive;
@@ -57,15 +55,16 @@ impl Random {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct SessionId(U8PrefixedVec<u8>);
+pub struct SessionId(LengthPrefixedVec<u8, u8, MaybeEmpty>);
 
 impl SessionId {
     const MAX_LEN: usize = 32;
+
     pub fn new(session_id: &[u8]) -> Result<Self, CodingError> {
         if session_id.len() > Self::MAX_LEN {
             return Err(CodingError::LengthTooLarge);
         }
-        Ok(Self(session_id.to_vec().into()))
+        Ok(Self(session_id.to_vec().try_into()?))
     }
 
     pub fn is_empty(&self) -> bool {
@@ -79,7 +78,7 @@ impl TlsCodable for SessionId {
         self.0.write_to(bytes);
     }
     fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
-        let session_id = U8PrefixedVec::<u8>::read_from(reader)?;
+        let session_id = LengthPrefixedVec::<u8, u8, MaybeEmpty>::read_from(reader)?;
         if session_id.len() > Self::MAX_LEN {
             return Err(CodingError::LengthTooLarge);
         }
@@ -99,9 +98,9 @@ pub struct ClientHello {
     pub client_version: ProtocolVersion,
     pub random: Random,
     pub session_id: SessionId,
-    pub cipher_suites: U16PrefixedVec<CipherSuiteId>,
-    pub compression_methods: U8PrefixedVec<CompressionMethodId>,
-    pub extensions: Vec<Extension>,
+    pub cipher_suites: LengthPrefixedVec<u16, CipherSuiteId, NonEmpty>,
+    pub compression_methods: LengthPrefixedVec<u8, CompressionMethodId, NonEmpty>,
+    pub extensions: Extensions,
 }
 
 impl ClientHello {
@@ -109,41 +108,43 @@ impl ClientHello {
         suites: &[CipherSuiteId],
         mut extensions: Vec<Extension>,
         session_id: Option<SessionId>,
-    ) -> Self {
+    ) -> Result<Self, CodingError> {
         extensions.push(
             SignatureAlgorithmsExt::new_from_product(
                 vec![SigAlgo::Rsa, SigAlgo::Dsa],
                 vec![HashAlgo::Sha1, HashAlgo::Sha256],
-            )
+            )?
             .into(),
         );
-        ClientHello {
+        Ok(ClientHello {
             client_version: ProtocolVersion { major: 3, minor: 3 },
             random: Random {
                 unix_time: utils::get_unix_time(),
                 random_bytes: utils::get_random_bytes(28).try_into().unwrap(),
             },
             session_id: session_id.unwrap_or(SessionId::new(&[]).unwrap()),
-            cipher_suites: suites.to_vec().into(),
-            compression_methods: vec![CompressionMethodId::Null].into(),
-            extensions,
-        }
+            cipher_suites: suites.to_vec().try_into()?,
+            compression_methods: vec![CompressionMethodId::Null].try_into()?,
+            extensions: Extensions::new(extensions)?,
+        })
     }
 
     pub fn includes_session_ticket(&self) -> bool {
-        self.extensions
-            .iter()
-            .any(|ext| matches!(ext, Extension::SessionTicket(ext) if ext.ticket.is_some()))
+        false
+        // self.extensions
+        //     .iter()
+        //     .any(|ext| matches!(ext, Extension::SessionTicket(ext) if ext.ticket.is_some()))
     }
 
     pub fn session_ticket(&self) -> Option<Vec<u8>> {
-        self.extensions.iter().find_map(|ext| {
-            if let Extension::SessionTicket(ticket_ext) = ext {
-                ticket_ext.ticket.clone()
-            } else {
-                None
-            }
-        })
+        None
+        // self.extensions.iter().find_map(|ext| {
+        //     if let Extension::SessionTicket(ticket_ext) = ext {
+        //         ticket_ext.ticket.clone()
+        //     } else {
+        //         None
+        //     }
+        // })
     }
 }
 
@@ -155,18 +156,7 @@ impl ToBytes for ClientHello {
         self.session_id.write_to(&mut bytes);
         self.cipher_suites.write_to(&mut bytes);
         self.compression_methods.write_to(&mut bytes);
-
-        let extensions_bytes: Vec<u8> = self
-            .extensions
-            .iter()
-            .map(|x| x.encode())
-            .flatten()
-            .collect();
-        let extensions_len = extensions_bytes.len() as u16;
-
-        bytes.extend_from_slice(&extensions_len.to_be_bytes());
-        bytes.extend_from_slice(&extensions_bytes);
-
+        self.extensions.write_to(&mut bytes);
         handshake_bytes(TLSHandshakeType::ClientHello, &bytes)
     }
 }
@@ -195,56 +185,39 @@ pub struct ServerHello {
     pub server_version: ProtocolVersion,
     pub random: Random,
     pub session_id: SessionId,
-    pub cipher_suite: CipherSuite,
-    pub compression_method: u8,
-    pub extensions: Vec<Extension>,
+    pub cipher_suite: CipherSuiteId,
+    pub compression_method: CompressionMethodId,
+    pub extensions: Extensions,
 }
 
 impl ServerHello {
     pub fn supports_secure_renegotiation(&self) -> bool {
-        self.extensions
-            .iter()
-            .any(|x| matches!(x, Extension::SecureRenegotiation(_)))
+        self.extensions.includes_secure_renegotiation()
     }
+
     pub fn supports_session_ticket(&self) -> bool {
-        self.extensions
-            .iter()
-            .any(|x| matches!(x, Extension::SessionTicket(_)))
+        false
+        //self.extensions
+        //    .iter()
+        //    .any(|x| matches!(x, Extension::SessionTicket(_)))
     }
     pub fn supports_extended_master_secret(&self) -> bool {
-        self.extensions
-            .iter()
-            .any(|x| matches!(x, Extension::ExtendedMasterSecret(_)))
+        false
+        //self.extensions
+        //    .iter()
+        //    .any(|x| matches!(x, Extension::ExtendedMasterSecret(_)))
     }
 }
 
 impl ToBytes for ServerHello {
     fn to_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::<u8>::new();
-        bytes.push(self.server_version.major);
-        bytes.push(self.server_version.minor);
-        bytes.extend_from_slice(&self.random.as_bytes());
-
+        self.server_version.write_to(&mut bytes);
+        self.random.write_to(&mut bytes);
         self.session_id.write_to(&mut bytes);
-        //bytes.push(self.session_id.len() as u8); // SessionId
-        //bytes.extend_from_slice(&self.session_id); // SessionId bytes
-
-        bytes.extend_from_slice(&self.cipher_suite.encode().to_be_bytes());
-
-        bytes.push(0); // Compression method
-
-        let extensions_bytes: Vec<u8> = self
-            .extensions
-            .iter()
-            .map(|x| x.encode())
-            .flatten()
-            .collect();
-        let extensions_len = extensions_bytes.len() as u16;
-        if extensions_len > 0 {
-            bytes.extend_from_slice(&extensions_len.to_be_bytes());
-            bytes.extend_from_slice(&extensions_bytes);
-        }
-
+        self.cipher_suite.write_to(&mut bytes);
+        self.compression_method.write_to(&mut bytes);
+        self.extensions.write_to(&mut bytes);
         handshake_bytes(TLSHandshakeType::ServerHello, &bytes)
     }
 }
@@ -254,35 +227,14 @@ impl TryFrom<&[u8]> for ServerHello {
 
     fn try_from(buf: &[u8]) -> Result<Self, Self::Error> {
         let mut reader = Reader::new(buf);
-        let version = ProtocolVersion::read_from(&mut reader)?;
+        let server_version = ProtocolVersion::read_from(&mut reader)?;
         let random = Random::read_from(&mut reader)?;
         let session_id = SessionId::read_from(&mut reader)?;
-
-        //let unix_time = u32::from_be_bytes([buf[2], buf[3], buf[4], buf[5]]);
-        // println!("Unix: {unix_time}");
-        //let random_bytes: [u8; 28] = buf[6..34].try_into().unwrap();
-        // println!("Random: {:?}", random_bytes);
-        //let session_len = buf[34] as usize;
-        //let session_id = buf[35..35 + session_len].to_vec();
-        // println!("Session: {:?}", session_id);
-
-        let idx = 35 + session_id.0.len();
-        let cipher_suite_id = u16::from_be_bytes([buf[idx], buf[idx + 1]]);
-        let cipher_suite = CipherSuite::from_u16(cipher_suite_id)?;
-        // println!("cipher_suite: 0x{:02X}{:02X}", buf[idx], buf[idx + 1]);
-
-        let compression_method = buf[idx + 2];
-        // println!("compression: 0x{:02X}", slice[pos + 2]);
-
-        let extensions = if buf.len() > idx + 3 {
-            decode_extensions(&buf[idx + 5..])?
-        } else {
-            vec![]
-        };
-        // println!("ServerHello Extensions: {:#?}", extensions);
-
+        let cipher_suite = CipherSuiteId::read_from(&mut reader)?;
+        let compression_method = CompressionMethodId::read_from(&mut reader)?;
+        let extensions = Extensions::read_from(&mut reader)?;
         Ok(Self {
-            server_version: version,
+            server_version,
             random,
             session_id,
             cipher_suite,
@@ -455,8 +407,8 @@ impl ToBytes for ServerKeyExchange {
         bytes.extend_from_slice(&self.g);
         bytes.extend_from_slice(&(self.server_pubkey.len() as u16).to_be_bytes());
         bytes.extend_from_slice(&self.server_pubkey);
-        bytes.push(self.hash_algo as u8);
-        bytes.push(self.sig_algo as u8);
+        bytes.push(u8::from(self.hash_algo));
+        bytes.push(u8::from(self.sig_algo));
         bytes.extend_from_slice(&(self.signature.len() as u16).to_be_bytes());
         bytes.extend_from_slice(&self.signature);
         handshake_bytes(TLSHandshakeType::ServerKeyExchange, &bytes)

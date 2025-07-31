@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use enum_dispatch::enum_dispatch;
 use log::{debug, info};
 
-use crate::ciphersuite::PrfAlgorithm;
+use crate::ciphersuite::{CipherSuiteId, PrfAlgorithm};
 use crate::extensions::{HashAlgo, SigAlgo};
 use crate::messages::SessionId;
 use crate::signature::{
@@ -24,13 +24,13 @@ use crate::{
 
 #[derive(Debug, Clone)]
 pub struct SessionInfo {
-    cipher_suite: u16,
+    cipher_suite: CipherSuiteId,
     master_secret: [u8; 48],
 }
 
 #[derive(Debug, Clone)]
 pub struct SessionTicketInfo {
-    cipher_suite: u16,
+    cipher_suite: CipherSuiteId,
     master_secret: [u8; 48],
 }
 
@@ -179,7 +179,7 @@ impl HandleRecord for AwaitClientHello {
 struct SessionIdResumption {
     session_id: SessionId,
     master_secret: [u8; 48],
-    cipher_suite: u16,
+    cipher_suite: CipherSuiteId,
 }
 
 #[derive(Debug)]
@@ -207,7 +207,6 @@ impl HandleRecord for AwaitServerHello {
             info!("Received ServerHello");
             self.handshakes.extend_from_slice(&hello.to_bytes());
 
-            let selected_cipher_suite_id = hello.cipher_suite.encode();
             let supported_extensions = SupportedExtensions {
                 secure_renegotiation: hello.supports_secure_renegotiation(),
                 extended_master_secret: hello.supports_extended_master_secret(),
@@ -222,7 +221,7 @@ impl HandleRecord for AwaitServerHello {
                 .map_or(false, |x| x.session_id == hello.session_id)
             {
                 let resumption = self.session_id_resumption.unwrap();
-                let ciphersuite = CipherSuite::from_u16(resumption.cipher_suite)?;
+                let ciphersuite = CipherSuite::from(resumption.cipher_suite);
                 let params = SecurityParams {
                     cipher_suite_id: resumption.cipher_suite,
                     client_random: self.client_random,
@@ -265,7 +264,7 @@ impl HandleRecord for AwaitServerHello {
                             handshakes: self.handshakes,
                             client_random: self.client_random,
                             server_random: hello.random.as_bytes(),
-                            selected_cipher_suite_id,
+                            selected_cipher_suite_id: hello.cipher_suite,
                             supported_extensions,
                             session_ticket_resumption: resumption,
                         }
@@ -287,7 +286,7 @@ impl HandleRecord for AwaitServerHello {
                         session_id: hello.session_id.clone(),
                         client_random: self.client_random,
                         server_random: hello.random.as_bytes(),
-                        selected_cipher_suite_id,
+                        selected_cipher_suite_id: hello.cipher_suite,
                         supported_extensions,
                         handshakes: self.handshakes,
                         session_ticket_resumption: resumption,
@@ -298,14 +297,15 @@ impl HandleRecord for AwaitServerHello {
             }
 
             // Boring... no session resumption, we're doing a full handshake.
-            debug!("Selected CipherSuite: {}", hello.cipher_suite.params().name);
+            let cipher_suite = CipherSuite::from(hello.cipher_suite);
+            debug!("Selected CipherSuite: {}", cipher_suite.params().name);
             return Ok((
                 AwaitServerCertificate {
                     session_id: hello.session_id.clone(),
                     handshakes: self.handshakes,
                     client_random: self.client_random,
                     server_random: hello.random.as_bytes(),
-                    selected_cipher_suite_id,
+                    selected_cipher_suite_id: hello.cipher_suite,
                     supported_extensions,
                 }
                 .into(),
@@ -322,7 +322,7 @@ pub struct AwaitServerCertificate {
     handshakes: Vec<u8>,
     client_random: [u8; 32],
     server_random: [u8; 32],
-    selected_cipher_suite_id: u16,
+    selected_cipher_suite_id: CipherSuiteId,
     supported_extensions: SupportedExtensions,
 }
 
@@ -338,7 +338,7 @@ impl HandleRecord for AwaitServerCertificate {
             let server_public_key = public_key_from_cert(&certs.list[0].bytes)?;
             self.handshakes.extend_from_slice(&certs.to_bytes());
 
-            let cipher_suite = CipherSuite::from_u16(self.selected_cipher_suite_id)?;
+            let cipher_suite = CipherSuite::from(self.selected_cipher_suite_id);
             match cipher_suite.params().key_exchange_algorithm {
                 KeyExchangeAlgorithm::DheRsa | KeyExchangeAlgorithm::DheDss => {
                     return Ok((
@@ -383,7 +383,7 @@ pub struct AwaitServerKeyExchange {
     handshakes: Vec<u8>,
     client_random: [u8; 32],
     server_random: [u8; 32],
-    selected_cipher_suite_id: u16,
+    selected_cipher_suite_id: CipherSuiteId,
     supported_extensions: SupportedExtensions,
     server_public_key: Vec<u8>,
 }
@@ -466,7 +466,7 @@ pub struct AwaitServerHelloDone {
     handshakes: Vec<u8>,
     client_random: [u8; 32],
     server_random: [u8; 32],
-    selected_cipher_suite_id: u16,
+    selected_cipher_suite_id: CipherSuiteId,
     supported_extensions: SupportedExtensions,
     server_public_key: Vec<u8>,
     secrets: Option<DheParams>,
@@ -484,7 +484,7 @@ impl HandleRecord for AwaitServerHelloDone {
             self.handshakes
                 .extend_from_slice(&handshake_bytes(TLSHandshakeType::ServerHelloDone, &[]));
 
-            let ciphersuite = CipherSuite::from_u16(self.selected_cipher_suite_id)?;
+            let ciphersuite = CipherSuite::from(self.selected_cipher_suite_id);
             let (pre_master_secret, key_exchange_data) =
                 match ciphersuite.params().key_exchange_algorithm {
                     KeyExchangeAlgorithm::Rsa => {
@@ -641,7 +641,7 @@ pub struct AwaitNewSessionTicketOrCertificate {
     handshakes: Vec<u8>,
     client_random: [u8; 32],
     server_random: [u8; 32],
-    selected_cipher_suite_id: u16,
+    selected_cipher_suite_id: CipherSuiteId,
     supported_extensions: SupportedExtensions,
     session_ticket_resumption: SessionTicketInfo,
 }
@@ -653,7 +653,7 @@ impl HandleRecord for AwaitNewSessionTicketOrCertificate {
         msg: &TlsMessage,
     ) -> TLSResult<(TlsState, Vec<TlsAction>)> {
         if let TlsMessage::Handshake(TLSHandshake::NewSessionTicket(_)) = msg {
-            let ciphersuite = CipherSuite::from_u16(self.session_ticket_resumption.cipher_suite)?;
+            let ciphersuite = CipherSuite::from(self.session_ticket_resumption.cipher_suite);
             let params = SecurityParams {
                 cipher_suite_id: self.session_ticket_resumption.cipher_suite,
                 client_random: self.client_random,
@@ -694,7 +694,7 @@ pub struct AwaitServerChangeCipherOrCertificate {
     handshakes: Vec<u8>,
     client_random: [u8; 32],
     server_random: [u8; 32],
-    selected_cipher_suite_id: u16,
+    selected_cipher_suite_id: CipherSuiteId,
     supported_extensions: SupportedExtensions,
     session_ticket_resumption: SessionTicketInfo,
 }
@@ -706,7 +706,7 @@ impl HandleRecord for AwaitServerChangeCipherOrCertificate {
         msg: &TlsMessage,
     ) -> TLSResult<(TlsState, Vec<TlsAction>)> {
         if let TlsMessage::ChangeCipherSpec = msg {
-            let ciphersuite = CipherSuite::from_u16(self.session_ticket_resumption.cipher_suite)?;
+            let ciphersuite = CipherSuite::from(self.session_ticket_resumption.cipher_suite);
             let params = SecurityParams {
                 cipher_suite_id: self.session_ticket_resumption.cipher_suite,
                 client_random: self.client_random,

@@ -1,8 +1,6 @@
 use alert::{TLSAlert, TLSAlertDesc, TLSAlertLevel};
 use env_logger;
-use extensions::{
-    ALPNExt, ExtendedMasterSecretExt, SecureRenegotationExt, SessionTicketExt, SupportedGroupsExt,
-};
+use extensions::SecureRenegotationExt;
 use log::{error, info, trace};
 use record::RecordLayer;
 use state_machine::{
@@ -29,15 +27,15 @@ mod signature;
 mod state_machine;
 mod utils;
 
-use ciphersuite::{CipherSuite, CipherSuiteId};
+use ciphersuite::CipherSuiteId;
 use messages::*;
 
 #[derive(Error, Debug)]
 pub enum TLSError {
-    #[error("Buffer requires {0} more bytes")]
+    #[error("Need {0} more bytes")]
     NeedsMoreData(u16),
 
-    #[error("Buffer requires more bytes")]
+    #[error("Need more bytes")]
     NeedData,
 
     #[error("Invalid protocol version: {0}.{1}")]
@@ -97,18 +95,21 @@ impl TLSConnection {
 
     fn next_message(&mut self) -> TLSResult<TlsMessage> {
         loop {
-            if let Ok(msg) = self
+            match self
                 .record_layer
                 .try_parse_message(&mut self.conn_states.read)
             {
-                match &msg {
-                    TlsMessage::Handshake(_) | TlsMessage::ChangeCipherSpec => {
-                        self.process_message(&msg)?
+                Ok(msg) => {
+                    match &msg {
+                        TlsMessage::Handshake(_) | TlsMessage::ChangeCipherSpec => {
+                            self.process_message(&msg)?
+                        }
+                        _ => {}
                     }
-                    _ => {}
-                }
-                return Ok(msg);
-            }
+                    return Ok(msg);
+                },
+                Err(e) => trace!("Record layer parsing failed: {e}")
+            };
 
             let mut buf = [0u8; 8096];
             let mut n = self.stream.read(&mut buf)?;
@@ -134,26 +135,26 @@ impl TLSConnection {
     ) -> TLSResult<SessionId> {
         let mut extensions = match self.handshake_state_machine.state.as_ref().unwrap() {
             TlsState::Established(s) => {
-                vec![SecureRenegotationExt::renegotiation(&s.client_verify_data).into()]
+                vec![SecureRenegotationExt::renegotiation(&s.client_verify_data)?.into()]
             }
             _ => vec![SecureRenegotationExt::initial().into()],
         };
 
-        match session_ticket {
-            None => extensions.push(SessionTicketExt::new().into()),
-            Some(ticket) => extensions.push(SessionTicketExt::resume(ticket).into()),
-        }
+        // match session_ticket {
+        //     None => extensions.push(SessionTicketExt::new().into()),
+        //     Some(ticket) => extensions.push(SessionTicketExt::resume(ticket).into()),
+        // }
 
-        extensions.push(
-            SupportedGroupsExt::new(vec![
-                0x0017, 0x0018, 0x0019, 0x0100, 0x0101, 0x0102, 0x0103, 0x0104,
-            ])
-            .into(),
-        );
-        extensions.push(ExtendedMasterSecretExt::new().into());
-        extensions.push(ALPNExt::new(vec!["http/1.1".to_string()]).into());
+        // extensions.push(
+        //     SupportedGroupsExt::new(vec![
+        //         0x0017, 0x0018, 0x0019, 0x0100, 0x0101, 0x0102, 0x0103, 0x0104,
+        //     ])
+        //     .into(),
+        // );
+        // extensions.push(ExtendedMasterSecretExt::new().into());
+        // extensions.push(ALPNExt::new(vec!["http/1.1".to_string()]).into());
 
-        let client_hello = ClientHello::new(cipher_suites, extensions, session_id);
+        let client_hello = ClientHello::new(cipher_suites, extensions, session_id)?;
 
         let start_time = Instant::now();
         self.process_message(&client_hello.into())?;

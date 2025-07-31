@@ -1,6 +1,5 @@
 use std::array::TryFromSliceError;
 use std::fmt::Debug;
-use std::ops::DerefMut;
 use std::{marker::PhantomData, ops::Deref};
 use thiserror::Error;
 
@@ -17,6 +16,12 @@ pub enum CodingError {
 
     #[error("Length exceeds allowed value")]
     LengthTooLarge,
+
+    #[error("Unknown extension type {0:#x}")]
+    UnknownExtensionType(u16),
+
+    #[error("Expected more list items. Expected: >= {0}. Actual: {1}")]
+    LengthTooSmall(usize, usize),
 }
 
 pub struct Reader<'a> {
@@ -29,14 +34,25 @@ impl<'a> Reader<'a> {
         Self { buffer, pos: 0 }
     }
 
-    pub fn take(&mut self, n: usize) -> Result<&[u8], CodingError> {
+    pub fn take(&mut self, n: usize) -> Result<&'a [u8], CodingError> {
+        let slice = self.peek(n)?;
+        self.pos += n;
+        Ok(slice)
+    }
+
+    pub fn peek(&self, n: usize) -> Result<&'a [u8], CodingError> {
         if self.pos + n > self.buffer.len() {
             return Err(CodingError::RanOutOfData);
         }
+        Ok(&self.buffer[self.pos..self.pos + n])
+    }
 
-        let slice = &self.buffer[self.pos..self.pos + n];
-        self.pos += n;
-        Ok(slice)
+    pub fn go_back(&mut self, n: usize) -> Result<(), CodingError> {
+        if n > self.pos  {
+            return Err(CodingError::RanOutOfData);
+        }
+        self.pos -= n;
+        Ok(())
     }
 
     pub fn consumed(&self) -> bool {
@@ -50,6 +66,10 @@ struct u24(u32);
 
 impl u24 {
     pub const MAX: u32 = 0xFFFFFF;
+
+    pub fn new(value: u32) -> Option<Self> {
+        (value <= Self::MAX).then_some(Self(value))
+    }
 }
 
 impl From<u24> for usize {
@@ -120,14 +140,18 @@ impl<const N: usize> TlsCodable for [u8; N] {
     }
 }
 
-pub trait ListLen: TlsCodable + Into<usize> {
+pub trait VecLen: TlsCodable + Into<usize> {
     const SIZE: usize;
+    const MAX_LEN: usize;
+
     fn from_usize(value: usize) -> Result<Self, CodingError>;
     fn encode_into_slice(&self, out: &mut [u8]);
 }
 
-impl ListLen for u8 {
+impl VecLen for u8 {
     const SIZE: usize = 1;
+    const MAX_LEN: usize = u8::MAX as usize;
+
     fn from_usize(value: usize) -> Result<Self, CodingError> {
         Self::try_from(value).map_err(|_| CodingError::InvalidLength)
     }
@@ -136,8 +160,10 @@ impl ListLen for u8 {
     }
 }
 
-impl ListLen for u16 {
+impl VecLen for u16 {
     const SIZE: usize = 2;
+    const MAX_LEN: usize = u16::MAX as usize;
+
     fn from_usize(value: usize) -> Result<Self, CodingError> {
         Self::try_from(value).map_err(|_| CodingError::InvalidLength)
     }
@@ -146,27 +172,26 @@ impl ListLen for u16 {
     }
 }
 
-impl ListLen for u24 {
+impl VecLen for u24 {
     const SIZE: usize = 3;
+    const MAX_LEN: usize = u24::MAX as usize;
+
     fn from_usize(value: usize) -> Result<Self, CodingError> {
         let value = u32::try_from(value).map_err(|_| CodingError::InvalidLength)?;
-        if value > Self::MAX {
-            return Err(CodingError::InvalidLength);
-        }
-        Ok(u24(value))
+        u24::new(value).ok_or(CodingError::InvalidLength)
     }
     fn encode_into_slice(&self, out: &mut [u8]) {
         out.copy_from_slice(&self.0.to_be_bytes()[1..]);
     }
 }
 
-struct TlsListIter<'a, L: ListLen, T: TlsCodable> {
+struct TlsListIter<'a, L: VecLen, T: TlsCodable> {
     reader: Reader<'a>,
     _l: PhantomData<L>,
     _t: PhantomData<T>,
 }
 
-impl<'a, L: ListLen, T: TlsCodable> TlsListIter<'a, L, T> {
+impl<'a, L: VecLen, T: TlsCodable> TlsListIter<'a, L, T> {
     fn new(reader: &'a mut Reader) -> Result<Self, CodingError> {
         let len = L::read_from(reader).map(Into::into)?;
         Ok(Self {
@@ -177,7 +202,7 @@ impl<'a, L: ListLen, T: TlsCodable> TlsListIter<'a, L, T> {
     }
 }
 
-impl<'a, L: ListLen, T: TlsCodable> Iterator for TlsListIter<'a, L, T> {
+impl<'a, L: VecLen, T: TlsCodable> Iterator for TlsListIter<'a, L, T> {
     type Item = Result<T, CodingError>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -185,13 +210,30 @@ impl<'a, L: ListLen, T: TlsCodable> Iterator for TlsListIter<'a, L, T> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct TlsList<L: ListLen, T: TlsCodable> {
-    items: Vec<T>,
-    _l: PhantomData<L>,
+pub trait Cardinality {
+    const MIN_LEN: usize;
 }
 
-impl<L: ListLen, T: TlsCodable> TlsCodable for TlsList<L, T> {
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MaybeEmpty;
+impl Cardinality for MaybeEmpty {
+    const MIN_LEN: usize = 0;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct NonEmpty;
+impl Cardinality for NonEmpty {
+    const MIN_LEN: usize = 1;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct LengthPrefixedVec<L: VecLen, T: TlsCodable, C: Cardinality> {
+    items: Vec<T>,
+    _l: PhantomData<L>,
+    _c: PhantomData<C>,
+}
+
+impl<L: VecLen, T: TlsCodable, C: Cardinality> TlsCodable for LengthPrefixedVec<L, T, C> {
     fn write_to(&self, bytes: &mut Vec<u8>) {
         let len_range = bytes.len()..bytes.len() + L::SIZE;
         bytes.resize(bytes.len() + L::SIZE, 0); // placeholder for length
@@ -202,43 +244,53 @@ impl<L: ListLen, T: TlsCodable> TlsCodable for TlsList<L, T> {
         }
 
         let encoded_len = bytes.len() - original_len;
+        // This could fail if the encoded length exceeds MAX value of the uint L
+        // However, this is the only place where write_to would currently need to
+        // return a result. Will consider changing the return type to a Result later.
         let len = L::from_usize(encoded_len).unwrap();
         len.encode_into_slice(&mut bytes[len_range]);
     }
 
     fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
         let items = TlsListIter::<L, T>::new(reader)?.collect::<Result<Vec<_>, _>>()?;
+        if items.len() < C::MIN_LEN {
+            return Err(CodingError::LengthTooSmall(C::MIN_LEN, items.len()));
+        }
         Ok(Self {
             items,
             _l: PhantomData,
+            _c: PhantomData,
         })
     }
 }
 
-impl<L: ListLen, T: TlsCodable> Deref for TlsList<L, T> {
+impl<L: VecLen, T: TlsCodable, C: Cardinality> Deref for LengthPrefixedVec<L, T, C> {
     type Target = [T];
     fn deref(&self) -> &Self::Target {
         &self.items
     }
 }
 
-impl<L: ListLen, T: TlsCodable> DerefMut for TlsList<L, T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.items
-    }
-}
+impl<L: VecLen, T: TlsCodable, C: Cardinality> TryFrom<Vec<T>> for LengthPrefixedVec<L, T, C> {
+    type Error = CodingError;
 
-impl<L: ListLen, T: TlsCodable> From<Vec<T>> for TlsList<L, T> {
-    fn from(items: Vec<T>) -> Self {
-        Self {
-            items,
-            _l: PhantomData,
+    fn try_from(value: Vec<T>) -> Result<Self, Self::Error> {
+        if value.len() < C::MIN_LEN {
+            return Err(CodingError::LengthTooSmall(C::MIN_LEN, value.len()));
         }
+        if value.len() > L::MAX_LEN {
+            return Err(CodingError::LengthTooLarge);
+        }
+        Ok(Self {
+            items: value,
+            _l: PhantomData,
+            _c: PhantomData,
+        })
     }
 }
 
-pub type U16PrefixedVec<T> = TlsList<u16, T>;
-pub type U8PrefixedVec<T> = TlsList<u8, T>;
+pub type U16LenPrefVec<T, C> = LengthPrefixedVec<u16, T, C>;
+pub type U8LenPrefVec<T, C> = LengthPrefixedVec<u8, T, C>;
 
 impl<T: TlsCodable> TlsCodable for Option<T> {
     fn write_to(&self, bytes: &mut Vec<u8>) {
@@ -259,7 +311,7 @@ mod tests {
     fn test_u24_prefixed_list() -> Result<(), CodingError> {
         let data = vec![0, 0, 4, 0, 2, 81, 8];
         let mut reader = Reader::new(&data);
-        let list = TlsList::<u24, u16>::read_from(&mut reader)?;
+        let list = LengthPrefixedVec::<u24, u16>::read_from(&mut reader)?;
         assert_eq!(list[0], 2);
         assert_eq!(list[1], u16::from_be_bytes([81, 8]));
         assert_eq!(list.len(), 2);
@@ -270,7 +322,7 @@ mod tests {
     fn test_list_missing_data() -> Result<(), CodingError> {
         let data = vec![4, 0, 1, 8];
         let mut reader = Reader::new(&data);
-        let result = TlsList::<u8, u16>::read_from(&mut reader);
+        let result = LengthPrefixedVec::<u8, u16>::read_from(&mut reader);
         assert!(matches!(result, Err(CodingError::RanOutOfData)));
         Ok(())
     }

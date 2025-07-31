@@ -1,3 +1,5 @@
+use log::trace;
+
 use crate::{
     TLSError, TLSResult,
     alert::try_parse_alert,
@@ -80,9 +82,12 @@ impl RecordLayer {
                 }
                 TLSContentType::Handshake => {
                     self.handshake_buffer.extend(plaintext.fragment);
-                    if let Ok((handshake, len)) = try_parse_handshake(&self.handshake_buffer) {
-                        self.handshake_buffer.drain(..len);
-                        return Ok(TlsMessage::Handshake(handshake));
+                    match try_parse_handshake(&self.handshake_buffer) {
+                        Ok((handshake, len)) => {
+                            self.handshake_buffer.drain(..len);
+                            return Ok(TlsMessage::Handshake(handshake));
+                        },
+                        Err(e) => trace!("Handshake parsing failed: {e}")
                     }
                 }
             }

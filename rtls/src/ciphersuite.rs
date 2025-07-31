@@ -1,7 +1,9 @@
 use std::fmt::Debug;
 
 use crate::{
-    gcm::{decrypt_aes_cbc, decrypt_aes_gcm, encrypt_aes_cbc, encrypt_aes_gcm}, prf::{hmac, prf_sha256, prf_sha384, HmacHashAlgo}, TLSResult
+    TLSResult,
+    gcm::{decrypt_aes_cbc, decrypt_aes_gcm, encrypt_aes_cbc, encrypt_aes_gcm},
+    prf::{HmacHashAlgo, hmac, prf_sha256, prf_sha384},
 };
 use aes::{Aes128, Aes256};
 use enum_dispatch::enum_dispatch;
@@ -174,8 +176,6 @@ pub struct CipherSuiteParams {
     pub prf_algorithm: PrfAlgorithm,
 }
 
-
-
 tls_codable_enum! {
     #[repr(u16)]
     pub enum CipherSuiteId {
@@ -209,9 +209,9 @@ pub enum CipherSuite {
     EcdheRsaAes128CbcSha,
 }
 
-impl CipherSuite {
-    pub fn from_u16(value: u16) -> TLSResult<CipherSuite> {
-        Ok(match CipherSuiteId::try_from(value)? {
+impl From<CipherSuiteId> for CipherSuite {
+    fn from(value: CipherSuiteId) -> CipherSuite {
+        match value {
             CipherSuiteId::RsaAes128CbcSha => RsaAes128CbcSha.into(),
             CipherSuiteId::RsaAes128CbcSha256 => RsaAes128CbcSha256.into(),
             CipherSuiteId::RsaAes256CbcSha => RsaAes256CbcSha.into(),
@@ -223,8 +223,8 @@ impl CipherSuite {
             CipherSuiteId::RsaAes256GcmSha384 => RsaAes256GcmSha384.into(),
             CipherSuiteId::DheRsaAes128GcmSha256 => DheRsaAes128GcmSha256.into(),
             CipherSuiteId::EcdheRsaAes128CbcSha => EcdheRsaAes128CbcSha.into(),
-            _ => unimplemented!()
-        })
+            _ => unimplemented!(),
+        }
     }
 }
 
