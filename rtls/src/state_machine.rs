@@ -494,7 +494,8 @@ impl HandleRecord for AwaitServerHelloDone {
                     KeyExchangeAlgorithm::DheRsa | KeyExchangeAlgorithm::DheDss => {
                         let DheParams { p, g, public_key } = self.secrets.as_ref().unwrap();
                         get_dhe_pre_master_secret(p, g, public_key)
-                    }
+                    },
+                    KeyExchangeAlgorithm::EcdheRsa => unimplemented!(),
                 };
 
             let client_key_exchange = ClientKeyExchange::new(&key_exchange_data);

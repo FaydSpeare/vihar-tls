@@ -1,8 +1,9 @@
 use crate::alert::TLSAlert;
-use crate::ciphersuite::{CipherSuite, CipherSuiteMethods};
+use crate::ciphersuite::{CipherSuite, CipherSuiteMethods, KeyExchangeAlgorithm};
 use crate::extensions::{
     EncodeExtension, Extension, HashAlgo, SigAlgo, SignatureAlgorithmsExt, decode_extensions,
 };
+use crate::playground::{CodingError, Reader, TlsCodable, U8PrefixedVec};
 use crate::utils;
 use crate::{TLSError, TLSResult};
 use num_enum::TryFromPrimitive;
@@ -13,10 +14,37 @@ pub struct ProtocolVersion {
     pub minor: u8,
 }
 
+impl TlsCodable for ProtocolVersion {
+    fn write_to(&self, bytes: &mut Vec<u8>) {
+        self.major.write_to(bytes);
+        self.minor.write_to(bytes);
+    }
+
+    fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
+        Ok(ProtocolVersion {
+            major: u8::read_from(reader)?,
+            minor: u8::read_from(reader)?,
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Random {
     unix_time: u32,
     random_bytes: [u8; 28],
+}
+
+impl TlsCodable for Random {
+    fn write_to(&self, bytes: &mut Vec<u8>) {
+        self.unix_time.write_to(bytes);
+        self.random_bytes.write_to(bytes);
+    }
+    fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
+        Ok(Random {
+            unix_time: u32::read_from(reader)?,
+            random_bytes: TlsCodable::read_from(reader)?,
+        })
+    }
 }
 
 impl Random {
@@ -25,6 +53,32 @@ impl Random {
         bytes[..4].copy_from_slice(&self.unix_time.to_be_bytes());
         bytes[4..].copy_from_slice(&self.random_bytes);
         bytes
+    }
+}
+
+pub struct SessionId(U8PrefixedVec<u8>);
+
+impl SessionId {
+    const MAX_LEN: usize = 32;
+    pub fn new(session_id: &[u8]) -> Result<Self, CodingError> {
+        if session_id.len() > Self::MAX_LEN {
+            return Err(CodingError::LengthTooLarge);
+        }
+        Ok(Self(session_id.to_vec().into()))
+    }
+}
+
+impl TlsCodable for SessionId {
+    fn write_to(&self, bytes: &mut Vec<u8>) {
+        debug_assert!(self.0.len() <= Self::MAX_LEN);
+        self.0.write_to(bytes);
+    }
+    fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
+        let session_id = U8PrefixedVec::<u8>::read_from(reader)?;
+        if session_id.len() > Self::MAX_LEN {
+            return Err(CodingError::LengthTooLarge);
+        }
+        Ok(Self(session_id))
     }
 }
 
@@ -89,8 +143,11 @@ impl ClientHello {
 impl ToBytes for ClientHello {
     fn to_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::<u8>::new();
-        bytes.extend([self.client_version.major, self.client_version.minor]); // ProtocolVersion
-        bytes.extend_from_slice(&self.random.as_bytes());
+        self.client_version.write_to(&mut bytes);
+        self.random.write_to(&mut bytes);
+
+        //bytes.extend([self.client_version.major, self.client_version.minor]); // ProtocolVersion
+        //bytes.extend_from_slice(&self.random.as_bytes());
 
         bytes.push(self.session_id.len() as u8); // SessionId
         bytes.extend_from_slice(&self.session_id); // SessionId bytes
@@ -227,7 +284,7 @@ impl TryFrom<&[u8]> for ServerHello {
         } else {
             vec![]
         };
-        println!("ServerHello Extensions: {:#?}", extensions);
+        // println!("ServerHello Extensions: {:#?}", extensions);
 
         Ok(Self {
             server_version: ProtocolVersion { major, minor },
@@ -318,11 +375,61 @@ impl TryFrom<&[u8]> for Certificates {
 //    opaque dh_Ys<1..2^16-1>;
 // } ServerDHParams
 
-pub enum ECCurveType {}
-pub enum NamedCurve {}
-pub struct ECParams {}
-pub struct ECPoint {}
-pub struct ServerECDHParams {}
+// pub enum ECCurveType {}
+// pub enum NamedCurve {}
+// pub struct ECParams {}
+// pub struct ECPoint {}
+// pub struct ServerECDHParams {}
+//
+// #[derive(Debug)]
+// pub enum ServerKeyExchange {
+//     Dhe(DheServerKeyExchange),
+//     Ecdhe(EcdheServerKeyExchange),
+//     Unresolved(Vec<u8>),
+// }
+//
+// impl ServerKeyExchange {
+//     pub fn resolve(self, kx_algo: KeyExchangeAlgorithm) -> TLSResult<ServerKeyExchange> {
+//         if let Self::Unresolved(bytes) = self {
+//             match kx_algo {
+//                 KeyExchangeAlgorithm::DheRsa | KeyExchangeAlgorithm::DheDss => {
+//                     return ServerKeyExchange::Dhe(DheServerKeyExchange::try_from(bytes.as_ref())?)
+//                 }
+//                 KeyExchangeAlgorithm::EcdheRsa => ServerKeyExchange::Ecdhe(EcdheServerKeyExchange::try_from(bytes)?),
+//                 _ => panic!("NOPE"),
+//             };
+//         }
+//         panic!("NOPE");
+//     }
+// }
+//
+// impl ToBytes for ServerKeyExchange {
+//     fn to_bytes(&self) -> Vec<u8> {
+//         match self {
+//             Self::Dhe(kx) => kx.to_bytes(),
+//             Self::Ecdhe(kx) => unimplemented!(),
+//             Self::Unresolved(bytes) => bytes.clone(),
+//         }
+//     }
+// }
+//
+// impl TryFrom<&[u8]> for ServerKeyExchange {
+//     type Error = Box<dyn std::error::Error>;
+//
+//     fn try_from(buf: &[u8]) -> Result<Self, Self::Error> {
+//         Ok(Self::Unresolved(buf.to_vec()))
+//     }
+// }
+//
+// #[derive(Debug)]
+// pub struct EcdheServerKeyExchange {
+//     pub p: Vec<u8>,
+//     pub g: Vec<u8>,
+//     pub server_pubkey: Vec<u8>,
+//     pub hash_algo: HashAlgo,
+//     pub sig_algo: SigAlgo,
+//     pub signature: Vec<u8>,
+// }
 
 #[derive(Debug)]
 pub struct ServerKeyExchange {
@@ -335,7 +442,6 @@ pub struct ServerKeyExchange {
 }
 
 impl ServerKeyExchange {
-
     pub fn dh_params_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&(self.p.len() as u16).to_be_bytes());
@@ -388,7 +494,14 @@ impl TryFrom<&[u8]> for ServerKeyExchange {
         let sig_len = u16::from_be_bytes([buf[idx], buf[idx + 1]]) as usize;
         let signature = buf[idx + 2..idx + 2 + sig_len].to_vec();
 
-        return Ok(Self { p, g, server_pubkey, hash_algo, sig_algo, signature });
+        return Ok(Self {
+            p,
+            g,
+            server_pubkey,
+            hash_algo,
+            sig_algo,
+            signature,
+        });
     }
 }
 

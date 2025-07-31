@@ -162,6 +162,7 @@ pub enum KeyExchangeAlgorithm {
     Rsa,
     DheRsa,
     DheDss,
+    EcdheRsa,
 }
 
 #[allow(dead_code)]
@@ -187,6 +188,7 @@ enum CipherSuiteId {
     RsaAes128GcmSha256 = 0x009c,
     RsaAes256GcmSha384 = 0x009d,
     DheRsaAes128GcmSha256 = 0x009e,
+    EcdheRsaAes128CbcSha = 0xc013,
 }
 
 #[enum_dispatch]
@@ -202,6 +204,7 @@ pub enum CipherSuite {
     RsaAes128GcmSha256,
     RsaAes256GcmSha384,
     DheRsaAes128GcmSha256,
+    EcdheRsaAes128CbcSha,
 }
 
 impl CipherSuite {
@@ -217,6 +220,7 @@ impl CipherSuite {
             CipherSuiteId::RsaAes128GcmSha256 => RsaAes128GcmSha256.into(),
             CipherSuiteId::RsaAes256GcmSha384 => RsaAes256GcmSha384.into(),
             CipherSuiteId::DheRsaAes128GcmSha256 => DheRsaAes128GcmSha256.into(),
+            CipherSuiteId::EcdheRsaAes128CbcSha => EcdheRsaAes128CbcSha.into(),
         })
     }
 }
@@ -409,6 +413,25 @@ impl CipherSuiteMethods for DheRsaAes128GcmSha256 {
             mac_algorithm: MacAlgorithm::None,
             enc_algorithm: EncAlgorithm::Aes128Gcm,
             key_exchange_algorithm: KeyExchangeAlgorithm::DheRsa,
+            prf_algorithm: PrfAlgorithm::Sha256,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct EcdheRsaAes128CbcSha;
+
+impl CipherSuiteMethods for EcdheRsaAes128CbcSha {
+    fn encode(&self) -> u16 {
+        return CipherSuiteId::EcdheRsaAes128CbcSha as u16;
+    }
+
+    fn params(&self) -> CipherSuiteParams {
+        CipherSuiteParams {
+            name: "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA",
+            mac_algorithm: MacAlgorithm::HmacSha1,
+            enc_algorithm: EncAlgorithm::Aes128Cbc,
+            key_exchange_algorithm: KeyExchangeAlgorithm::EcdheRsa,
             prf_algorithm: PrfAlgorithm::Sha256,
         }
     }

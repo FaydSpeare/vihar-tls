@@ -22,9 +22,10 @@ mod signature;
 mod state_machine;
 mod utils;
 mod gcm;
+mod playground;
 
 use ciphersuite::{
-    CipherSuite, DheDssAes128CbcSha, DheRsaAes128CbcSha, DheRsaAes128CbcSha256, DheRsaAes128GcmSha256, RsaAes128CbcSha, RsaAes128CbcSha256, RsaAes128GcmSha256, RsaAes256CbcSha, RsaAes256CbcSha256, RsaAes256GcmSha384
+    CipherSuite, DheDssAes128CbcSha, DheRsaAes128CbcSha, DheRsaAes128CbcSha256, DheRsaAes128GcmSha256, EcdheRsaAes128CbcSha, RsaAes128CbcSha, RsaAes128CbcSha256, RsaAes128GcmSha256, RsaAes256CbcSha, RsaAes256CbcSha256, RsaAes256GcmSha384
 };
 use messages::*;
 
@@ -231,13 +232,12 @@ fn main() -> TLSResult<()> {
     env_logger::init();
 
     //let x = gcm::gf_mul(3, 1 << 51);
-
-    //gcm::main();
-    //return Ok(());
+    
+    //playground::main();
 
     let suites: Vec<CipherSuite> = vec![
-        RsaAes256CbcSha256.into()
-        //RsaAes128CbcSha.into(),
+        //RsaAes256CbcSha256.into()
+        RsaAes128CbcSha.into(),
         //DheRsaAes128CbcSha.into(),
         //DheDssAes128CbcSha.into()
         // DheRsaAes128CbcSha256.into(),
@@ -245,10 +245,11 @@ fn main() -> TLSResult<()> {
         //RsaAes128GcmSha256.into(),
         //RsaAes256GcmSha384.into(),
         //DheRsaAes128GcmSha256.into()
+        //EcdheRsaAes128CbcSha.into()
     ];
 
-    //let domain = "facebook.com";
-    let domain = "localhost";
+    let domain = "facebook.com";
+    //let domain = "localhost";
 
     let mut connection = TLSConnection::new(domain)?;
     let session_id = connection.handshake(&suites, None, None)?;
