@@ -25,11 +25,11 @@ pub struct Reader<'a> {
 }
 
 impl<'a> Reader<'a> {
-    fn new(buffer: &'a [u8]) -> Self {
+    pub fn new(buffer: &'a [u8]) -> Self {
         Self { buffer, pos: 0 }
     }
 
-    fn take(&mut self, n: usize) -> Result<&[u8], CodingError> {
+    pub fn take(&mut self, n: usize) -> Result<&[u8], CodingError> {
         if self.pos + n > self.buffer.len() {
             return Err(CodingError::RanOutOfData);
         }
@@ -39,7 +39,7 @@ impl<'a> Reader<'a> {
         Ok(slice)
     }
 
-    fn consumed(&self) -> bool {
+    pub fn consumed(&self) -> bool {
         self.pos == self.buffer.len()
     }
 }
@@ -185,7 +185,7 @@ impl<'a, L: ListLen, T: TlsCodable> Iterator for TlsListIter<'a, L, T> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TlsList<L: ListLen, T: TlsCodable> {
     items: Vec<T>,
     _l: PhantomData<L>,
@@ -240,19 +240,38 @@ impl<L: ListLen, T: TlsCodable> From<Vec<T>> for TlsList<L, T> {
 pub type U16PrefixedVec<T> = TlsList<u16, T>;
 pub type U8PrefixedVec<T> = TlsList<u8, T>;
 
-pub fn main() {
-    let data = vec![0, 0, 4, 0, 2, 8, 8];
-    let mut reader = Reader::new(&data);
-    let x = TlsList::<u24, u16>::read_from(&mut reader);
-    println!("{:?}", x);
+impl<T: TlsCodable> TlsCodable for Option<T> {
+    fn write_to(&self, bytes: &mut Vec<u8>) {
+        if let Some(value) = self {
+            value.write_to(bytes)
+        }
+    }
+    fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
+        Ok((!reader.consumed()).then_some(T::read_from(reader)?))
+    }
+}
 
-    let list: TlsList<u24, u16> = vec![77, 88].into();
-    let x = list.get_encoding();
-    println!("{:?}", x);
-    println!(
-        "{:?}",
-        TlsList::<u24, u16>::read_from(&mut Reader::new(&x))
-            .unwrap()
-            .get_encoding()
-    );
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_u24_prefixed_list() -> Result<(), CodingError> {
+        let data = vec![0, 0, 4, 0, 2, 81, 8];
+        let mut reader = Reader::new(&data);
+        let list = TlsList::<u24, u16>::read_from(&mut reader)?;
+        assert_eq!(list[0], 2);
+        assert_eq!(list[1], u16::from_be_bytes([81, 8]));
+        assert_eq!(list.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn test_list_missing_data() -> Result<(), CodingError> {
+        let data = vec![4, 0, 1, 8];
+        let mut reader = Reader::new(&data);
+        let result = TlsList::<u8, u16>::read_from(&mut reader);
+        assert!(matches!(result, Err(CodingError::RanOutOfData)));
+        Ok(())
+    }
 }

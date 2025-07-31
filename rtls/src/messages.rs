@@ -1,9 +1,9 @@
 use crate::alert::TLSAlert;
-use crate::ciphersuite::{CipherSuite, CipherSuiteMethods, KeyExchangeAlgorithm};
+use crate::ciphersuite::{CipherSuite, CipherSuiteId, CipherSuiteMethods, KeyExchangeAlgorithm};
 use crate::extensions::{
     EncodeExtension, Extension, HashAlgo, SigAlgo, SignatureAlgorithmsExt, decode_extensions,
 };
-use crate::playground::{CodingError, Reader, TlsCodable, U8PrefixedVec};
+use crate::encoding::{CodingError, Reader, TlsCodable, U16PrefixedVec, U8PrefixedVec};
 use crate::utils;
 use crate::{TLSError, TLSResult};
 use num_enum::TryFromPrimitive;
@@ -56,6 +56,7 @@ impl Random {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SessionId(U8PrefixedVec<u8>);
 
 impl SessionId {
@@ -65,6 +66,10 @@ impl SessionId {
             return Err(CodingError::LengthTooLarge);
         }
         Ok(Self(session_id.to_vec().into()))
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
     }
 }
 
@@ -82,26 +87,29 @@ impl TlsCodable for SessionId {
     }
 }
 
+tls_codable_enum! {
+    #[repr(u8)]
+    pub enum CompressionMethodId {
+        Null = 0
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ClientHello {
     pub client_version: ProtocolVersion,
     pub random: Random,
-    #[allow(dead_code)]
-    pub session_id: Vec<u8>,
-    pub cipher_suites: Vec<[u8; 2]>,
-    #[allow(dead_code)]
-    pub compression_methods: Vec<u8>,
-    #[allow(dead_code)]
+    pub session_id: SessionId,
+    pub cipher_suites: U16PrefixedVec<CipherSuiteId>,
+    pub compression_methods: U8PrefixedVec<CompressionMethodId>,
     pub extensions: Vec<Extension>,
 }
 
 impl ClientHello {
     pub fn new(
-        suites: &[CipherSuite],
+        suites: &[CipherSuiteId],
         mut extensions: Vec<Extension>,
-        session_id: Option<Vec<u8>>,
+        session_id: Option<SessionId>,
     ) -> Self {
-        let cipher_suites = suites.iter().map(|x| x.encode().to_be_bytes()).collect();
         extensions.push(
             SignatureAlgorithmsExt::new_from_product(
                 vec![SigAlgo::Rsa, SigAlgo::Dsa],
@@ -109,16 +117,15 @@ impl ClientHello {
             )
             .into(),
         );
-        // println!("ClientHello Extensions: {:#?}", extensions);
         ClientHello {
             client_version: ProtocolVersion { major: 3, minor: 3 },
             random: Random {
                 unix_time: utils::get_unix_time(),
                 random_bytes: utils::get_random_bytes(28).try_into().unwrap(),
             },
-            session_id: session_id.unwrap_or(vec![]),
-            cipher_suites,
-            compression_methods: vec![0],
+            session_id: session_id.unwrap_or(SessionId::new(&[]).unwrap()),
+            cipher_suites: suites.to_vec().into(),
+            compression_methods: vec![CompressionMethodId::Null].into(),
             extensions,
         }
     }
@@ -145,21 +152,9 @@ impl ToBytes for ClientHello {
         let mut bytes = Vec::<u8>::new();
         self.client_version.write_to(&mut bytes);
         self.random.write_to(&mut bytes);
-
-        //bytes.extend([self.client_version.major, self.client_version.minor]); // ProtocolVersion
-        //bytes.extend_from_slice(&self.random.as_bytes());
-
-        bytes.push(self.session_id.len() as u8); // SessionId
-        bytes.extend_from_slice(&self.session_id); // SessionId bytes
-        //println!("CLIENT HELLO pushed session_id {:?}", &self.session_id);
-
-        bytes.extend(((2 * self.cipher_suites.len()) as u16).to_be_bytes());
-        for suite in &self.cipher_suites {
-            bytes.extend(suite);
-        }
-
-        bytes.push(1); // Compression methods
-        bytes.push(0);
+        self.session_id.write_to(&mut bytes);
+        self.cipher_suites.write_to(&mut bytes);
+        self.compression_methods.write_to(&mut bytes);
 
         let extensions_bytes: Vec<u8> = self
             .extensions
@@ -199,7 +194,7 @@ impl From<ClientHello> for TlsMessage {
 pub struct ServerHello {
     pub server_version: ProtocolVersion,
     pub random: Random,
-    pub session_id: Vec<u8>,
+    pub session_id: SessionId,
     pub cipher_suite: CipherSuite,
     pub compression_method: u8,
     pub extensions: Vec<Extension>,
@@ -230,8 +225,9 @@ impl ToBytes for ServerHello {
         bytes.push(self.server_version.minor);
         bytes.extend_from_slice(&self.random.as_bytes());
 
-        bytes.push(self.session_id.len() as u8); // SessionId
-        bytes.extend_from_slice(&self.session_id); // SessionId bytes
+        self.session_id.write_to(&mut bytes);
+        //bytes.push(self.session_id.len() as u8); // SessionId
+        //bytes.extend_from_slice(&self.session_id); // SessionId bytes
 
         bytes.extend_from_slice(&self.cipher_suite.encode().to_be_bytes());
 
@@ -257,21 +253,20 @@ impl TryFrom<&[u8]> for ServerHello {
     type Error = Box<dyn std::error::Error>;
 
     fn try_from(buf: &[u8]) -> Result<Self, Self::Error> {
-        let major = buf[0];
-        let minor = buf[1];
+        let mut reader = Reader::new(buf);
+        let version = ProtocolVersion::read_from(&mut reader)?;
+        let random = Random::read_from(&mut reader)?;
+        let session_id = SessionId::read_from(&mut reader)?;
 
-        let unix_time = u32::from_be_bytes([buf[2], buf[3], buf[4], buf[5]]);
-        //CipherSuiteId::try_from(u16::from_be_bytes([buf[idx], buf[idx + 1]])).unwrap();
+        //let unix_time = u32::from_be_bytes([buf[2], buf[3], buf[4], buf[5]]);
         // println!("Unix: {unix_time}");
-
-        let random_bytes: [u8; 28] = buf[6..34].try_into().unwrap();
+        //let random_bytes: [u8; 28] = buf[6..34].try_into().unwrap();
         // println!("Random: {:?}", random_bytes);
-
-        let session_len = buf[34] as usize;
-        let session_id = buf[35..35 + session_len].to_vec();
+        //let session_len = buf[34] as usize;
+        //let session_id = buf[35..35 + session_len].to_vec();
         // println!("Session: {:?}", session_id);
 
-        let idx = 35 + session_len;
+        let idx = 35 + session_id.0.len();
         let cipher_suite_id = u16::from_be_bytes([buf[idx], buf[idx + 1]]);
         let cipher_suite = CipherSuite::from_u16(cipher_suite_id)?;
         // println!("cipher_suite: 0x{:02X}{:02X}", buf[idx], buf[idx + 1]);
@@ -287,11 +282,8 @@ impl TryFrom<&[u8]> for ServerHello {
         // println!("ServerHello Extensions: {:#?}", extensions);
 
         Ok(Self {
-            server_version: ProtocolVersion { major, minor },
-            random: Random {
-                unix_time,
-                random_bytes,
-            },
+            server_version: version,
+            random,
             session_id,
             cipher_suite,
             compression_method,

@@ -6,6 +6,7 @@ use log::{debug, info};
 
 use crate::ciphersuite::PrfAlgorithm;
 use crate::extensions::{HashAlgo, SigAlgo};
+use crate::messages::SessionId;
 use crate::signature::{
     dsa_verify, get_dhe_pre_master_secret, get_rsa_pre_master_secret, public_key_from_cert,
     rsa_verify,
@@ -35,7 +36,7 @@ pub struct SessionTicketInfo {
 
 #[derive(Debug, Clone)]
 pub struct TlsContext {
-    pub sessions: HashMap<Vec<u8>, SessionInfo>,
+    pub sessions: HashMap<SessionId, SessionInfo>,
     pub session_tickets: HashMap<Vec<u8>, SessionTicketInfo>,
 }
 
@@ -176,7 +177,7 @@ impl HandleRecord for AwaitClientHello {
 
 #[derive(Debug)]
 struct SessionIdResumption {
-    session_id: Vec<u8>,
+    session_id: SessionId,
     master_secret: [u8; 48],
     cipher_suite: u16,
 }
@@ -317,7 +318,7 @@ impl HandleRecord for AwaitServerHello {
 
 #[derive(Debug)]
 pub struct AwaitServerCertificate {
-    session_id: Vec<u8>,
+    session_id: SessionId,
     handshakes: Vec<u8>,
     client_random: [u8; 32],
     server_random: [u8; 32],
@@ -378,7 +379,7 @@ impl HandleRecord for AwaitServerCertificate {
 
 #[derive(Debug)]
 pub struct AwaitServerKeyExchange {
-    session_id: Vec<u8>,
+    session_id: SessionId,
     handshakes: Vec<u8>,
     client_random: [u8; 32],
     server_random: [u8; 32],
@@ -461,7 +462,7 @@ struct DheParams {
 
 #[derive(Debug)]
 pub struct AwaitServerHelloDone {
-    session_id: Vec<u8>,
+    session_id: SessionId,
     handshakes: Vec<u8>,
     client_random: [u8; 32],
     server_random: [u8; 32],
@@ -590,7 +591,7 @@ impl AwaitServerHelloDone {
 
 #[derive(Debug)]
 pub struct AwaitNewSessionTicket {
-    session_id: Vec<u8>,
+    session_id: SessionId,
     handshakes: Vec<u8>,
     supported_extensions: SupportedExtensions,
     params: SecurityParams,
@@ -636,7 +637,7 @@ impl HandleRecord for AwaitNewSessionTicket {
 
 #[derive(Debug)]
 pub struct AwaitNewSessionTicketOrCertificate {
-    session_id: Vec<u8>,
+    session_id: SessionId,
     handshakes: Vec<u8>,
     client_random: [u8; 32],
     server_random: [u8; 32],
@@ -689,7 +690,7 @@ impl HandleRecord for AwaitNewSessionTicketOrCertificate {
 
 #[derive(Debug)]
 pub struct AwaitServerChangeCipherOrCertificate {
-    session_id: Vec<u8>,
+    session_id: SessionId,
     handshakes: Vec<u8>,
     client_random: [u8; 32],
     server_random: [u8; 32],
@@ -742,7 +743,7 @@ impl HandleRecord for AwaitServerChangeCipherOrCertificate {
 
 #[derive(Debug)]
 pub struct AwaitServerChangeCipher {
-    session_id: Vec<u8>,
+    session_id: SessionId,
     handshakes: Vec<u8>,
     supported_extensions: SupportedExtensions,
 
@@ -792,7 +793,7 @@ impl HandleRecord for AwaitServerChangeCipher {
 
 #[derive(Debug)]
 pub struct AwaitServerFinished {
-    session_id: Vec<u8>,
+    session_id: SessionId,
     handshakes: Vec<u8>,
     supported_extensions: SupportedExtensions,
     params: SecurityParams,
@@ -871,7 +872,7 @@ impl HandleRecord for AwaitServerFinished {
 
 #[derive(Debug)]
 pub struct EstablishedState {
-    pub session_id: Vec<u8>,
+    pub session_id: SessionId,
     pub supported_extensions: SupportedExtensions,
     pub client_verify_data: Vec<u8>,
 }

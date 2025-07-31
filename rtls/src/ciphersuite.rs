@@ -5,7 +5,6 @@ use crate::{
 };
 use aes::{Aes128, Aes256};
 use enum_dispatch::enum_dispatch;
-use num_enum::TryFromPrimitive;
 use sha2::{Digest, Sha256, Sha384};
 
 #[derive(Debug, Copy, Clone)]
@@ -175,20 +174,23 @@ pub struct CipherSuiteParams {
     pub prf_algorithm: PrfAlgorithm,
 }
 
-#[derive(TryFromPrimitive)]
-#[repr(u16)]
-enum CipherSuiteId {
-    RsaAes128CbcSha = 0x002f,
-    RsaAes128CbcSha256 = 0x003c,
-    RsaAes256CbcSha = 0x0035,
-    RsaAes256CbcSha256 = 0x003d,
-    DheRsaAes128CbcSha = 0x0033,
-    DheRsaAes128CbcSha256 = 0x0067,
-    DheDssAes128CbcSha = 0x0032,
-    RsaAes128GcmSha256 = 0x009c,
-    RsaAes256GcmSha384 = 0x009d,
-    DheRsaAes128GcmSha256 = 0x009e,
-    EcdheRsaAes128CbcSha = 0xc013,
+
+
+tls_codable_enum! {
+    #[repr(u16)]
+    pub enum CipherSuiteId {
+        RsaAes128CbcSha = 0x002f,
+        RsaAes128CbcSha256 = 0x003c,
+        RsaAes256CbcSha = 0x0035,
+        RsaAes256CbcSha256 = 0x003d,
+        DheRsaAes128CbcSha = 0x0033,
+        DheRsaAes128CbcSha256 = 0x0067,
+        DheDssAes128CbcSha = 0x0032,
+        RsaAes128GcmSha256 = 0x009c,
+        RsaAes256GcmSha384 = 0x009d,
+        DheRsaAes128GcmSha256 = 0x009e,
+        EcdheRsaAes128CbcSha = 0xc013
+    }
 }
 
 #[enum_dispatch]
@@ -221,6 +223,7 @@ impl CipherSuite {
             CipherSuiteId::RsaAes256GcmSha384 => RsaAes256GcmSha384.into(),
             CipherSuiteId::DheRsaAes128GcmSha256 => DheRsaAes128GcmSha256.into(),
             CipherSuiteId::EcdheRsaAes128CbcSha => EcdheRsaAes128CbcSha.into(),
+            _ => unimplemented!()
         })
     }
 }
@@ -236,7 +239,7 @@ pub struct RsaAes128CbcSha;
 
 impl CipherSuiteMethods for RsaAes128CbcSha {
     fn encode(&self) -> u16 {
-        return CipherSuiteId::RsaAes128CbcSha as u16;
+        return CipherSuiteId::RsaAes128CbcSha.into();
     }
 
     fn params(&self) -> CipherSuiteParams {
@@ -255,7 +258,7 @@ pub struct RsaAes256CbcSha;
 
 impl CipherSuiteMethods for RsaAes256CbcSha {
     fn encode(&self) -> u16 {
-        return CipherSuiteId::RsaAes256CbcSha as u16;
+        return CipherSuiteId::RsaAes256CbcSha.into();
     }
     fn params(&self) -> CipherSuiteParams {
         CipherSuiteParams {
@@ -273,7 +276,7 @@ pub struct RsaAes128CbcSha256;
 
 impl CipherSuiteMethods for RsaAes128CbcSha256 {
     fn encode(&self) -> u16 {
-        return CipherSuiteId::RsaAes128CbcSha256 as u16;
+        return CipherSuiteId::RsaAes128CbcSha256.into();
     }
     fn params(&self) -> CipherSuiteParams {
         CipherSuiteParams {
@@ -291,7 +294,7 @@ pub struct RsaAes256CbcSha256;
 
 impl CipherSuiteMethods for RsaAes256CbcSha256 {
     fn encode(&self) -> u16 {
-        return CipherSuiteId::RsaAes256CbcSha256 as u16;
+        return CipherSuiteId::RsaAes256CbcSha256.into();
     }
     fn params(&self) -> CipherSuiteParams {
         CipherSuiteParams {
@@ -309,7 +312,7 @@ pub struct DheRsaAes128CbcSha;
 
 impl CipherSuiteMethods for DheRsaAes128CbcSha {
     fn encode(&self) -> u16 {
-        return CipherSuiteId::DheRsaAes128CbcSha as u16;
+        return CipherSuiteId::DheRsaAes128CbcSha.into();
     }
 
     fn params(&self) -> CipherSuiteParams {
@@ -328,7 +331,7 @@ pub struct DheRsaAes128CbcSha256;
 
 impl CipherSuiteMethods for DheRsaAes128CbcSha256 {
     fn encode(&self) -> u16 {
-        return CipherSuiteId::DheRsaAes128CbcSha256 as u16;
+        return CipherSuiteId::DheRsaAes128CbcSha256.into();
     }
 
     fn params(&self) -> CipherSuiteParams {
@@ -347,7 +350,7 @@ pub struct DheDssAes128CbcSha;
 
 impl CipherSuiteMethods for DheDssAes128CbcSha {
     fn encode(&self) -> u16 {
-        return CipherSuiteId::DheDssAes128CbcSha as u16;
+        return CipherSuiteId::DheDssAes128CbcSha.into();
     }
 
     fn params(&self) -> CipherSuiteParams {
@@ -366,7 +369,7 @@ pub struct RsaAes128GcmSha256;
 
 impl CipherSuiteMethods for RsaAes128GcmSha256 {
     fn encode(&self) -> u16 {
-        return CipherSuiteId::RsaAes128GcmSha256 as u16;
+        return CipherSuiteId::RsaAes128GcmSha256.into();
     }
 
     fn params(&self) -> CipherSuiteParams {
@@ -385,7 +388,7 @@ pub struct RsaAes256GcmSha384;
 
 impl CipherSuiteMethods for RsaAes256GcmSha384 {
     fn encode(&self) -> u16 {
-        return CipherSuiteId::RsaAes256GcmSha384 as u16;
+        return CipherSuiteId::RsaAes256GcmSha384.into();
     }
 
     fn params(&self) -> CipherSuiteParams {
@@ -404,7 +407,7 @@ pub struct DheRsaAes128GcmSha256;
 
 impl CipherSuiteMethods for DheRsaAes128GcmSha256 {
     fn encode(&self) -> u16 {
-        return CipherSuiteId::DheRsaAes128GcmSha256 as u16;
+        return CipherSuiteId::DheRsaAes128GcmSha256.into();
     }
 
     fn params(&self) -> CipherSuiteParams {
@@ -423,7 +426,7 @@ pub struct EcdheRsaAes128CbcSha;
 
 impl CipherSuiteMethods for EcdheRsaAes128CbcSha {
     fn encode(&self) -> u16 {
-        return CipherSuiteId::EcdheRsaAes128CbcSha as u16;
+        return CipherSuiteId::EcdheRsaAes128CbcSha.into();
     }
 
     fn params(&self) -> CipherSuiteParams {

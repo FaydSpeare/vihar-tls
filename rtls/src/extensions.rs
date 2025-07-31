@@ -3,7 +3,7 @@ use std::fmt::Debug;
 use enum_dispatch::enum_dispatch;
 use num_enum::TryFromPrimitive;
 
-use crate::TLSResult;
+use crate::{encoding::{CodingError, Reader, TlsCodable}, TLSResult};
 
 #[enum_dispatch]
 #[derive(Debug, Clone)]
@@ -70,6 +70,15 @@ impl SecureRenegotationExt {
             .into(),
             4 + extension_len,
         )
+    }
+}
+
+impl TlsCodable for SecureRenegotationExt {
+    fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
+        unimplemented!() 
+    }    
+    fn write_to(&self, bytes: &mut Vec<u8>) {
+        unimplemented!()  
     }
 }
 

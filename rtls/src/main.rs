@@ -1,6 +1,8 @@
 use alert::{TLSAlert, TLSAlertDesc, TLSAlertLevel};
 use env_logger;
-use extensions::{ALPNExt, ExtendedMasterSecretExt, SecureRenegotationExt, SessionTicketExt, SupportedGroupsExt};
+use extensions::{
+    ALPNExt, ExtendedMasterSecretExt, SecureRenegotationExt, SessionTicketExt, SupportedGroupsExt,
+};
 use log::{error, info, trace};
 use record::RecordLayer;
 use state_machine::{
@@ -11,22 +13,23 @@ use std::net::TcpStream;
 use std::time::Instant;
 use thiserror::Error;
 
+#[macro_use]
+mod macros;
+
 mod alert;
 mod ciphersuite;
 mod connection;
 mod extensions;
+mod gcm;
 mod messages;
+mod encoding;
 mod prf;
 mod record;
 mod signature;
 mod state_machine;
 mod utils;
-mod gcm;
-mod playground;
 
-use ciphersuite::{
-    CipherSuite, DheDssAes128CbcSha, DheRsaAes128CbcSha, DheRsaAes128CbcSha256, DheRsaAes128GcmSha256, EcdheRsaAes128CbcSha, RsaAes128CbcSha, RsaAes128CbcSha256, RsaAes128GcmSha256, RsaAes256CbcSha, RsaAes256CbcSha256, RsaAes256GcmSha384
-};
+use ciphersuite::{CipherSuite, CipherSuiteId};
 use messages::*;
 
 #[derive(Error, Debug)]
@@ -125,10 +128,10 @@ impl TLSConnection {
 
     pub fn handshake(
         &mut self,
-        cipher_suites: &[CipherSuite],
-        session_id: Option<Vec<u8>>,
+        cipher_suites: &[CipherSuiteId],
+        session_id: Option<SessionId>,
         session_ticket: Option<Vec<u8>>,
-    ) -> TLSResult<Vec<u8>> {
+    ) -> TLSResult<SessionId> {
         let mut extensions = match self.handshake_state_machine.state.as_ref().unwrap() {
             TlsState::Established(s) => {
                 vec![SecureRenegotationExt::renegotiation(&s.client_verify_data).into()]
@@ -141,7 +144,12 @@ impl TLSConnection {
             Some(ticket) => extensions.push(SessionTicketExt::resume(ticket).into()),
         }
 
-        extensions.push(SupportedGroupsExt::new(vec![0x0017, 0x0018, 0x0019, 0x0100, 0x0101, 0x0102, 0x0103, 0x0104]).into());
+        extensions.push(
+            SupportedGroupsExt::new(vec![
+                0x0017, 0x0018, 0x0019, 0x0100, 0x0101, 0x0102, 0x0103, 0x0104,
+            ])
+            .into(),
+        );
         extensions.push(ExtendedMasterSecretExt::new().into());
         extensions.push(ALPNExt::new(vec!["http/1.1".to_string()]).into());
 
@@ -232,21 +240,10 @@ fn main() -> TLSResult<()> {
     env_logger::init();
 
     //let x = gcm::gf_mul(3, 1 << 51);
-    
+
     //playground::main();
 
-    let suites: Vec<CipherSuite> = vec![
-        //RsaAes256CbcSha256.into()
-        RsaAes128CbcSha.into(),
-        //DheRsaAes128CbcSha.into(),
-        //DheDssAes128CbcSha.into()
-        // DheRsaAes128CbcSha256.into(),
-        // DhRsaAes128CbcSha.into()
-        //RsaAes128GcmSha256.into(),
-        //RsaAes256GcmSha384.into(),
-        //DheRsaAes128GcmSha256.into()
-        //EcdheRsaAes128CbcSha.into()
-    ];
+    let suites: Vec<CipherSuiteId> = vec![CipherSuiteId::RsaAes128CbcSha];
 
     let domain = "facebook.com";
     //let domain = "localhost";
