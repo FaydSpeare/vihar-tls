@@ -17,9 +17,7 @@ use crate::{
     ciphersuite::{CipherSuite, CipherSuiteMethods, KeyExchangeAlgorithm},
     connection::{ConnState, InitialConnState, SecureConnState, SecurityParams},
     encoding::TlsCodable,
-    messages::{
-        ClientKeyExchange, Finished, TlsHandshake, TlsMessage,
-    },
+    messages::{ClientKeyExchange, Finished, TlsHandshake, TlsMessage},
 };
 
 #[derive(Debug, Clone)]
@@ -235,16 +233,12 @@ impl HandleRecord for AwaitServerHello {
             .map_or(false, |x| x.session_id == hello.session_id)
         {
             let resumption = self.session_id_resumption.unwrap();
-            let ciphersuite = CipherSuite::from(resumption.cipher_suite);
-            let params = SecurityParams {
-                cipher_suite_id: resumption.cipher_suite,
-                client_random: self.client_random,
-                server_random: hello.random.as_bytes(),
-                enc_algorithm: ciphersuite.params().enc_algorithm,
-                mac_algorithm: ciphersuite.params().mac_algorithm,
-                prf_algorithm: ciphersuite.params().prf_algorithm,
-                master_secret: resumption.master_secret,
-            };
+            let params = SecurityParams::new(
+                self.client_random,
+                hello.random.as_bytes(),
+                resumption.master_secret,
+                resumption.cipher_suite,
+            );
 
             return Ok((
                 AwaitServerChangeCipher {
@@ -527,15 +521,12 @@ impl HandleRecord for AwaitServerHelloDone {
 
         let master_secret =
             self.calculate_master_secret(&pre_master_secret, ciphersuite.params().prf_algorithm);
-        let params = SecurityParams {
-            cipher_suite_id: self.selected_cipher_suite_id,
-            client_random: self.client_random,
-            server_random: self.server_random,
+        let params = SecurityParams::new(
+            self.client_random,
+            self.server_random,
             master_secret,
-            mac_algorithm: ciphersuite.params().mac_algorithm,
-            enc_algorithm: ciphersuite.params().enc_algorithm,
-            prf_algorithm: ciphersuite.params().prf_algorithm,
-        };
+            self.selected_cipher_suite_id,
+        );
         let keys = params.derive_keys();
         let write = ConnState::Secure(SecureConnState::new(
             params.clone(),
@@ -674,16 +665,12 @@ impl HandleRecord for AwaitNewSessionTicketOrCertificate {
         msg: &TlsMessage,
     ) -> TLSResult<(TlsState, Vec<TlsAction>)> {
         if let TlsMessage::Handshake(TlsHandshake::NewSessionTicket(_)) = msg {
-            let ciphersuite = CipherSuite::from(self.session_ticket_resumption.cipher_suite);
-            let params = SecurityParams {
-                cipher_suite_id: self.session_ticket_resumption.cipher_suite,
-                client_random: self.client_random,
-                server_random: self.server_random,
-                enc_algorithm: ciphersuite.params().enc_algorithm,
-                mac_algorithm: ciphersuite.params().mac_algorithm,
-                prf_algorithm: ciphersuite.params().prf_algorithm,
-                master_secret: self.session_ticket_resumption.master_secret,
-            };
+            let params = SecurityParams::new(
+                self.client_random,
+                self.server_random,
+                self.session_ticket_resumption.master_secret,
+                self.session_ticket_resumption.cipher_suite,
+            );
 
             return AwaitNewSessionTicket {
                 session_id: self.session_id,
@@ -727,16 +714,12 @@ impl HandleRecord for AwaitServerChangeCipherOrCertificate {
         msg: &TlsMessage,
     ) -> TLSResult<(TlsState, Vec<TlsAction>)> {
         if let TlsMessage::ChangeCipherSpec = msg {
-            let ciphersuite = CipherSuite::from(self.session_ticket_resumption.cipher_suite);
-            let params = SecurityParams {
-                cipher_suite_id: self.session_ticket_resumption.cipher_suite,
-                client_random: self.client_random,
-                server_random: self.server_random,
-                enc_algorithm: ciphersuite.params().enc_algorithm,
-                mac_algorithm: ciphersuite.params().mac_algorithm,
-                prf_algorithm: ciphersuite.params().prf_algorithm,
-                master_secret: self.session_ticket_resumption.master_secret,
-            };
+            let params = SecurityParams::new(
+                self.client_random,
+                self.server_random,
+                self.session_ticket_resumption.master_secret,
+                self.session_ticket_resumption.cipher_suite,
+            );
 
             return AwaitServerChangeCipher {
                 session_id: self.session_id,

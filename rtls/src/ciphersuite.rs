@@ -1,13 +1,18 @@
 use std::fmt::Debug;
 
 use crate::{
-    TLSResult,
     gcm::{decrypt_aes_cbc, decrypt_aes_gcm, encrypt_aes_cbc, encrypt_aes_gcm},
     prf::{HmacHashAlgo, hmac, prf_sha256, prf_sha384},
 };
 use aes::{Aes128, Aes256};
 use enum_dispatch::enum_dispatch;
 use sha2::{Digest, Sha256, Sha384};
+
+
+#[derive(Debug, Copy, Clone)]
+pub enum CompressionAlgorithm {
+    Null,
+}
 
 #[derive(Debug, Copy, Clone)]
 pub enum MacAlgorithm {

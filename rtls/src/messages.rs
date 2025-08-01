@@ -2,12 +2,12 @@ use crate::alert::TLSAlert;
 use crate::ciphersuite::CipherSuiteId;
 use crate::encoding::{
     CodingError, LengthPrefixWriter, LengthPrefixedVec, MaybeEmpty, NonEmpty, Reader, TlsCodable,
-    u24,
+    VecLen, u24,
 };
 use crate::extensions::{Extension, Extensions, HashAlgo, SigAlgo, SignatureAlgorithmsExt};
 use crate::utils;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct ProtocolVersion {
     pub major: u8,
     pub minor: u8,
@@ -63,7 +63,7 @@ impl SessionId {
 
     pub fn new(session_id: &[u8]) -> Result<Self, CodingError> {
         if session_id.len() > Self::MAX_LEN {
-            return Err(CodingError::LengthTooLarge);
+            return Err(CodingError::LengthTooLarge(Self::MAX_LEN, session_id.len()));
         }
         Ok(Self(session_id.to_vec().try_into()?))
     }
@@ -81,7 +81,7 @@ impl TlsCodable for SessionId {
     fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
         let session_id = LengthPrefixedVec::<u8, u8, MaybeEmpty>::read_from(reader)?;
         if session_id.len() > Self::MAX_LEN {
-            return Err(CodingError::LengthTooLarge);
+            return Err(CodingError::LengthTooLarge(Self::MAX_LEN, session_id.len()));
         }
         Ok(Self(session_id))
     }
@@ -586,8 +586,10 @@ impl TlsCodable for TlsHandshake {
     }
 }
 
-impl From<TlsHandshake> for TlsPlaintext {
-    fn from(value: TlsHandshake) -> Self {
+impl TryFrom<TlsHandshake> for TlsPlaintext {
+    type Error = CodingError;
+
+    fn try_from(value: TlsHandshake) -> Result<Self, Self::Error> {
         TlsPlaintext::new(TLSContentType::Handshake, value.get_encoding())
     }
 }
@@ -606,46 +608,20 @@ impl TlsMessage {
     }
 }
 
-#[derive(Clone)]
+u16_vec_len_with_max!(PlaintextFragmentLen, 16_384);
+u16_vec_len_with_max!(CompressedFragmentLen, 16_384 + 1024);
+u16_vec_len_with_max!(CiphertextFragmentLen, 16_384 + 2048);
+
+type PlaintextFragment = LengthPrefixedVec<PlaintextFragmentLen, u8, MaybeEmpty>;
+
+#[derive(Debug, Clone)]
 pub struct TlsPlaintext {
     pub content_type: TLSContentType,
     pub version: ProtocolVersion,
-    pub fragment: Vec<u8>,
+    pub fragment: PlaintextFragment,
 }
 
 impl TlsPlaintext {
-    pub fn new(content_type: TLSContentType, fragment: Vec<u8>) -> Self {
-        Self {
-            content_type,
-            version: ProtocolVersion { major: 3, minor: 3 },
-            fragment,
-        }
-    }
-}
-
-impl From<TlsMessage> for TlsPlaintext {
-    fn from(value: TlsMessage) -> Self {
-        match value {
-            TlsMessage::ChangeCipherSpec => {
-                TlsPlaintext::new(TLSContentType::ChangeCipherSpec, vec![1])
-            }
-            TlsMessage::Alert(alert) => TlsPlaintext::from(alert),
-            TlsMessage::Handshake(msg) => TlsPlaintext::from(msg),
-            TlsMessage::ApplicationData(data) => {
-                TlsPlaintext::new(TLSContentType::ApplicationData, data)
-            }
-        }
-    }
-}
-type CiphertextFragment = LengthPrefixedVec<u16, u8, MaybeEmpty>;
-
-pub struct TLSCiphertext {
-    pub content_type: TLSContentType,
-    pub version: ProtocolVersion,
-    pub fragment: CiphertextFragment,
-}
-
-impl TLSCiphertext {
     pub fn new(content_type: TLSContentType, fragment: Vec<u8>) -> Result<Self, CodingError> {
         Ok(Self {
             content_type,
@@ -653,6 +629,39 @@ impl TLSCiphertext {
             fragment: fragment.try_into()?,
         })
     }
+}
+
+impl TryFrom<TlsMessage> for TlsPlaintext {
+    type Error = CodingError;
+
+    fn try_from(value: TlsMessage) -> Result<Self, Self::Error> {
+        match value {
+            TlsMessage::ChangeCipherSpec => {
+                TlsPlaintext::new(TLSContentType::ChangeCipherSpec, vec![1])
+            }
+            TlsMessage::Alert(alert) => TlsPlaintext::try_from(alert),
+            TlsMessage::Handshake(msg) => TlsPlaintext::try_from(msg),
+            TlsMessage::ApplicationData(data) => {
+                TlsPlaintext::new(TLSContentType::ApplicationData, data)
+            }
+        }
+    }
+}
+type CompressedFragment = LengthPrefixedVec<CompressedFragmentLen, u8, MaybeEmpty>;
+
+#[derive(Debug, Clone)]
+pub struct TlsCompressed {
+    pub content_type: TLSContentType,
+    pub version: ProtocolVersion,
+    pub fragment: CompressedFragment,
+}
+
+type CiphertextFragment = LengthPrefixedVec<CiphertextFragmentLen, u8, MaybeEmpty>;
+
+pub struct TLSCiphertext {
+    pub content_type: TLSContentType,
+    pub version: ProtocolVersion,
+    pub fragment: CiphertextFragment,
 }
 
 impl TlsCodable for TLSCiphertext {

@@ -1,8 +1,8 @@
 use std::fmt::Debug;
 
 use crate::encoding::{
-    CodingError, LengthPrefixWriter, LengthPrefixedVec, MaybeEmpty, NonEmpty, Reader,
-    RedefineableCardinality, TlsCodable,
+    CodingError, LengthPrefixWriter, LengthPrefixedVec, MaybeEmpty, NonEmpty, Reader, Reconstrainable,
+    TlsCodable,
 };
 
 #[derive(Debug, Clone)]
@@ -155,9 +155,7 @@ impl TlsCodable for SecureRenegotationExt {
         if renegotiation_info.len() == 0 {
             return Ok(Self::Initial);
         }
-        Ok(Self::Renegotiation(
-            renegotiation_info.redefine_cardinality()?,
-        ))
+        Ok(Self::Renegotiation(renegotiation_info.reconstrain()?))
     }
 
     fn write_to(&self, bytes: &mut Vec<u8>) {

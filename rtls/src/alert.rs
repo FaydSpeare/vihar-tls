@@ -1,6 +1,6 @@
 use crate::{
     encoding::{CodingError, Reader, TlsCodable},
-    messages::{TLSContentType, TlsHandshake, TlsPlaintext},
+    messages::{TLSContentType, TlsCompressed, TlsHandshake, TlsPlaintext},
 };
 
 tls_codable_enum! {
@@ -63,8 +63,10 @@ impl TlsCodable for TLSAlert {
     }
 }
 
-impl From<TLSAlert> for TlsPlaintext {
-    fn from(value: TLSAlert) -> Self {
+impl TryFrom<TLSAlert> for TlsPlaintext {
+    type Error = CodingError;
+
+    fn try_from(value: TLSAlert) -> Result<Self, Self::Error> {
         TlsPlaintext::new(TLSContentType::Alert, value.get_encoding())
     }
 }

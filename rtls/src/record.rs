@@ -31,19 +31,18 @@ impl RecordLayer {
         loop {
             let mut reader = Reader::new(&self.buffer);
             let plaintext = TLSCiphertext::read_from(&mut reader)
-                .map(|ciphertext| conn_state.decrypt(&ciphertext))?;
+                .and_then(|ciphertext| conn_state.decrypt(ciphertext))?;
             self.buffer.drain(..reader.bytes_consumed());
 
             match plaintext.content_type {
                 TLSContentType::ChangeCipherSpec => {
-                    assert_eq!(plaintext.fragment, &[1]);
                     return Ok(TlsMessage::ChangeCipherSpec);
                 }
                 TLSContentType::ApplicationData => {
-                    return Ok(TlsMessage::ApplicationData(plaintext.fragment));
+                    return Ok(TlsMessage::ApplicationData(plaintext.fragment.into_vec()));
                 }
                 TLSContentType::Alert => {
-                    self.alert_buffer.extend(plaintext.fragment);
+                    self.alert_buffer.extend(plaintext.fragment.into_vec());
                     let mut reader = Reader::new(&self.alert_buffer);
                     match TLSAlert::read_from(&mut reader) {
                         Ok(alert) => {
@@ -54,7 +53,7 @@ impl RecordLayer {
                     }
                 }
                 TLSContentType::Handshake => {
-                    self.handshake_buffer.extend(plaintext.fragment);
+                    self.handshake_buffer.extend(plaintext.fragment.into_vec());
                     let mut reader = Reader::new(&self.handshake_buffer);
                     match TlsHandshake::read_from(&mut reader) {
                         Ok(handshake) => {

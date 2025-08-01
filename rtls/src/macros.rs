@@ -100,5 +100,46 @@ macro_rules! tls_codable_enum {
             }
         }
     }
+}
 
+macro_rules! u16_vec_len_with_max {
+    ($name:ident, $max:expr) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub struct $name(u16);
+
+        impl $name {
+            pub const MAX: u16 = $max;
+            pub fn new(value: u16) -> Option<Self> {
+                (value <= Self::MAX).then_some(Self(value))
+            }
+        }
+
+        impl TlsCodable for $name {
+            fn write_to(&self, bytes: &mut Vec<u8>) {
+                self.0.write_to(bytes)
+            }
+            fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
+                Ok(Self(u16::read_from(reader)?))
+            }
+        }
+
+        impl From<$name> for usize {
+            fn from(value: $name) -> Self {
+                value.0 as Self
+            }
+        }
+
+        impl VecLen for $name {
+            const BYTE_LEN: usize = 2;
+            const MAX_LEN: usize = Self::MAX as usize;
+
+            fn from_usize(value: usize) -> Result<Self, CodingError> {
+                let value = u16::try_from(value).map_err(|_| CodingError::InvalidLength)?;
+                Self::new(value).ok_or(CodingError::InvalidLength)
+            }
+            fn encode_into_slice(&self, out: &mut [u8]) {
+                out.copy_from_slice(&self.0.to_be_bytes());
+            }
+        }
+    };
 }

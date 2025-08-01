@@ -15,13 +15,13 @@ pub enum CodingError {
     #[error("Invalid slice length")]
     InvalidSliceLength(#[from] TryFromSliceError),
 
-    #[error("Length exceeds allowed value")]
-    LengthTooLarge,
-
     #[error("Unknown extension type {0:#x}")]
     UnknownExtensionType(u16),
 
-    #[error("Expected more list items. Expected: >= {0}. Actual: {1}")]
+    #[error("Shorter length required (expected <= {0}, actual = {1})")]
+    LengthTooLarge(usize, usize),
+
+    #[error("Longer length required. (expected >= {0}, actual = {1})")]
     LengthTooSmall(usize, usize),
 
     #[error("Invalid {0} enum value: {1}")]
@@ -94,6 +94,19 @@ impl From<u24> for usize {
     }
 }
 
+impl VecLen for u24 {
+    const BYTE_LEN: usize = 3;
+    const MAX_LEN: usize = u24::MAX as usize;
+
+    fn from_usize(value: usize) -> Result<Self, CodingError> {
+        let value = u32::try_from(value).map_err(|_| CodingError::InvalidLength)?;
+        u24::new(value).ok_or(CodingError::InvalidLength)
+    }
+    fn encode_into_slice(&self, out: &mut [u8]) {
+        out.copy_from_slice(&self.0.to_be_bytes()[1..]);
+    }
+}
+
 pub trait TlsCodable: Sized {
     fn write_to(&self, bytes: &mut Vec<u8>);
     fn read_from(reader: &mut Reader) -> Result<Self, CodingError>;
@@ -157,7 +170,7 @@ impl<const N: usize> TlsCodable for [u8; N] {
 }
 
 pub trait VecLen: Debug + TlsCodable + Into<usize> {
-    const SIZE: usize;
+    const BYTE_LEN: usize;
     const MAX_LEN: usize;
 
     fn from_usize(value: usize) -> Result<Self, CodingError>;
@@ -165,7 +178,7 @@ pub trait VecLen: Debug + TlsCodable + Into<usize> {
 }
 
 impl VecLen for u8 {
-    const SIZE: usize = 1;
+    const BYTE_LEN: usize = 1;
     const MAX_LEN: usize = u8::MAX as usize;
 
     fn from_usize(value: usize) -> Result<Self, CodingError> {
@@ -177,7 +190,7 @@ impl VecLen for u8 {
 }
 
 impl VecLen for u16 {
-    const SIZE: usize = 2;
+    const BYTE_LEN: usize = 2;
     const MAX_LEN: usize = u16::MAX as usize;
 
     fn from_usize(value: usize) -> Result<Self, CodingError> {
@@ -185,19 +198,6 @@ impl VecLen for u16 {
     }
     fn encode_into_slice(&self, out: &mut [u8]) {
         out.copy_from_slice(&self.to_be_bytes());
-    }
-}
-
-impl VecLen for u24 {
-    const SIZE: usize = 3;
-    const MAX_LEN: usize = u24::MAX as usize;
-
-    fn from_usize(value: usize) -> Result<Self, CodingError> {
-        let value = u32::try_from(value).map_err(|_| CodingError::InvalidLength)?;
-        u24::new(value).ok_or(CodingError::InvalidLength)
-    }
-    fn encode_into_slice(&self, out: &mut [u8]) {
-        out.copy_from_slice(&self.0.to_be_bytes()[1..]);
     }
 }
 
@@ -250,27 +250,31 @@ pub struct LengthPrefixedVec<L: VecLen, T: TlsCodable, C: Cardinality> {
 }
 
 impl<L: VecLen, T: TlsCodable, C: Cardinality> LengthPrefixedVec<L, T, C> {
-    // pub fn to_vec(self) -> Vec<T> {
-    //     self.items.to_vec()
-    // }
+    pub fn into_vec(self) -> Vec<T> {
+        self.items
+    }
 }
 
-pub trait RedefineableCardinality<L: VecLen, T: TlsCodable, C: Cardinality> {
-    fn redefine_cardinality(self) -> Result<LengthPrefixedVec<L, T, C>, CodingError>;
+pub trait Reconstrainable<L: VecLen, T: TlsCodable, C: Cardinality> {
+    fn reconstrain(self) -> Result<LengthPrefixedVec<L, T, C>, CodingError>;
 }
 
-impl<L, T, C1, C2> RedefineableCardinality<L, T, C2> for LengthPrefixedVec<L, T, C1>
+impl<L1, L2, T, C1, C2> Reconstrainable<L2, T, C2> for LengthPrefixedVec<L1, T, C1>
 where
-    L: VecLen,
+    L1: VecLen,
+    L2: VecLen,
     T: TlsCodable,
     C1: Cardinality,
     C2: Cardinality,
 {
-    fn redefine_cardinality(self) -> Result<LengthPrefixedVec<L, T, C2>, CodingError> {
+    fn reconstrain(self) -> Result<LengthPrefixedVec<L2, T, C2>, CodingError> {
         if self.len() < C2::MIN_LEN {
             return Err(CodingError::LengthTooSmall(C2::MIN_LEN, self.len()));
         }
-        Ok(LengthPrefixedVec::<L, T, C2> {
+        if self.len() > L2::MAX_LEN {
+            return Err(CodingError::LengthTooLarge(L2::MAX_LEN, self.len()));
+        }
+        Ok(LengthPrefixedVec::<L2, T, C2> {
             items: self.items,
             _l: PhantomData,
             _c: PhantomData,
@@ -315,7 +319,7 @@ impl<L: VecLen, T: TlsCodable, C: Cardinality> TryFrom<Vec<T>> for LengthPrefixe
             return Err(CodingError::LengthTooSmall(C::MIN_LEN, value.len()));
         }
         if value.len() > L::MAX_LEN {
-            return Err(CodingError::LengthTooLarge);
+            return Err(CodingError::LengthTooLarge(L::MAX_LEN, value.len()));
         }
         Ok(Self {
             items: value,
@@ -349,7 +353,7 @@ pub struct LengthPrefixWriter<'a, L: VecLen> {
 impl<'a, L: VecLen> LengthPrefixWriter<'a, L> {
     pub fn new(buf: &'a mut Vec<u8>) -> Self {
         let original_len = buf.len();
-        buf.resize(buf.len() + L::SIZE, 0);
+        buf.resize(buf.len() + L::BYTE_LEN, 0);
         Self {
             buf,
             original_len,
@@ -362,8 +366,8 @@ impl<'a, L: VecLen> LengthPrefixWriter<'a, L> {
         // This could fail if the encoded length exceeds MAX value of the uint L
         // However, this is the only place where write_to would currently need to
         // return a result. Will consider changing the return type to a Result later.
-        let len = L::from_usize(self.buf.len() - self.original_len - L::SIZE).unwrap();
-        len.encode_into_slice(&mut self.buf[self.original_len..self.original_len + L::SIZE]);
+        let len = L::from_usize(self.buf.len() - self.original_len - L::BYTE_LEN).unwrap();
+        len.encode_into_slice(&mut self.buf[self.original_len..self.original_len + L::BYTE_LEN]);
         self.finalized = true;
     }
 }
