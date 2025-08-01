@@ -133,7 +133,7 @@ impl SecureConnState {
 
         let mut bytes = Vec::<u8>::new();
         bytes.extend_from_slice(&self.seq_num.to_be_bytes());
-        bytes.push(content_type as u8);
+        bytes.push(u8::from(content_type));
         bytes.extend([3, 3]);
         bytes.extend((fragment.len() as u16).to_be_bytes());
         bytes.extend_from_slice(&fragment);
@@ -151,7 +151,7 @@ impl SecureConnState {
         let iv = [&self.write_iv, explicit].concat();
         let mut aad = Vec::<u8>::new();
         aad.extend_from_slice(&self.seq_num.to_be_bytes());
-        aad.push(content_type as u8);
+        aad.push(u8::from(content_type));
         aad.extend([3, 3]);
         // Remeber the -16 to remove the tag length
         aad.extend(((ciphertext.len() - 16) as u16).to_be_bytes());
@@ -163,7 +163,7 @@ impl SecureConnState {
     fn encrypt_block_cipher(&self, plaintext: &TlsPlaintext) -> Vec<u8> {
         let mut bytes = Vec::<u8>::new();
         bytes.extend_from_slice(&self.seq_num.to_be_bytes());
-        bytes.push(plaintext.content_type as u8);
+        bytes.push(u8::from(plaintext.content_type));
         bytes.extend([plaintext.version.major, plaintext.version.minor]);
         bytes.extend((plaintext.fragment.len() as u16).to_be_bytes());
         bytes.extend_from_slice(&plaintext.fragment);
@@ -202,7 +202,7 @@ impl SecureConnState {
 
         let mut aad = Vec::<u8>::new();
         aad.extend_from_slice(&self.seq_num.to_be_bytes());
-        aad.push(plaintext.content_type as u8);
+        aad.push(u8::from(plaintext.content_type));
         aad.extend([plaintext.version.major, plaintext.version.minor]);
         aad.extend((plaintext.fragment.len() as u16).to_be_bytes());
         let aead_ciphertext = self.params.enc_algorithm.encrypt(

@@ -1,5 +1,6 @@
 macro_rules! tls_codable_enum {
     (
+        #[without_unknown]
         #[repr($uint:ty)]
         $enum_vis:vis enum $enum_name:ident
         {
@@ -7,11 +8,12 @@ macro_rules! tls_codable_enum {
         }
     ) => {
 
+        #[non_exhaustive]
         #[derive(Debug, PartialEq, Eq, Clone, Copy)]
         #[repr($uint)]
         $enum_vis enum $enum_name {
             $(
-                $enum_var
+                $enum_var = $enum_val
             ),*
         }
 
@@ -50,7 +52,6 @@ macro_rules! tls_codable_enum {
         }
     };
     (
-        #[with_unknown]
         #[repr($uint:ty)]
         $enum_vis:vis enum $enum_name:ident
         {
@@ -59,7 +60,6 @@ macro_rules! tls_codable_enum {
     ) => {
 
         #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-        #[repr($uint)]
         $enum_vis enum $enum_name {
             $(
                 $enum_var

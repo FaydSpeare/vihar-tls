@@ -1,11 +1,11 @@
 use log::trace;
 
 use crate::{
-    TLSError, TLSResult,
+    TLSResult,
     alert::TLSAlert,
     connection::ConnState,
     encoding::{Reader, TlsCodable},
-    messages::{ProtocolVersion, TLSCiphertext, TLSContentType, TlsHandshake, TlsMessage},
+    messages::{TLSCiphertext, TLSContentType, TlsHandshake, TlsMessage},
 };
 
 pub struct RecordLayer {
@@ -64,6 +64,7 @@ impl RecordLayer {
                         Err(e) => trace!("Handshake parsing failed: {e}"),
                     }
                 }
+                TLSContentType::Unknown(x) => unimplemented!("Unknown content type: {x}"),
             }
         }
     }
