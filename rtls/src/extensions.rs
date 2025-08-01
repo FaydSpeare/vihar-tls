@@ -1,8 +1,8 @@
 use std::fmt::Debug;
 
 use crate::encoding::{
-    CodingError, LengthPrefixWriter, LengthPrefixedVec, MaybeEmpty, NonEmpty, Reader, Reconstrainable,
-    TlsCodable,
+    CodingError, LengthPrefixWriter, LengthPrefixedVec, MaybeEmpty, NonEmpty, Reader,
+    Reconstrainable, TlsCodable,
 };
 
 #[derive(Debug, Clone)]
@@ -10,9 +10,8 @@ pub enum Extension {
     SecureRenegotiation(SecureRenegotationExt),
     SignatureAlgorithms(SignatureAlgorithmsExt),
     SessionTicket(SessionTicketExt),
-    // ExtendedMasterSecret(ExtendedMasterSecretExt),
-    // ALPN(ALPNExt),
-    // SupportedGroups(SupportedGroupsExt),
+    ExtendedMasterSecret(ExtendedMasterSecretExt),
+    ALPN(ALPNExt),
 }
 
 impl TlsCodable for Extension {
@@ -21,6 +20,8 @@ impl TlsCodable for Extension {
             Self::SecureRenegotiation(ext) => ext.write_to(bytes),
             Self::SignatureAlgorithms(ext) => ext.write_to(bytes),
             Self::SessionTicket(ext) => ext.write_to(bytes),
+            Self::ExtendedMasterSecret(ext) => ext.write_to(bytes),
+            Self::ALPN(ext) => ext.write_to(bytes),
         }
     }
     fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
@@ -29,10 +30,8 @@ impl TlsCodable for Extension {
             SignatureAlgorithmsExt::TYPE => SignatureAlgorithmsExt::read_from(reader)?.into(),
             SecureRenegotationExt::TYPE => SecureRenegotationExt::read_from(reader)?.into(),
             SessionTicketExt::TYPE => SessionTicketExt::read_from(reader)?.into(),
-            // 0x0023 => SessionTicketExt::decode(bytes),
-            // 0x0017 => ExtendedMasterSecretExt::decode(bytes),
-            // 0x0010 => ALPNExt::decode(bytes)?,
-            // 0x000a => SupportedGroupsExt::decode(bytes)?,
+            ExtendedMasterSecretExt::TYPE => ExtendedMasterSecretExt::read_from(reader)?.into(),
+            ALPNExt::TYPE => ALPNExt::read_from(reader)?.into(),
             _ => return Err(CodingError::UnknownExtensionType(ext_type)),
         };
         Ok(ext)
@@ -57,6 +56,18 @@ impl From<SessionTicketExt> for Extension {
     }
 }
 
+impl From<ExtendedMasterSecretExt> for Extension {
+    fn from(value: ExtendedMasterSecretExt) -> Self {
+        Self::ExtendedMasterSecret(value)
+    }
+}
+
+impl From<ALPNExt> for Extension {
+    fn from(value: ALPNExt) -> Self {
+        Self::ALPN(value)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Extensions(Option<LengthPrefixedVec<u16, Extension, NonEmpty>>);
 
@@ -78,6 +89,15 @@ impl Extensions {
             Some(extensions) => extensions
                 .iter()
                 .any(|x| matches!(x, Extension::SecureRenegotiation(_))),
+        }
+    }
+
+    pub fn includes_extended_master_secret(&self) -> bool {
+        match &self.0 {
+            None => false,
+            Some(extensions) => extensions
+                .iter()
+                .any(|x| matches!(x, Extension::ExtendedMasterSecret(_))),
         }
     }
 
@@ -209,26 +229,32 @@ impl TlsCodable for SessionTicketExt {
     }
 }
 
-// #[derive(Debug, Clone)]
-// pub struct ExtendedMasterSecretExt {}
-//
-// impl ExtendedMasterSecretExt {
-//     pub fn new() -> Self {
-//         Self {}
-//     }
-//
-//     fn decode(bytes: &[u8]) -> (Extension, usize) {
-//         let extension_len = u16::from_be_bytes([bytes[2], bytes[3]]) as usize;
-//         assert_eq!(extension_len, 0);
-//         (Self {}.into(), 4 + extension_len)
-//     }
-// }
-//
-// impl EncodeExtension for ExtendedMasterSecretExt {
-//     fn encode(&self) -> Vec<u8> {
-//         vec![0x00, 0x17, 0x00, 0x00]
-//     }
-// }
+#[derive(Debug, Clone)]
+pub struct ExtendedMasterSecretExt {}
+
+impl ExtendedMasterSecretExt {
+    pub fn new() -> Self {
+        Self {}
+    }
+}
+
+impl TlsExtensionType for ExtendedMasterSecretExt {
+    const TYPE: u16 = 0x0017;
+}
+
+impl TlsCodable for ExtendedMasterSecretExt {
+    fn write_to(&self, bytes: &mut Vec<u8>) {
+        Self::TYPE.write_to(bytes);
+        0u16.write_to(bytes);
+    }
+    fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
+        let ext_len = u16::read_from(reader)?;
+        if ext_len > 0 {
+            return Err(CodingError::LengthTooLarge(0, ext_len.into()));
+        }
+        Ok(Self::new())
+    }
+}
 
 tls_codable_enum! {
     #[repr(u8)]
@@ -324,83 +350,40 @@ impl SignatureAlgorithmsExt {
     }
 }
 
-// #[derive(Debug, Clone)]
-// pub struct ALPNExt {
-//     protocols: Vec<String>,
-// }
-//
-// impl ALPNExt {
-//     pub fn new(protocols: Vec<String>) -> Self {
-//         Self { protocols }
-//     }
-//
-//     fn decode(bytes: &[u8]) -> TLSResult<(Extension, usize)> {
-//         let extension_len = u16::from_be_bytes([bytes[2], bytes[3]]) as usize;
-//         let mut idx = 6;
-//         let mut protocols = Vec::<String>::new();
-//         while idx < 4 + extension_len {
-//             let name_len = bytes[idx] as usize;
-//             protocols.push(String::from_utf8(
-//                 bytes[idx + 1..idx + 1 + name_len].to_vec(),
-//             )?);
-//             idx += 1 + name_len;
-//         }
-//
-//         Ok((Self { protocols }.into(), 4 + extension_len))
-//     }
-// }
-//
-// impl EncodeExtension for ALPNExt {
-//     fn encode(&self) -> Vec<u8> {
-//         let mut protocols_bytes = Vec::<u8>::new();
-//         for protocol in &self.protocols {
-//             protocols_bytes.push(protocol.len() as u8);
-//             protocols_bytes.extend_from_slice(protocol.as_ref());
-//         }
-//         let mut bytes = Vec::<u8>::new();
-//         bytes.extend_from_slice(&[0x00, 0x10]);
-//         bytes.extend_from_slice(&((protocols_bytes.len() + 2) as u16).to_be_bytes());
-//         bytes.extend_from_slice(&(protocols_bytes.len() as u16).to_be_bytes());
-//         bytes.extend_from_slice(&protocols_bytes);
-//         bytes
-//     }
-// }
-//
-// #[derive(Debug, Clone)]
-// pub struct SupportedGroupsExt {
-//     named_groups: Vec<u16>,
-// }
-//
-// impl SupportedGroupsExt {
-//     pub fn new(named_groups: Vec<u16>) -> Self {
-//         Self { named_groups }
-//     }
-//
-//     fn decode(bytes: &[u8]) -> TLSResult<(Extension, usize)> {
-//         let extension_len = u16::from_be_bytes([bytes[2], bytes[3]]) as usize;
-//         let groups_len = u16::from_be_bytes([bytes[4], bytes[5]]) as usize;
-//         let mut named_groups = Vec::<u16>::new();
-//         for i in 0..(groups_len / 2) {
-//             let group = u16::from_be_bytes([bytes[6 + 2 * i], bytes[7 + 2 * i]]);
-//             named_groups.push(group);
-//         }
-//         Ok((Self { named_groups }.into(), 4 + extension_len))
-//     }
-// }
-//
-// impl EncodeExtension for SupportedGroupsExt {
-//     fn encode(&self) -> Vec<u8> {
-//         let groups_bytes: Vec<u8> = self
-//             .named_groups
-//             .iter()
-//             .map(|x| x.to_be_bytes())
-//             .flatten()
-//             .collect();
-//         let mut bytes = Vec::<u8>::new();
-//         bytes.extend_from_slice(&[0x00, 0x0a]);
-//         bytes.extend_from_slice(&((groups_bytes.len() + 2) as u16).to_be_bytes());
-//         bytes.extend_from_slice(&(groups_bytes.len() as u16).to_be_bytes());
-//         bytes.extend_from_slice(&groups_bytes);
-//         bytes
-//     }
-// }
+type ProtocolName = LengthPrefixedVec<u8, u8, NonEmpty>;
+type ProtocolList = LengthPrefixedVec<u16, ProtocolName, NonEmpty>;
+
+#[derive(Debug, Clone)]
+pub struct ALPNExt {
+    protocols: ProtocolList,
+}
+
+impl ALPNExt {
+    pub fn new(names: Vec<String>) -> Result<Self, CodingError> {
+        let mut protocols = vec![];
+        for name in names {
+            protocols.push(ProtocolName::try_from(name.into_bytes())?)
+        }
+        Ok(Self {
+            protocols: protocols.try_into()?,
+        })
+    }
+}
+
+impl TlsExtensionType for ALPNExt {
+    const TYPE: u16 = 0x0010;
+}
+
+impl TlsCodable for ALPNExt {
+    fn write_to(&self, bytes: &mut Vec<u8>) {
+        Self::TYPE.write_to(bytes);
+        let mut writer = LengthPrefixWriter::<u16>::new(bytes);
+        self.protocols.write_to(&mut writer);
+        writer.finalize_length_prefix();
+    }
+    fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
+        let _ext_len = u16::read_from(reader)?;
+        let protocols = ProtocolList::read_from(reader)?;
+        Ok(Self { protocols })
+    }
+}

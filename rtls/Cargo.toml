@@ -1,7 +1,11 @@
 [package]
-name = "rtls"
+name = "vihar_tls"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+name = "vihar_tls"
+path = "src/lib.rs"
 
 [dependencies]
 aes = "0.8.4"

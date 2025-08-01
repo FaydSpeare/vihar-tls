@@ -190,10 +190,7 @@ impl ServerHello {
     }
 
     pub fn supports_extended_master_secret(&self) -> bool {
-        false
-        //self.extensions
-        //    .iter()
-        //    .any(|x| matches!(x, Extension::ExtendedMasterSecret(_)))
+        self.extensions.includes_extended_master_secret()
     }
 }
 
@@ -219,6 +216,7 @@ impl TlsCodable for ServerHello {
         let cipher_suite = CipherSuiteId::read_from(reader)?;
         let compression_method = CompressionMethodId::read_from(reader)?;
         let extensions = Extensions::read_from(reader)?;
+        // println!("Server Extensions: {:#?}", extensions);
         Ok(Self {
             server_version,
             random,
@@ -608,9 +606,10 @@ impl TlsMessage {
     }
 }
 
-u16_vec_len_with_max!(PlaintextFragmentLen, 16_384);
-u16_vec_len_with_max!(CompressedFragmentLen, 16_384 + 1024);
-u16_vec_len_with_max!(CiphertextFragmentLen, 16_384 + 2048);
+// TODO restore 16384 
+u16_vec_len_with_max!(PlaintextFragmentLen, 17_384);
+u16_vec_len_with_max!(CompressedFragmentLen, 17_384 + 1024);
+u16_vec_len_with_max!(CiphertextFragmentLen, 17_384 + 2048);
 
 type PlaintextFragment = LengthPrefixedVec<PlaintextFragmentLen, u8, MaybeEmpty>;
 

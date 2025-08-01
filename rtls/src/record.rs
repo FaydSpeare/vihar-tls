@@ -1,7 +1,7 @@
 use log::trace;
 
 use crate::{
-    TLSResult,
+    TlsResult,
     alert::TLSAlert,
     connection::ConnState,
     encoding::{Reader, TlsCodable},
@@ -27,7 +27,7 @@ impl RecordLayer {
         self.buffer.extend_from_slice(bytes);
     }
 
-    pub fn try_parse_message(&mut self, conn_state: &mut ConnState) -> TLSResult<TlsMessage> {
+    pub fn try_parse_message(&mut self, conn_state: &mut ConnState) -> TlsResult<TlsMessage> {
         loop {
             let mut reader = Reader::new(&self.buffer);
             let plaintext = TLSCiphertext::read_from(&mut reader)

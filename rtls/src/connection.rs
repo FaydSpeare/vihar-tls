@@ -1,10 +1,23 @@
+use crate::alert::{TLSAlert, TLSAlertDesc, TLSAlertLevel};
 use crate::ciphersuite::{
     CipherSuite, CipherSuiteId, CipherSuiteMethods, CipherType, CompressionAlgorithm, EncAlgorithm,
     MacAlgorithm, PrfAlgorithm,
 };
+use crate::client::TlsConfig;
+use crate::encoding::TlsCodable;
 use crate::encoding::{CodingError, Reconstrainable};
-use crate::messages::{TLSCiphertext, TlsCompressed, TlsPlaintext};
-use crate::utils;
+use crate::extensions::{
+    ALPNExt, ExtendedMasterSecretExt, SecureRenegotationExt, SessionTicketExt,
+};
+use crate::messages::{
+    ClientHello, SessionId, TLSCiphertext, TlsCompressed, TlsHandshake, TlsMessage, TlsPlaintext,
+};
+use crate::record::RecordLayer;
+use crate::state_machine::{ConnStates, TlsAction, TlsEntity, TlsHandshakeStateMachine, TlsState};
+use crate::{TlsResult, utils};
+use log::{info, trace};
+use std::io::{Read, Write};
+use std::time::Instant;
 
 #[derive(Debug, Clone)]
 pub struct DerivedKeys {
@@ -340,5 +353,215 @@ impl ConnState {
             Self::Initial(state) => state.decrypt(ciphertext),
             Self::Secure(state) => state.decrypt(ciphertext),
         }
+    }
+}
+
+pub struct TlsConnection<T: Read + Write> {
+    stream: T,
+    pub handshake_state_machine: TlsHandshakeStateMachine,
+    conn_states: ConnStates,
+    record_layer: RecordLayer,
+}
+
+impl<T: Read + Write> TlsConnection<T> {
+    pub fn is_established(&self) -> bool {
+        self.handshake_state_machine.is_established()
+    }
+
+    pub fn new(stream: T) -> Self {
+        Self {
+            stream,
+            handshake_state_machine: TlsHandshakeStateMachine::new(),
+            conn_states: ConnStates::new(),
+            record_layer: RecordLayer::new(),
+        }
+    }
+
+    // pub fn new_with_context(domain: &str, ctx: TlsContext) -> TLSResult<Self> {
+    //     info!("Establishing TLS with {}", domain);
+    //     let port = if domain == "localhost" { "4433" } else { "443" };
+    //     Ok(Self {
+    //         stream: TcpStream::connect(format!("{domain}:{port}"))?,
+    //         handshake_state_machine: TlsHandshakeStateMachine::from_context(ctx),
+    //         conn_states: ConnStates::new(),
+    //         record_layer: RecordLayer::new(),
+    //     })
+    // }
+
+    fn process_message(&mut self, msg: &TlsMessage) -> TlsResult<()> {
+        for action in self.handshake_state_machine.transition(msg)? {
+            match action {
+                TlsAction::ChangeCipherSpec(TlsEntity::Client, spec) => {
+                    let ciphertext = self
+                        .conn_states
+                        .write
+                        .encrypt(TlsMessage::ChangeCipherSpec)?;
+                    self.send_bytes(&ciphertext.get_encoding())?;
+                    self.conn_states.write = spec;
+                }
+                TlsAction::ChangeCipherSpec(TlsEntity::Server, spec) => {
+                    self.conn_states.read = spec;
+                }
+                TlsAction::SendHandshakeMsg(handshake) => {
+                    let ciphertext = self.conn_states.write.encrypt(handshake)?;
+                    self.send_bytes(&ciphertext.get_encoding())?;
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    pub fn next_message(&mut self) -> TlsResult<TlsMessage> {
+        loop {
+            match self
+                .record_layer
+                .try_parse_message(&mut self.conn_states.read)
+            {
+                Ok(msg) => {
+                    match &msg {
+                        TlsMessage::Handshake(_) | TlsMessage::ChangeCipherSpec => {
+                            self.process_message(&msg)?
+                        }
+                        _ => {}
+                    }
+                    return Ok(msg);
+                }
+                Err(e) => trace!("Record layer parsing failed: {e}"),
+            };
+
+            let mut buf = [0u8; 8096];
+            let mut n = self.stream.read(&mut buf)?;
+            while n == 0 {
+                n = self.stream.read(&mut buf)?;
+            }
+
+            trace!("Received {} bytes", n);
+            self.record_layer.feed(&buf[..n]);
+        }
+    }
+
+    fn send_bytes(&mut self, bytes: &[u8]) -> TlsResult<()> {
+        self.stream.write_all(bytes)?;
+        Ok(())
+    }
+
+    pub fn perform_handshake(&mut self, config: &TlsConfig) -> TlsResult<()> {
+        let mut extensions = vec![
+            SecureRenegotationExt::initial().into(),
+            ExtendedMasterSecretExt::new().into(),
+            ALPNExt::new(vec!["http/1.1".to_string()])?.into(),
+        ];
+
+        let client_hello = TlsMessage::Handshake(TlsHandshake::ClientHello(ClientHello::new(
+            &config.cipher_suites,
+            extensions,
+            None,
+        )?));
+
+        let start_time = Instant::now();
+        self.process_message(&client_hello)?;
+
+        while !self.handshake_state_machine.is_established() {
+            if let TlsMessage::Alert(a) = self.next_message()? {
+                println!("{:?}", a);
+                return Err("Received alert during handshake".into());
+            }
+        }
+
+        let elapsed = Instant::now() - start_time;
+        println!("elapsed: {} seconds", elapsed.as_secs_f64());
+
+        let state = self
+            .handshake_state_machine
+            .state
+            .as_ref()
+            .unwrap()
+            .as_established()?;
+
+        Ok(())
+    }
+
+    pub fn handshake(
+        &mut self,
+        cipher_suites: &[CipherSuiteId],
+        session_id: Option<SessionId>,
+        session_ticket: Option<Vec<u8>>,
+    ) -> TlsResult<SessionId> {
+        let mut extensions = match self.handshake_state_machine.state.as_ref().unwrap() {
+            TlsState::Established(s) => {
+                vec![SecureRenegotationExt::renegotiation(&s.client_verify_data)?.into()]
+            }
+            _ => vec![SecureRenegotationExt::initial().into()],
+        };
+
+        match session_ticket {
+            None => extensions.push(SessionTicketExt::new().into()),
+            Some(ticket) => extensions.push(SessionTicketExt::resume(ticket)?.into()),
+        }
+
+        extensions.push(ExtendedMasterSecretExt::new().into());
+        extensions.push(ALPNExt::new(vec!["http/1.1".to_string()])?.into());
+
+        let client_hello = TlsMessage::Handshake(TlsHandshake::ClientHello(ClientHello::new(
+            cipher_suites,
+            extensions,
+            session_id,
+        )?));
+
+        let start_time = Instant::now();
+        self.process_message(&client_hello)?;
+
+        while !self.handshake_state_machine.is_established() {
+            if let TlsMessage::Alert(a) = self.next_message()? {
+                println!("{:?}", a);
+                return Err("Received alert during handshake".into());
+            }
+        }
+
+        let elapsed = Instant::now() - start_time;
+        println!("elapsed: {} seconds", elapsed.as_secs_f64());
+
+        let state = self
+            .handshake_state_machine
+            .state
+            .as_ref()
+            .unwrap()
+            .as_established()?;
+        return Ok(state.session_id.clone());
+    }
+
+    #[allow(dead_code)]
+    pub fn write(&mut self, bytes: &[u8]) -> TlsResult<()> {
+        let ciphertext = self
+            .conn_states
+            .write
+            .encrypt(TlsMessage::new_appdata(bytes.to_vec()))?;
+        self.send_bytes(&ciphertext.get_encoding())?;
+        println!("Sent AppData: {:?}", String::from_utf8_lossy(bytes));
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub fn read(&mut self) -> TlsResult<Vec<u8>> {
+        loop {
+            let msg = self.next_message()?;
+            match msg {
+                TlsMessage::ApplicationData(bytes) => {
+                    return Ok(bytes);
+                }
+                _ => {
+                    println!("{:?}", msg);
+                    return Err("Received unexpected message".into());
+                }
+            }
+        }
+    }
+
+    pub fn notify_close(&mut self) -> TlsResult<()> {
+        let alert = TLSAlert::new(TLSAlertLevel::Warning, TLSAlertDesc::CloseNotify);
+        let ciphertext = self.conn_states.write.encrypt(alert)?;
+        self.send_bytes(&ciphertext.get_encoding())?;
+        Ok(())
     }
 }

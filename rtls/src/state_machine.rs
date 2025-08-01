@@ -12,7 +12,7 @@ use crate::signature::{
     rsa_verify,
 };
 use crate::{
-    TLSResult,
+    TlsResult,
     alert::TLSAlert,
     ciphersuite::{CipherSuite, CipherSuiteMethods, KeyExchangeAlgorithm},
     connection::{ConnState, InitialConnState, SecureConnState, SecurityParams},
@@ -71,7 +71,7 @@ pub enum TlsAction {
 }
 
 impl TlsHandshakeStateMachine {
-    pub fn transition(&mut self, msg: &TlsMessage) -> TLSResult<Vec<TlsAction>> {
+    pub fn transition(&mut self, msg: &TlsMessage) -> TlsResult<Vec<TlsAction>> {
         let (new_state, action) = self.state.take().unwrap().handle(&mut self.ctx, msg)?;
         self.state = Some(new_state);
         Ok(action)
@@ -122,7 +122,7 @@ pub enum TlsState {
 }
 
 impl TlsState {
-    pub fn as_established(&self) -> TLSResult<&EstablishedState> {
+    pub fn as_established(&self) -> TlsResult<&EstablishedState> {
         match self {
             Self::Established(s) => Ok(s),
             _ => Err("not in established state".into()),
@@ -136,7 +136,7 @@ pub trait HandleRecord {
         self,
         ctx: &mut TlsContext,
         msg: &TlsMessage,
-    ) -> TLSResult<(TlsState, Vec<TlsAction>)>;
+    ) -> TlsResult<(TlsState, Vec<TlsAction>)>;
 }
 
 #[derive(Debug)]
@@ -147,7 +147,7 @@ impl HandleRecord for AwaitClientHello {
         self,
         _ctx: &mut TlsContext,
         msg: &TlsMessage,
-    ) -> TLSResult<(TlsState, Vec<TlsAction>)> {
+    ) -> TlsResult<(TlsState, Vec<TlsAction>)> {
         let TlsMessage::Handshake(handshake) = msg else {
             panic!("invalid transition");
         };
@@ -207,7 +207,7 @@ impl HandleRecord for AwaitServerHello {
         mut self,
         _ctx: &mut TlsContext,
         msg: &TlsMessage,
-    ) -> TLSResult<(TlsState, Vec<TlsAction>)> {
+    ) -> TlsResult<(TlsState, Vec<TlsAction>)> {
         let TlsMessage::Handshake(handshake) = msg else {
             panic!("invalid transition");
         };
@@ -337,7 +337,7 @@ impl HandleRecord for AwaitServerCertificate {
         mut self,
         _ctx: &mut TlsContext,
         msg: &TlsMessage,
-    ) -> TLSResult<(TlsState, Vec<TlsAction>)> {
+    ) -> TlsResult<(TlsState, Vec<TlsAction>)> {
         let TlsMessage::Handshake(handshake) = msg else {
             panic!("invalid transition");
         };
@@ -402,7 +402,7 @@ impl HandleRecord for AwaitServerKeyExchange {
         mut self,
         _ctx: &mut TlsContext,
         msg: &TlsMessage,
-    ) -> TLSResult<(TlsState, Vec<TlsAction>)> {
+    ) -> TlsResult<(TlsState, Vec<TlsAction>)> {
         let TlsMessage::Handshake(handshake) = msg else {
             panic!("invalid transition");
         };
@@ -489,7 +489,7 @@ impl HandleRecord for AwaitServerHelloDone {
         mut self,
         _ctx: &mut TlsContext,
         msg: &TlsMessage,
-    ) -> TLSResult<(TlsState, Vec<TlsAction>)> {
+    ) -> TlsResult<(TlsState, Vec<TlsAction>)> {
         let TlsMessage::Handshake(handshake) = msg else {
             panic!("invalid transition");
         };
@@ -612,7 +612,7 @@ impl HandleRecord for AwaitNewSessionTicket {
         mut self,
         _ctx: &mut TlsContext,
         msg: &TlsMessage,
-    ) -> TLSResult<(TlsState, Vec<TlsAction>)> {
+    ) -> TlsResult<(TlsState, Vec<TlsAction>)> {
         let TlsMessage::Handshake(handshake) = msg else {
             panic!("invalid transition");
         };
@@ -663,7 +663,7 @@ impl HandleRecord for AwaitNewSessionTicketOrCertificate {
         self,
         ctx: &mut TlsContext,
         msg: &TlsMessage,
-    ) -> TLSResult<(TlsState, Vec<TlsAction>)> {
+    ) -> TlsResult<(TlsState, Vec<TlsAction>)> {
         if let TlsMessage::Handshake(TlsHandshake::NewSessionTicket(_)) = msg {
             let params = SecurityParams::new(
                 self.client_random,
@@ -712,7 +712,7 @@ impl HandleRecord for AwaitServerChangeCipherOrCertificate {
         self,
         ctx: &mut TlsContext,
         msg: &TlsMessage,
-    ) -> TLSResult<(TlsState, Vec<TlsAction>)> {
+    ) -> TlsResult<(TlsState, Vec<TlsAction>)> {
         if let TlsMessage::ChangeCipherSpec = msg {
             let params = SecurityParams::new(
                 self.client_random,
@@ -766,7 +766,7 @@ impl HandleRecord for AwaitServerChangeCipher {
         self,
         _ctx: &mut TlsContext,
         msg: &TlsMessage,
-    ) -> TLSResult<(TlsState, Vec<TlsAction>)> {
+    ) -> TlsResult<(TlsState, Vec<TlsAction>)> {
         let TlsMessage::ChangeCipherSpec = msg else {
             panic!("invalid transition");
         };
@@ -810,7 +810,7 @@ impl HandleRecord for AwaitServerFinished {
         mut self,
         ctx: &mut TlsContext,
         msg: &TlsMessage,
-    ) -> TLSResult<(TlsState, Vec<TlsAction>)> {
+    ) -> TlsResult<(TlsState, Vec<TlsAction>)> {
         let TlsMessage::Handshake(handshake) = msg else {
             panic!("invalid transition");
         };
@@ -887,7 +887,7 @@ impl HandleRecord for EstablishedState {
         self,
         _ctx: &mut TlsContext,
         msg: &TlsMessage,
-    ) -> TLSResult<(TlsState, Vec<TlsAction>)> {
+    ) -> TlsResult<(TlsState, Vec<TlsAction>)> {
         let TlsMessage::Handshake(handshake) = msg else {
             panic!("invalid transition");
         };

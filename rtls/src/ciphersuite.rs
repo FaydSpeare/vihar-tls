@@ -8,7 +8,6 @@ use aes::{Aes128, Aes256};
 use enum_dispatch::enum_dispatch;
 use sha2::{Digest, Sha256, Sha384};
 
-
 #[derive(Debug, Copy, Clone)]
 pub enum CompressionAlgorithm {
     Null,

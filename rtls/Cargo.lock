@@ -798,29 +798,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rtls"
-version = "0.1.0"
-dependencies = [
- "aes",
- "aes-gcm",
- "base64",
- "dsa",
- "enum_dispatch",
- "env_logger",
- "log",
- "num-bigint",
- "num-traits",
- "num_enum",
- "rand",
- "rand_chacha",
- "rsa",
- "sha1",
- "sha2",
- "thiserror",
- "x509-parser",
-]
-
-[[package]]
 name = "rusticata-macros"
 version = "4.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1038,6 +1015,29 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "vihar_tls"
+version = "0.1.0"
+dependencies = [
+ "aes",
+ "aes-gcm",
+ "base64",
+ "dsa",
+ "enum_dispatch",
+ "env_logger",
+ "log",
+ "num-bigint",
+ "num-traits",
+ "num_enum",
+ "rand",
+ "rand_chacha",
+ "rsa",
+ "sha1",
+ "sha2",
+ "thiserror",
+ "x509-parser",
+]
 
 [[package]]
 name = "wasi"
