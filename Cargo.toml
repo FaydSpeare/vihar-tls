@@ -23,5 +23,6 @@ rand_chacha = "0.3.1"
 rsa = { version = "0.9.8", features = ["sha2"] }
 sha1 = "0.10.6"
 sha2 = "0.10.9"
+sled = "0.34.7"
 thiserror = "2.0.12"
 x509-parser = "0.17.0"

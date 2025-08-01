@@ -15,7 +15,7 @@ use crate::messages::{
 use crate::record::RecordLayer;
 use crate::state_machine::{ConnStates, TlsAction, TlsEntity, TlsHandshakeStateMachine, TlsState};
 use crate::{TlsResult, utils};
-use log::{info, trace};
+use log::{debug, info, trace};
 use std::io::{Read, Write};
 use std::time::Instant;
 
@@ -368,10 +368,12 @@ impl<T: Read + Write> TlsConnection<T> {
         self.handshake_state_machine.is_established()
     }
 
-    pub fn new(stream: T) -> Self {
+    pub fn new(stream: T, config: &TlsConfig) -> Self {
         Self {
             stream,
-            handshake_state_machine: TlsHandshakeStateMachine::new(),
+            handshake_state_machine: TlsHandshakeStateMachine::new(
+                config.session_ticket_store.clone(),
+            ),
             conn_states: ConnStates::new(),
             record_layer: RecordLayer::new(),
         }
@@ -447,11 +449,20 @@ impl<T: Read + Write> TlsConnection<T> {
     }
 
     pub fn perform_handshake(&mut self, config: &TlsConfig) -> TlsResult<()> {
-        let mut extensions = vec![
-            SecureRenegotationExt::initial().into(),
-            ExtendedMasterSecretExt::new().into(),
-            ALPNExt::new(vec!["http/1.1".to_string()])?.into(),
-        ];
+        let mut extensions = config.extensions.to_vec();
+        match config.session_ticket_store.get_one()? {
+            Some(ticket) => {
+                debug!(
+                    "Using SessionTicket: {:?}",
+                    ticket
+                        .iter()
+                        .map(|b| format!("{:02x}", b))
+                        .collect::<String>()
+                );
+                extensions.push(SessionTicketExt::resume(ticket)?.into())
+            }
+            None => extensions.push(SessionTicketExt::new().into()),
+        }
 
         let client_hello = TlsMessage::Handshake(TlsHandshake::ClientHello(ClientHello::new(
             &config.cipher_suites,
@@ -471,14 +482,6 @@ impl<T: Read + Write> TlsConnection<T> {
 
         let elapsed = Instant::now() - start_time;
         println!("elapsed: {} seconds", elapsed.as_secs_f64());
-
-        let state = self
-            .handshake_state_machine
-            .state
-            .as_ref()
-            .unwrap()
-            .as_established()?;
-
         Ok(())
     }
 

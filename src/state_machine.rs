@@ -1,5 +1,6 @@
 use rsa::{RsaPublicKey, pkcs8::DecodePublicKey};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use enum_dispatch::enum_dispatch;
 use log::{debug, info};
@@ -11,6 +12,7 @@ use crate::signature::{
     dsa_verify, get_dhe_pre_master_secret, get_rsa_pre_master_secret, public_key_from_cert,
     rsa_verify,
 };
+use crate::storage::{SessionTicketInfo, SessionTicketStorage};
 use crate::{
     TlsResult,
     alert::TLSAlert,
@@ -27,15 +29,9 @@ pub struct SessionInfo {
 }
 
 #[derive(Debug, Clone)]
-pub struct SessionTicketInfo {
-    cipher_suite: CipherSuiteId,
-    master_secret: [u8; 48],
-}
-
-#[derive(Debug, Clone)]
 pub struct TlsContext {
     pub sessions: HashMap<SessionId, SessionInfo>,
-    pub session_tickets: HashMap<Vec<u8>, SessionTicketInfo>,
+    pub session_ticket_store: Arc<dyn SessionTicketStorage>,
 }
 
 pub struct TlsHandshakeStateMachine {
@@ -77,19 +73,12 @@ impl TlsHandshakeStateMachine {
         Ok(action)
     }
 
-    pub fn new() -> Self {
+    pub fn new(session_ticket_store: Arc<dyn SessionTicketStorage>) -> Self {
         Self {
             ctx: TlsContext {
                 sessions: HashMap::new(),
-                session_tickets: HashMap::new(),
+                session_ticket_store,
             },
-            state: Some(AwaitClientHello {}.into()),
-        }
-    }
-
-    pub fn from_context(ctx: TlsContext) -> Self {
-        Self {
-            ctx,
             state: Some(AwaitClientHello {}.into()),
         }
     }
@@ -172,7 +161,7 @@ impl HandleRecord for AwaitClientHello {
                 session_ticket_resumption: hello
                     .extensions
                     .get_session_ticket()
-                    .and_then(|ticket| _ctx.session_tickets.get(&ticket).cloned()),
+                    .and_then(|ticket| _ctx.session_ticket_store.get(&ticket).unwrap()),
             }
             .into(),
             vec![TlsAction::SendHandshakeMsg(handshake.clone())],
@@ -624,13 +613,10 @@ impl HandleRecord for AwaitNewSessionTicket {
         info!("Received NewSessionTicket");
         handshake.write_to(&mut self.handshakes);
 
-        _ctx.session_tickets.insert(
+        _ctx.session_ticket_store.put(
             ticket.ticket.to_vec(),
-            SessionTicketInfo {
-                cipher_suite: self.params.cipher_suite_id,
-                master_secret: self.params.master_secret,
-            },
-        );
+            SessionTicketInfo::new(self.params.master_secret, self.params.cipher_suite_id),
+        )?;
 
         return Ok((
             AwaitServerChangeCipher {

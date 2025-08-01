@@ -15,6 +15,7 @@ mod utils;
 pub mod client;
 pub mod ciphersuite;
 pub mod connection;
+pub mod storage;
 
 pub type TlsResult<T> = Result<T, Box<dyn std::error::Error>>;
 
