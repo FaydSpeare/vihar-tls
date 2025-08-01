@@ -1,37 +1,41 @@
-use crate::{messages::{TLSContentType, TLSPlaintext}, TLSResult};
-use num_enum::TryFromPrimitive;
+use crate::{
+    encoding::{CodingError, Reader, TlsCodable},
+    messages::{TLSContentType, TlsHandshake, TlsPlaintext},
+};
 
-#[derive(Debug, TryFromPrimitive)]
-#[repr(u8)]
-pub enum TLSAlertDesc {
-    CloseNotify = 0,
-    BadRecordMac = 20,
-    RecordOverflow = 22,
-    DecompressionFailure = 30,
-    HandshakeFailure = 40,
-    BadCertificate = 42,
-    UnsupportedCertificate = 43,
-    CertificateRevoked = 44,
-    CertificateExpired = 45,
-    CertificateUnknown = 46,
-    IllegalParameter = 47,
-    UnknownCa = 48,
-    AccessDenied = 49,
-    DecodeError = 50,
-    DecryptError = 51,
-    ProtocolVersion = 70,
-    InsufficientSecurity = 71,
-    InternalError = 80,
-    UserCanceled = 90,
-    NoRenegotiation = 100,
-    UnsupportedExtension = 110,
+tls_codable_enum! {
+    #[repr(u8)]
+    pub enum TLSAlertDesc {
+        CloseNotify = 0,
+        BadRecordMac = 20,
+        RecordOverflow = 22,
+        DecompressionFailure = 30,
+        HandshakeFailure = 40,
+        BadCertificate = 42,
+        UnsupportedCertificate = 43,
+        CertificateRevoked = 44,
+        CertificateExpired = 45,
+        CertificateUnknown = 46,
+        IllegalParameter = 47,
+        UnknownCa = 48,
+        AccessDenied = 49,
+        DecodeError = 50,
+        DecryptError = 51,
+        ProtocolVersion = 70,
+        InsufficientSecurity = 71,
+        InternalError = 80,
+        UserCanceled = 90,
+        NoRenegotiation = 100,
+        UnsupportedExtension = 110,
+    }
 }
 
-#[derive(Debug, TryFromPrimitive)]
-#[repr(u8)]
-pub enum TLSAlertLevel {
-    Warning = 1,
-    Fatal = 2,
+tls_codable_enum! {
+    #[repr(u8)]
+    pub enum TLSAlertLevel {
+        Warning = 1,
+        Fatal = 2,
+    }
 }
 
 #[derive(Debug)]
@@ -46,20 +50,21 @@ impl TLSAlert {
     }
 }
 
-impl From<TLSAlert> for TLSPlaintext {
-    fn from(value: TLSAlert) -> Self {
-        let bytes: Vec<u8> = vec![value.level as u8, value.description as u8]; 
-        TLSPlaintext::new(TLSContentType::Alert, bytes)
+impl TlsCodable for TLSAlert {
+    fn write_to(&self, bytes: &mut Vec<u8>) {
+        self.level.write_to(bytes);
+        self.description.write_to(bytes);
+    }
+    fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
+        Ok(Self {
+            level: TLSAlertLevel::read_from(reader)?,
+            description: TLSAlertDesc::read_from(reader)?,
+        })
     }
 }
 
-pub fn try_parse_alert(buf: &[u8]) -> TLSResult<TLSAlert> {
-    if buf.len() < 2 {
-        return Err("need data".into());
+impl From<TLSAlert> for TlsPlaintext {
+    fn from(value: TLSAlert) -> Self {
+        TlsPlaintext::new(TLSContentType::Alert, value.get_encoding())
     }
-    let alert = TLSAlert {
-        level: TLSAlertLevel::try_from(buf[0])?,
-        description: TLSAlertDesc::try_from(buf[1])?,
-    };
-    Ok(alert)
 }

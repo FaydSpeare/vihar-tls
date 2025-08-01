@@ -1,5 +1,6 @@
 use crate::ciphersuite::{CipherSuiteId, CipherType, EncAlgorithm, MacAlgorithm, PrfAlgorithm};
-use crate::messages::{TLSCiphertext, TLSPlaintext};
+use crate::encoding::CodingError;
+use crate::messages::{TLSCiphertext, TlsPlaintext};
 use crate::utils;
 
 #[derive(Debug, Clone)]
@@ -78,14 +79,14 @@ pub struct InitialConnState {
 }
 
 impl InitialConnState {
-    pub fn encrypt(&mut self, plaintext: TLSPlaintext) -> TLSCiphertext {
+    pub fn encrypt(&mut self, plaintext: TlsPlaintext) -> Result<TLSCiphertext, CodingError> {
         self.seq_num += 1;
         TLSCiphertext::new(plaintext.content_type, plaintext.fragment)
     }
 
-    pub fn decrypt(&mut self, ciphertext: &TLSCiphertext) -> TLSPlaintext {
+    pub fn decrypt(&mut self, ciphertext: &TLSCiphertext) -> TlsPlaintext {
         self.seq_num += 1;
-        TLSPlaintext::new(ciphertext.content_type, ciphertext.fragment.to_vec())
+        TlsPlaintext::new(ciphertext.content_type, ciphertext.fragment.to_vec())
     }
 }
 
@@ -159,7 +160,7 @@ impl SecureConnState {
             .decrypt(ciphertext, &self.enc_key, &iv, Some(&aad))
     }
 
-    fn encrypt_block_cipher(&self, plaintext: &TLSPlaintext) -> Vec<u8> {
+    fn encrypt_block_cipher(&self, plaintext: &TlsPlaintext) -> Vec<u8> {
         let mut bytes = Vec::<u8>::new();
         bytes.extend_from_slice(&self.seq_num.to_be_bytes());
         bytes.push(plaintext.content_type as u8);
@@ -193,7 +194,7 @@ impl SecureConnState {
         fragment
     }
 
-    fn encrypt_aead_cipher(&self, plaintext: &TLSPlaintext) -> Vec<u8> {
+    fn encrypt_aead_cipher(&self, plaintext: &TlsPlaintext) -> Vec<u8> {
         let implicit: [u8; 4] = self.write_iv.clone().try_into().unwrap();
         let explicit = utils::get_random_bytes(self.params.enc_algorithm.record_iv_length());
         let nonce = [&implicit[..], &explicit[..]].concat();
@@ -213,7 +214,7 @@ impl SecureConnState {
         [&explicit, &aead_ciphertext[..]].concat()
     }
 
-    pub fn encrypt(&mut self, plaintext: &TLSPlaintext) -> TLSCiphertext {
+    pub fn encrypt(&mut self, plaintext: &TlsPlaintext) -> Result<TLSCiphertext, CodingError> {
         let ciphertext = match self.params.enc_algorithm.cipher_type() {
             CipherType::Block => self.encrypt_block_cipher(plaintext),
             CipherType::Aead => self.encrypt_aead_cipher(plaintext),
@@ -223,14 +224,14 @@ impl SecureConnState {
         TLSCiphertext::new(plaintext.content_type, ciphertext)
     }
 
-    pub fn decrypt(&mut self, ciphertext: &TLSCiphertext) -> TLSPlaintext {
+    pub fn decrypt(&mut self, ciphertext: &TLSCiphertext) -> TlsPlaintext {
         let fragment = match self.params.enc_algorithm.cipher_type() {
             CipherType::Block => self.decrypt_block_cipher(ciphertext),
             CipherType::Aead => self.decrypt_aead_cipher(ciphertext),
             CipherType::Stream => unimplemented!(),
         };
         self.seq_num += 1;
-        TLSPlaintext::new(ciphertext.content_type, fragment)
+        TlsPlaintext::new(ciphertext.content_type, fragment)
     }
 }
 
@@ -241,14 +242,17 @@ pub enum ConnState {
 }
 
 impl ConnState {
-    pub fn encrypt<T: Into<TLSPlaintext>>(&mut self, plaintext: T) -> TLSCiphertext {
+    pub fn encrypt<T: Into<TlsPlaintext>>(
+        &mut self,
+        plaintext: T,
+    ) -> Result<TLSCiphertext, CodingError> {
         match self {
             Self::Initial(state) => state.encrypt(plaintext.into()),
             Self::Secure(state) => state.encrypt(&plaintext.into()),
         }
     }
 
-    pub fn decrypt(&mut self, ciphertext: &TLSCiphertext) -> TLSPlaintext {
+    pub fn decrypt(&mut self, ciphertext: &TLSCiphertext) -> TlsPlaintext {
         match self {
             Self::Initial(state) => state.decrypt(ciphertext),
             Self::Secure(state) => state.decrypt(ciphertext),

@@ -18,8 +18,7 @@ use crate::{
     connection::{ConnState, InitialConnState, SecureConnState, SecurityParams},
     encoding::TlsCodable,
     messages::{
-        ChangeCipherSpec, ClientKeyExchange, Finished, TLSPlaintext, TlsHandshake, TlsMessage,
-        ToBytes,
+        ClientKeyExchange, Finished, TlsHandshake, TlsMessage,
     },
 };
 
@@ -60,15 +59,17 @@ impl ConnStates {
     }
 }
 
+#[derive(Debug)]
 pub enum TlsEntity {
     Client,
     Server,
 }
 
+#[derive(Debug)]
 pub enum TlsAction {
     SendAlert(TLSAlert),
     ChangeCipherSpec(TlsEntity, ConnState),
-    SendPlaintext(TLSPlaintext),
+    SendHandshakeMsg(TlsHandshake),
 }
 
 impl TlsHandshakeStateMachine {
@@ -176,7 +177,7 @@ impl HandleRecord for AwaitClientHello {
                     .and_then(|ticket| _ctx.session_tickets.get(&ticket).cloned()),
             }
             .into(),
-            vec![TlsAction::SendPlaintext(hello.clone().into())],
+            vec![TlsAction::SendHandshakeMsg(handshake.clone())],
         ));
     }
 }
@@ -524,8 +525,6 @@ impl HandleRecord for AwaitServerHelloDone {
         let client_kx = ClientKeyExchange::new(&key_exchange_data);
         TlsHandshake::ClientKeyExchange(client_kx.clone()).write_to(&mut self.handshakes);
 
-        let change_cipher_spec = ChangeCipherSpec::new();
-
         let master_secret =
             self.calculate_master_secret(&pre_master_secret, ciphersuite.params().prf_algorithm);
         let params = SecurityParams {
@@ -553,10 +552,9 @@ impl HandleRecord for AwaitServerHelloDone {
         info!("Sent ChangeCipherSuite");
         info!("Sent ClientFinished");
         let actions = vec![
-            TlsAction::SendPlaintext(client_kx.into()),
-            TlsAction::SendPlaintext(change_cipher_spec.into()),
+            TlsAction::SendHandshakeMsg(client_kx.into()),
             TlsAction::ChangeCipherSpec(TlsEntity::Client, write),
-            TlsAction::SendPlaintext(client_finished.into()),
+            TlsAction::SendHandshakeMsg(client_finished.into()),
         ];
 
         if self.supported_extensions.session_ticket {
@@ -865,8 +863,6 @@ impl HandleRecord for AwaitServerFinished {
             ));
         }
 
-        let change_cipher_spec = ChangeCipherSpec::new();
-
         let keys = self.params.derive_keys();
         let write = ConnState::Secure(SecureConnState::new(
             self.params.clone(),
@@ -889,9 +885,8 @@ impl HandleRecord for AwaitServerFinished {
             }
             .into(),
             vec![
-                TlsAction::SendPlaintext(change_cipher_spec.into()),
                 TlsAction::ChangeCipherSpec(TlsEntity::Client, write),
-                TlsAction::SendPlaintext(client_finished.into()),
+                TlsAction::SendHandshakeMsg(client_finished.into()),
             ],
         ))
     }
@@ -926,7 +921,7 @@ impl HandleRecord for EstablishedState {
                 session_ticket_resumption: None,
             }
             .into(),
-            vec![TlsAction::SendPlaintext(hello.clone().into())],
+            vec![TlsAction::SendHandshakeMsg(hello.clone().into())],
         ))
     }
 }

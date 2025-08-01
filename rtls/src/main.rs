@@ -1,4 +1,5 @@
 use alert::{TLSAlert, TLSAlertDesc, TLSAlertLevel};
+use encoding::TlsCodable;
 use env_logger;
 use extensions::{SecureRenegotationExt, SessionTicketExt};
 use log::{error, info, trace};
@@ -17,10 +18,10 @@ mod macros;
 mod alert;
 mod ciphersuite;
 mod connection;
+mod encoding;
 mod extensions;
 mod gcm;
 mod messages;
-mod encoding;
 mod prf;
 mod record;
 mod signature;
@@ -76,16 +77,22 @@ impl TLSConnection {
 
     fn process_message(&mut self, msg: &TlsMessage) -> TLSResult<()> {
         for action in self.handshake_state_machine.transition(msg)? {
+            // println!("action {:?}", action);
             match action {
-                TlsAction::ChangeCipherSpec(TlsEntity::Client, write) => {
-                    self.conn_states.write = write
+                TlsAction::ChangeCipherSpec(TlsEntity::Client, spec) => {
+                    let ciphertext = self
+                        .conn_states
+                        .write
+                        .encrypt(TlsMessage::ChangeCipherSpec)?;
+                    self.send_bytes(&ciphertext.get_encoding())?;
+                    self.conn_states.write = spec;
                 }
-                TlsAction::ChangeCipherSpec(TlsEntity::Server, read) => {
-                    self.conn_states.read = read
+                TlsAction::ChangeCipherSpec(TlsEntity::Server, spec) => {
+                    self.conn_states.read = spec;
                 }
-                TlsAction::SendPlaintext(plaintext) => {
-                    let ciphertext = self.conn_states.write.encrypt(plaintext);
-                    self.send_bytes(&ciphertext.into_bytes())?;
+                TlsAction::SendHandshakeMsg(handshake) => {
+                    let ciphertext = self.conn_states.write.encrypt(handshake)?;
+                    self.send_bytes(&ciphertext.get_encoding())?;
                 }
                 _ => {}
             }
@@ -107,8 +114,8 @@ impl TLSConnection {
                         _ => {}
                     }
                     return Ok(msg);
-                },
-                Err(e) => trace!("Record layer parsing failed: {e}")
+                }
+                Err(e) => trace!("Record layer parsing failed: {e}"),
             };
 
             let mut buf = [0u8; 8096];
@@ -154,10 +161,14 @@ impl TLSConnection {
         // extensions.push(ExtendedMasterSecretExt::new().into());
         // extensions.push(ALPNExt::new(vec!["http/1.1".to_string()]).into());
 
-        let client_hello = ClientHello::new(cipher_suites, extensions, session_id)?;
+        let client_hello = TlsMessage::Handshake(TlsHandshake::ClientHello(ClientHello::new(
+            cipher_suites,
+            extensions,
+            session_id,
+        )?));
 
         let start_time = Instant::now();
-        self.process_message(&client_hello.into())?;
+        self.process_message(&client_hello)?;
 
         while !self.handshake_state_machine.is_established() {
             if let TlsMessage::Alert(a) = self.next_message()? {
@@ -183,9 +194,8 @@ impl TLSConnection {
         let ciphertext = self
             .conn_states
             .write
-            .encrypt(ApplicationData::new(bytes.to_vec()));
-        self.send_bytes(&ciphertext.into_bytes())?;
-        //self.process_message(&TlsMessage::ApplicationData(bytes.to_vec()))?;
+            .encrypt(TlsMessage::new_appdata(bytes.to_vec()))?;
+        self.send_bytes(&ciphertext.get_encoding())?;
         println!("Sent AppData: {:?}", String::from_utf8_lossy(bytes));
         Ok(())
     }
@@ -208,8 +218,8 @@ impl TLSConnection {
 
     pub fn notify_close(&mut self) -> TLSResult<()> {
         let alert = TLSAlert::new(TLSAlertLevel::Warning, TLSAlertDesc::CloseNotify);
-        let ciphertext = self.conn_states.write.encrypt(alert);
-        self.send_bytes(&ciphertext.into_bytes())?;
+        let ciphertext = self.conn_states.write.encrypt(alert)?;
+        self.send_bytes(&ciphertext.get_encoding())?;
         Ok(())
     }
 }
@@ -244,7 +254,7 @@ fn main() -> TLSResult<()> {
 
     //playground::main();
 
-    let suites: Vec<CipherSuiteId> = vec![CipherSuiteId::DheRsaAes128CbcSha];
+    let suites: Vec<CipherSuiteId> = vec![CipherSuiteId::RsaAes128CbcSha];
 
     //let domain = "facebook.com";
     let domain = "localhost";

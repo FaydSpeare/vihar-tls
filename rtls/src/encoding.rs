@@ -23,6 +23,9 @@ pub enum CodingError {
 
     #[error("Expected more list items. Expected: >= {0}. Actual: {1}")]
     LengthTooSmall(usize, usize),
+
+    #[error("Invalid {0} enum value: {1}")]
+    InvalidEnumValue(&'static str, usize),
 }
 
 pub struct Reader<'a> {

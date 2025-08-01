@@ -6,8 +6,6 @@ use crate::encoding::{
 };
 use crate::extensions::{Extension, Extensions, HashAlgo, SigAlgo, SignatureAlgorithmsExt};
 use crate::utils;
-use crate::{TLSError, TLSResult};
-use num_enum::TryFromPrimitive;
 
 #[derive(Debug, Clone)]
 pub struct ProtocolVersion {
@@ -137,6 +135,12 @@ impl ClientHello {
     }
 }
 
+impl From<ClientHello> for TlsHandshake {
+    fn from(value: ClientHello) -> Self {
+        Self::ClientHello(value)
+    }
+}
+
 impl TlsCodable for ClientHello {
     fn write_to(&self, bytes: &mut Vec<u8>) {
         self.client_version.write_to(bytes);
@@ -165,39 +169,8 @@ impl TlsCodable for ClientHello {
     }
 }
 
-impl ToBytes for ClientHello {
-    fn to_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::<u8>::new();
-        self.client_version.write_to(&mut bytes);
-        self.random.write_to(&mut bytes);
-        self.session_id.write_to(&mut bytes);
-        self.cipher_suites.write_to(&mut bytes);
-        self.compression_methods.write_to(&mut bytes);
-        self.extensions.write_to(&mut bytes);
-        handshake_bytes(TlsHandshakeType::ClientHello, &bytes)
-    }
-}
-
-impl IntoBytes for ClientHello {
-    fn into_bytes(self) -> Vec<u8> {
-        self.to_bytes()
-    }
-}
-
-impl From<ClientHello> for TLSPlaintext {
-    fn from(value: ClientHello) -> TLSPlaintext {
-        TLSPlaintext::new(TLSContentType::Handshake, value.into_bytes())
-    }
-}
-
-impl From<ClientHello> for TlsMessage {
-    fn from(value: ClientHello) -> TlsMessage {
-        TlsMessage::Handshake(TlsHandshake::ClientHello(value))
-    }
-}
-
 #[allow(dead_code)]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ServerHello {
     pub server_version: ProtocolVersion,
     pub random: Random,
@@ -221,6 +194,12 @@ impl ServerHello {
         //self.extensions
         //    .iter()
         //    .any(|x| matches!(x, Extension::ExtendedMasterSecret(_)))
+    }
+}
+
+impl From<ServerHello> for TlsHandshake {
+    fn from(value: ServerHello) -> Self {
+        Self::ServerHello(value)
     }
 }
 
@@ -251,48 +230,18 @@ impl TlsCodable for ServerHello {
     }
 }
 
-impl ToBytes for ServerHello {
-    fn to_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::<u8>::new();
-        self.server_version.write_to(&mut bytes);
-        self.random.write_to(&mut bytes);
-        self.session_id.write_to(&mut bytes);
-        self.cipher_suite.write_to(&mut bytes);
-        self.compression_method.write_to(&mut bytes);
-        self.extensions.write_to(&mut bytes);
-        handshake_bytes(TlsHandshakeType::ServerHello, &bytes)
-    }
-}
-
-impl TryFrom<&[u8]> for ServerHello {
-    type Error = Box<dyn std::error::Error>;
-
-    fn try_from(buf: &[u8]) -> Result<Self, Self::Error> {
-        let mut reader = Reader::new(buf);
-        let server_version = ProtocolVersion::read_from(&mut reader)?;
-        let random = Random::read_from(&mut reader)?;
-        let session_id = SessionId::read_from(&mut reader)?;
-        let cipher_suite = CipherSuiteId::read_from(&mut reader)?;
-        let compression_method = CompressionMethodId::read_from(&mut reader)?;
-        let extensions = Extensions::read_from(&mut reader)?;
-        // println!("Server Extensions {:?}", extensions);
-        Ok(Self {
-            server_version,
-            random,
-            session_id,
-            cipher_suite,
-            compression_method,
-            extensions,
-        })
-    }
-}
-
 type ASN1Cert = LengthPrefixedVec<u24, u8, NonEmpty>;
 type CeritificateList = LengthPrefixedVec<u24, ASN1Cert, MaybeEmpty>;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Certificate {
     pub list: CeritificateList,
+}
+
+impl From<Certificate> for TlsHandshake {
+    fn from(value: Certificate) -> Self {
+        Self::Certificates(value)
+    }
 }
 
 impl TlsCodable for Certificate {
@@ -301,24 +250,6 @@ impl TlsCodable for Certificate {
     }
     fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
         let list = CeritificateList::read_from(reader)?;
-        Ok(Self { list })
-    }
-}
-
-impl ToBytes for Certificate {
-    fn to_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::<u8>::new();
-        self.list.write_to(&mut bytes);
-        handshake_bytes(TlsHandshakeType::Certificates, &bytes)
-    }
-}
-
-impl TryFrom<&[u8]> for Certificate {
-    type Error = Box<dyn std::error::Error>;
-
-    fn try_from(buf: &[u8]) -> Result<Self, Self::Error> {
-        let mut reader = Reader::new(buf);
-        let list = CeritificateList::read_from(&mut reader)?;
         Ok(Self { list })
     }
 }
@@ -405,7 +336,7 @@ impl TryFrom<&[u8]> for Certificate {
 type DHParam = LengthPrefixedVec<u16, u8, NonEmpty>;
 type Signature = LengthPrefixedVec<u16, u8, MaybeEmpty>;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ServerKeyExchange {
     pub p: DHParam,
     pub g: DHParam,
@@ -425,6 +356,12 @@ impl ServerKeyExchange {
         bytes.extend_from_slice(&(self.server_pubkey.len() as u16).to_be_bytes());
         bytes.extend_from_slice(&self.server_pubkey);
         bytes
+    }
+}
+
+impl From<ServerKeyExchange> for TlsHandshake {
+    fn from(value: ServerKeyExchange) -> Self {
+        Self::ServerKeyExchange(value)
     }
 }
 
@@ -455,41 +392,6 @@ impl TlsCodable for ServerKeyExchange {
     }
 }
 
-impl ToBytes for ServerKeyExchange {
-    fn to_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::<u8>::new();
-        self.p.write_to(&mut bytes);
-        self.g.write_to(&mut bytes);
-        self.server_pubkey.write_to(&mut bytes);
-        self.hash_algo.write_to(&mut bytes);
-        self.sig_algo.write_to(&mut bytes);
-        self.signature.write_to(&mut bytes);
-        handshake_bytes(TlsHandshakeType::ServerKeyExchange, &bytes)
-    }
-}
-
-impl TryFrom<&[u8]> for ServerKeyExchange {
-    type Error = Box<dyn std::error::Error>;
-
-    fn try_from(buf: &[u8]) -> Result<Self, Self::Error> {
-        let mut reader = Reader::new(buf);
-        let p = DHParam::read_from(&mut reader)?;
-        let g = DHParam::read_from(&mut reader)?;
-        let server_pubkey = DHParam::read_from(&mut reader)?;
-        let hash_algo = HashAlgo::read_from(&mut reader)?;
-        let sig_algo = SigAlgo::read_from(&mut reader)?;
-        let signature = Signature::read_from(&mut reader)?;
-        return Ok(Self {
-            p,
-            g,
-            server_pubkey,
-            hash_algo,
-            sig_algo,
-            signature,
-        });
-    }
-}
-
 // TODO: split into enum
 #[derive(Debug, Clone)]
 pub struct ClientKeyExchange {
@@ -501,6 +403,12 @@ impl ClientKeyExchange {
         Self {
             enc_pre_master_secret: enc_pre_master_secret.to_vec(),
         }
+    }
+}
+
+impl From<ClientKeyExchange> for TlsHandshake {
+    fn from(value: ClientKeyExchange) -> Self {
+        Self::ClientKeyExchange(value)
     }
 }
 
@@ -518,41 +426,6 @@ impl TlsCodable for ClientKeyExchange {
     }
 }
 
-pub trait IntoBytes {
-    fn into_bytes(self) -> Vec<u8>;
-}
-
-pub trait ToBytes {
-    fn to_bytes(&self) -> Vec<u8>;
-}
-
-impl ToBytes for ClientKeyExchange {
-    fn to_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::<u8>::new();
-        bytes.extend((self.enc_pre_master_secret.len() as u16).to_be_bytes());
-        bytes.extend_from_slice(&self.enc_pre_master_secret);
-        handshake_bytes(TlsHandshakeType::ClientKeyExchange, &bytes)
-    }
-}
-
-impl IntoBytes for ClientKeyExchange {
-    fn into_bytes(self) -> Vec<u8> {
-        self.to_bytes()
-    }
-}
-
-impl From<ClientKeyExchange> for TLSPlaintext {
-    fn from(value: ClientKeyExchange) -> Self {
-        TLSPlaintext::new(TLSContentType::Handshake, value.to_bytes())
-    }
-}
-
-impl From<ClientKeyExchange> for TlsMessage {
-    fn from(value: ClientKeyExchange) -> Self {
-        TlsMessage::Handshake(TlsHandshake::ClientKeyExchange(value))
-    }
-}
-
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Finished {
@@ -562,12 +435,6 @@ pub struct Finished {
 impl Finished {
     pub fn new(verify_data: Vec<u8>) -> Self {
         Self { verify_data }
-    }
-}
-
-impl From<Finished> for TlsMessage {
-    fn from(value: Finished) -> Self {
-        TlsMessage::Handshake(TlsHandshake::Finished(value))
     }
 }
 
@@ -581,67 +448,9 @@ impl TlsCodable for Finished {
     }
 }
 
-impl ToBytes for Finished {
-    fn to_bytes(&self) -> Vec<u8> {
-        handshake_bytes(TlsHandshakeType::Finished, &self.verify_data)
-    }
-}
-
-impl IntoBytes for Finished {
-    fn into_bytes(self) -> Vec<u8> {
-        self.to_bytes()
-    }
-}
-
-impl From<Finished> for TLSPlaintext {
+impl From<Finished> for TlsHandshake {
     fn from(value: Finished) -> Self {
-        TLSPlaintext::new(TLSContentType::Handshake, value.into_bytes())
-    }
-}
-
-pub struct ChangeCipherSpec;
-
-impl ChangeCipherSpec {
-    pub fn new() -> Self {
-        Self {}
-    }
-}
-
-impl ToBytes for ChangeCipherSpec {
-    fn to_bytes(&self) -> Vec<u8> {
-        vec![1]
-    }
-}
-
-impl IntoBytes for ChangeCipherSpec {
-    fn into_bytes(self) -> Vec<u8> {
-        self.to_bytes()
-    }
-}
-
-impl From<ChangeCipherSpec> for TLSPlaintext {
-    fn from(value: ChangeCipherSpec) -> Self {
-        TLSPlaintext::new(TLSContentType::ChangeCipherSpec, value.into_bytes())
-    }
-}
-
-impl From<ChangeCipherSpec> for TlsMessage {
-    fn from(_: ChangeCipherSpec) -> Self {
-        TlsMessage::ChangeCipherSpec
-    }
-}
-
-pub struct ApplicationData(Vec<u8>);
-
-impl ApplicationData {
-    pub fn new(data: Vec<u8>) -> Self {
-        Self(data)
-    }
-}
-
-impl From<ApplicationData> for TLSPlaintext {
-    fn from(value: ApplicationData) -> Self {
-        TLSPlaintext::new(TLSContentType::ApplicationData, value.0)
+        Self::Finished(value)
     }
 }
 
@@ -668,36 +477,20 @@ impl TlsCodable for NewSessionTicket {
     }
 }
 
-impl TryFrom<&[u8]> for NewSessionTicket {
-    type Error = Box<dyn std::error::Error>;
-
-    fn try_from(buf: &[u8]) -> Result<Self, Self::Error> {
-        let mut reader = Reader::new(buf);
-        let lifetime_hint = u32::read_from(&mut reader)?;
-        let ticket = SessionTicket::read_from(&mut reader)?;
-        Ok(Self {
-            lifetime_hint,
-            ticket,
-        })
+impl From<NewSessionTicket> for TlsHandshake {
+    fn from(value: NewSessionTicket) -> Self {
+        Self::NewSessionTicket(value)
     }
 }
 
-impl ToBytes for NewSessionTicket {
-    fn to_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::<u8>::new();
-        self.lifetime_hint.write_to(&mut bytes);
-        self.ticket.write_to(&mut bytes);
-        handshake_bytes(TlsHandshakeType::NewSessionTicket, &bytes)
+tls_codable_enum! {
+    #[repr(u8)]
+    pub enum TLSContentType {
+        ChangeCipherSpec = 20,
+        Alert = 21,
+        Handshake = 22,
+        ApplicationData = 23,
     }
-}
-
-#[derive(Debug, TryFromPrimitive, Copy, Clone)]
-#[repr(u8)]
-pub enum TLSContentType {
-    ChangeCipherSpec = 20,
-    Alert = 21,
-    Handshake = 22,
-    ApplicationData = 23,
 }
 
 tls_codable_enum! {
@@ -715,8 +508,7 @@ tls_codable_enum! {
     }
 }
 
-#[allow(dead_code)]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum TlsHandshake {
     ClientHello(ClientHello),
     ServerHello(ServerHello),
@@ -794,6 +586,12 @@ impl TlsCodable for TlsHandshake {
     }
 }
 
+impl From<TlsHandshake> for TlsPlaintext {
+    fn from(value: TlsHandshake) -> Self {
+        TlsPlaintext::new(TLSContentType::Handshake, value.get_encoding())
+    }
+}
+
 #[derive(Debug)]
 pub enum TlsMessage {
     Handshake(TlsHandshake),
@@ -802,14 +600,20 @@ pub enum TlsMessage {
     ApplicationData(Vec<u8>),
 }
 
+impl TlsMessage {
+    pub fn new_appdata(bytes: Vec<u8>) -> Self {
+        Self::ApplicationData(bytes)
+    }
+}
+
 #[derive(Clone)]
-pub struct TLSPlaintext {
+pub struct TlsPlaintext {
     pub content_type: TLSContentType,
     pub version: ProtocolVersion,
     pub fragment: Vec<u8>,
 }
 
-impl TLSPlaintext {
+impl TlsPlaintext {
     pub fn new(content_type: TLSContentType, fragment: Vec<u8>) -> Self {
         Self {
             content_type,
@@ -818,73 +622,54 @@ impl TLSPlaintext {
         }
     }
 }
+
+impl From<TlsMessage> for TlsPlaintext {
+    fn from(value: TlsMessage) -> Self {
+        match value {
+            TlsMessage::ChangeCipherSpec => {
+                TlsPlaintext::new(TLSContentType::ChangeCipherSpec, vec![1])
+            }
+            TlsMessage::Alert(alert) => TlsPlaintext::from(alert),
+            TlsMessage::Handshake(msg) => TlsPlaintext::from(msg),
+            TlsMessage::ApplicationData(data) => {
+                TlsPlaintext::new(TLSContentType::ApplicationData, data)
+            }
+        }
+    }
+}
+type CiphertextFragment = LengthPrefixedVec<u16, u8, MaybeEmpty>;
 
 pub struct TLSCiphertext {
     pub content_type: TLSContentType,
     pub version: ProtocolVersion,
-    pub fragment: Vec<u8>,
+    pub fragment: CiphertextFragment,
 }
 
 impl TLSCiphertext {
-    pub fn new(content_type: TLSContentType, fragment: Vec<u8>) -> Self {
-        Self {
+    pub fn new(content_type: TLSContentType, fragment: Vec<u8>) -> Result<Self, CodingError> {
+        Ok(Self {
             content_type,
             version: ProtocolVersion { major: 3, minor: 3 },
+            fragment: fragment.try_into()?,
+        })
+    }
+}
+
+impl TlsCodable for TLSCiphertext {
+    fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
+        let content_type = TLSContentType::read_from(reader)?;
+        let version = ProtocolVersion::read_from(reader)?;
+        let fragment = CiphertextFragment::read_from(reader)?;
+        Ok(TLSCiphertext {
+            content_type,
+            version,
             fragment,
-        }
+        })
     }
 
-    pub fn into_bytes(self) -> Vec<u8> {
-        let mut bytes = Vec::<u8>::new();
-        bytes.push(self.content_type as u8);
-        bytes.extend_from_slice(&[self.version.major, self.version.minor]);
-        bytes.extend_from_slice(&(self.fragment.len() as u16).to_be_bytes());
-        bytes.extend_from_slice(&self.fragment);
-        bytes
+    fn write_to(&self, bytes: &mut Vec<u8>) {
+        self.content_type.write_to(bytes);
+        self.version.write_to(bytes);
+        self.fragment.write_to(bytes);
     }
-}
-
-pub fn try_parse_handshake(buf: &[u8]) -> TLSResult<(TlsHandshake, usize)> {
-    if buf.len() < 4 {
-        return Err(TLSError::NeedData.into());
-    }
-
-    let length = u32::from_be_bytes([0, buf[1], buf[2], buf[3]]) as usize;
-
-    if buf.len() < 4 + length {
-        return Err(TLSError::NeedData.into());
-    }
-
-    let handshake = TlsHandshakeType::try_from(buf[0])
-        .map_err(|e| e.into())
-        .and_then(|handshake_type| match handshake_type {
-            TlsHandshakeType::ServerHello => {
-                ServerHello::try_from(&buf[4..]).map(TlsHandshake::ServerHello)
-            }
-            TlsHandshakeType::NewSessionTicket => {
-                NewSessionTicket::try_from(&buf[4..]).map(TlsHandshake::NewSessionTicket)
-            }
-            TlsHandshakeType::Certificates => {
-                Certificate::try_from(&buf[4..]).map(TlsHandshake::Certificates)
-            }
-            TlsHandshakeType::ServerHelloDone => Ok(TlsHandshake::ServerHelloDone),
-            TlsHandshakeType::Finished => {
-                let verify_data = buf[4..4 + length].to_vec();
-                Ok(TlsHandshake::Finished(Finished { verify_data }))
-            }
-            TlsHandshakeType::ServerKeyExchange => {
-                ServerKeyExchange::try_from(&buf[4..]).map(TlsHandshake::ServerKeyExchange)
-            }
-            _ => unimplemented!(),
-        })?;
-
-    Ok((handshake, length + 4))
-}
-
-pub fn handshake_bytes(handshake_type: TlsHandshakeType, content: &[u8]) -> Vec<u8> {
-    let mut handshake = Vec::<u8>::new();
-    handshake.push(u8::from(handshake_type));
-    handshake.extend(utils::u24_be_bytes(content.len()));
-    handshake.extend(content);
-    handshake
 }
