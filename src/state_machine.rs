@@ -1,23 +1,19 @@
-use rsa::RsaPrivateKey;
-use rsa::{
-    RsaPublicKey,
-    pkcs8::{DecodePrivateKey, DecodePublicKey},
-};
+use rsa::{RsaPublicKey, pkcs8::DecodePublicKey};
 use std::collections::HashMap;
 use std::sync::Arc;
-use x509_parser::pem::parse_x509_pem;
 
 use enum_dispatch::enum_dispatch;
 use log::{debug, info};
 
 use crate::ciphersuite::{CipherSuiteId, PrfAlgorithm};
+use crate::client::TlsConfig;
 use crate::extensions::{HashAlgo, SigAlgo};
 use crate::messages::{Certificate, ServerHello, SessionId};
 use crate::signature::{
     decrypt_rsa_master_secret, dsa_verify, get_dhe_pre_master_secret, get_rsa_pre_master_secret,
     public_key_from_cert, rsa_verify,
 };
-use crate::storage::{SessionTicketInfo, SessionTicketStorage};
+use crate::storage::SessionTicketInfo;
 use crate::{
     TlsResult,
     alert::TLSAlert,
@@ -37,7 +33,7 @@ pub struct SessionInfo {
 pub struct TlsContext {
     pub side: TlsEntity,
     pub sessions: HashMap<SessionId, SessionInfo>,
-    pub session_ticket_store: Arc<dyn SessionTicketStorage>,
+    pub config: Arc<TlsConfig>,
 }
 
 pub struct TlsHandshakeStateMachine {
@@ -79,12 +75,12 @@ impl TlsHandshakeStateMachine {
         Ok(action)
     }
 
-    pub fn new(side: TlsEntity, session_ticket_store: Arc<dyn SessionTicketStorage>) -> Self {
+    pub fn new(side: TlsEntity, config: Arc<TlsConfig>) -> Self {
         Self {
             ctx: TlsContext {
                 side,
                 sessions: HashMap::new(),
-                session_ticket_store,
+                config,
             },
             state: Some(AwaitClientHello {}.into()),
         }
@@ -170,10 +166,14 @@ impl HandleRecord for AwaitClientHello {
                             session_id: hello.session_id.clone(),
                         }
                     }),
-                    session_ticket_resumption: hello
-                        .extensions
-                        .get_session_ticket()
-                        .and_then(|ticket| ctx.session_ticket_store.get(&ticket).unwrap()),
+                    session_ticket_resumption: hello.extensions.get_session_ticket().and_then(
+                        |ticket| {
+                            ctx.config
+                                .session_ticket_store
+                                .as_ref()
+                                .and_then(|store| store.get(&ticket).unwrap())
+                        },
+                    ),
                 }
                 .into(),
                 vec![TlsAction::SendHandshakeMsg(handshake.clone())],
@@ -200,9 +200,15 @@ impl HandleRecord for AwaitClientHello {
         let server_hello: TlsHandshake = server_hello.into();
         server_hello.write_to(&mut handshakes);
 
-        let pem_data = std::fs::read("testing/rsacert.pem")?;
-        let cert = parse_x509_pem(&pem_data)?.1.contents;
-        let certificate: TlsHandshake = Certificate::new(cert).into();
+        let certificate: TlsHandshake = Certificate::new(
+            ctx.config
+                .certificate
+                .as_ref()
+                .expect("Server certificate not configured")
+                .certificate_der
+                .clone(),
+        )
+        .into();
         certificate.write_to(&mut handshakes);
 
         let server_hello_done = TlsHandshake::ServerHelloDone;
@@ -238,6 +244,8 @@ struct SessionIdResumption {
 #[derive(Debug)]
 struct SupportedExtensions {
     extended_master_secret: bool,
+
+    #[allow(unused)]
     secure_renegotiation: bool,
     session_ticket: bool,
 }
@@ -381,7 +389,7 @@ pub struct AwaitClientKeyExchange {
 impl HandleRecord for AwaitClientKeyExchange {
     fn handle(
         mut self,
-        _ctx: &mut TlsContext,
+        ctx: &mut TlsContext,
         msg: &TlsMessage,
     ) -> TlsResult<(TlsState, Vec<TlsAction>)> {
         let TlsMessage::Handshake(handshake) = msg else {
@@ -395,9 +403,14 @@ impl HandleRecord for AwaitClientKeyExchange {
         info!("Received ClientKeyExchange");
         handshake.write_to(&mut self.handshakes);
 
-        let private_key_pem = std::fs::read_to_string("testing/rsakey.pem")?;
-        let private_key = RsaPrivateKey::from_pkcs8_pem(&private_key_pem)?;
-        let pre_master_secret = decrypt_rsa_master_secret(&private_key, &kx.enc_pre_master_secret)?;
+        let pre_master_secret = decrypt_rsa_master_secret(
+            &ctx.config
+                .certificate
+                .as_ref()
+                .expect("Server private key not configured")
+                .private_key,
+            &kx.enc_pre_master_secret,
+        )?;
 
         let ciphersuite = CipherSuite::from(self.selected_cipher_suite);
         let master_secret = calculate_master_secret(
@@ -722,7 +735,7 @@ pub struct AwaitNewSessionTicket {
 impl HandleRecord for AwaitNewSessionTicket {
     fn handle(
         mut self,
-        _ctx: &mut TlsContext,
+        ctx: &mut TlsContext,
         msg: &TlsMessage,
     ) -> TlsResult<(TlsState, Vec<TlsAction>)> {
         let TlsMessage::Handshake(handshake) = msg else {
@@ -736,10 +749,12 @@ impl HandleRecord for AwaitNewSessionTicket {
         info!("Received NewSessionTicket");
         handshake.write_to(&mut self.handshakes);
 
-        _ctx.session_ticket_store.put(
-            ticket.ticket.to_vec(),
-            SessionTicketInfo::new(self.params.master_secret, self.params.cipher_suite_id),
-        )?;
+        if let Some(store) = &ctx.config.session_ticket_store {
+            store.put(
+                ticket.ticket.to_vec(),
+                SessionTicketInfo::new(self.params.master_secret, self.params.cipher_suite_id),
+            )?;
+        }
 
         return Ok((
             AwaitServerChangeCipher {
@@ -949,7 +964,7 @@ pub struct AwaitClientFinished {
 impl HandleRecord for AwaitClientFinished {
     fn handle(
         mut self,
-        ctx: &mut TlsContext,
+        _ctx: &mut TlsContext,
         msg: &TlsMessage,
     ) -> TlsResult<(TlsState, Vec<TlsAction>)> {
         let TlsMessage::Handshake(handshake) = msg else {
@@ -1081,7 +1096,8 @@ impl HandleRecord for AwaitServerFinished {
 #[derive(Debug)]
 pub struct EstablishedState {
     pub session_id: SessionId,
-    pub supported_extensions: SupportedExtensions,
+    #[allow(unused)]
+    supported_extensions: SupportedExtensions,
     pub client_verify_data: Vec<u8>,
 }
 

@@ -329,9 +329,6 @@ impl<L: VecLen, T: TlsCodable, C: Cardinality> TryFrom<Vec<T>> for LengthPrefixe
     }
 }
 
-pub type U16LenPrefVec<T, C> = LengthPrefixedVec<u16, T, C>;
-pub type U8LenPrefVec<T, C> = LengthPrefixedVec<u8, T, C>;
-
 impl<T: TlsCodable> TlsCodable for Option<T> {
     fn write_to(&self, bytes: &mut Vec<u8>) {
         if let Some(value) = self {

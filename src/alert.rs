@@ -1,6 +1,6 @@
 use crate::{
     encoding::{CodingError, Reader, TlsCodable},
-    messages::{TLSContentType, TlsCompressed, TlsHandshake, TlsPlaintext},
+    messages::{TLSContentType, TlsPlaintext},
 };
 
 tls_codable_enum! {

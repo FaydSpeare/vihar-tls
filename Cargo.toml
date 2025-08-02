@@ -7,6 +7,14 @@ edition = "2024"
 name = "vihar_tls"
 path = "src/lib.rs"
 
+[[bin]]
+name = "server"
+path = "bin/server.rs"
+
+[[bin]]
+name = "client"
+path = "bin/client.rs"
+
 [dependencies]
 aes = "0.8.4"
 aes-gcm = "0.10.3"

@@ -1,16 +1,20 @@
-use std::io::{Read, Write};
+use std::{
+    io::{Read, Write},
+    sync::Arc,
+};
 
 use crate::{TlsResult, client::TlsConfig, connection::TlsConnection, state_machine::TlsEntity};
 
 pub struct TlsServer<T: Read + Write> {
-    config: TlsConfig,
+    config: Arc<TlsConfig>,
     connection: TlsConnection<T>,
 }
 
 impl<T: Read + Write> TlsServer<T> {
     pub fn new(config: TlsConfig, stream: T) -> Self {
+        let config = Arc::new(config);
         Self {
-            connection: TlsConnection::new(TlsEntity::Server, stream, &config),
+            connection: TlsConnection::new(TlsEntity::Server, stream, config.clone()),
             config,
         }
     }

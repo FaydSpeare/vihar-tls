@@ -18,14 +18,8 @@ pub fn get_random_bytes(len: usize) -> Vec<u8> {
     (0..len).map(|_| rng.r#gen::<u8>()).collect()
 }
 
-pub fn u24_be_bytes(value: usize) -> [u8; 3] {
-    [
-        ((value >> 16) & 0xFF) as u8,
-        ((value >> 8) & 0xFF) as u8,
-        (value & 0xFF) as u8,
-    ]
-}
 
+#[allow(unused)]
 pub fn hex_to_bytes(hex: &str) -> Vec<u8> {
     // Remove whitespace and newlines
     let clean_hex: String = hex.chars().filter(|c| !c.is_whitespace()).collect();

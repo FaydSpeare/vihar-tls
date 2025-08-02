@@ -1,4 +1,4 @@
-use log::{error, warn};
+use log::warn;
 use std::fmt::Debug;
 
 use crate::encoding::{

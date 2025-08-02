@@ -42,7 +42,7 @@ pub trait SessionTicketStorage: Debug {
     fn put(&self, ticket: SessionTicket, info: SessionTicketInfo) -> TlsResult<()>;
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SledSessionTicketStore {
     db: sled::Db,
 }

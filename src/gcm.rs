@@ -1,8 +1,13 @@
 use crate::utils;
-use aes::cipher::{generic_array::GenericArray, BlockDecrypt, BlockEncrypt, BlockSizeUser, KeyInit};
+use aes::cipher::{
+    BlockDecrypt, BlockEncrypt, BlockSizeUser, KeyInit, generic_array::GenericArray,
+};
 
-
-pub fn encrypt_aes_cbc<C: KeyInit + BlockEncrypt + BlockSizeUser>(plaintext: &[u8], key: &[u8], iv: &[u8]) -> Vec<u8> {
+pub fn encrypt_aes_cbc<C: KeyInit + BlockEncrypt + BlockSizeUser>(
+    plaintext: &[u8],
+    key: &[u8],
+    iv: &[u8],
+) -> Vec<u8> {
     let mut ciphertext = Vec::<u8>::new();
     let mut state = iv.to_vec();
     let cipher = C::new(&GenericArray::from_slice(key));
@@ -18,7 +23,11 @@ pub fn encrypt_aes_cbc<C: KeyInit + BlockEncrypt + BlockSizeUser>(plaintext: &[u
     ciphertext
 }
 
-pub fn decrypt_aes_cbc<C: KeyInit + BlockDecrypt>(ciphertext: &[u8], key: &[u8], iv: &[u8]) -> Vec<u8> {
+pub fn decrypt_aes_cbc<C: KeyInit + BlockDecrypt>(
+    ciphertext: &[u8],
+    key: &[u8],
+    iv: &[u8],
+) -> Vec<u8> {
     let mut plaintext = Vec::<u8>::new();
     let mut state = iv;
     let cipher = C::new(&GenericArray::from_slice(key));
@@ -102,16 +111,11 @@ pub fn g_hash(h: u128, aad: &[u8], ciphertext: &[u8]) -> Vec<u8> {
     result.to_be_bytes().to_vec()
 }
 
-fn g_hash_data(h: u128, data: &[u8]) -> Vec<u8> {
-    let mut result: u128 = 0;
-    for chunk in data.chunks(16) {
-        let tmp = result ^ u128::from_be_bytes(chunk.try_into().unwrap());
-        result = gf_mul(h, tmp);
-    }
-    result.to_be_bytes().to_vec()
-}
-
-fn generate_keystream<C: BlockEncrypt + KeyInit>(key: &[u8], start_count: u128, len: usize) -> Vec<u8> {
+fn generate_keystream<C: BlockEncrypt + KeyInit>(
+    key: &[u8],
+    start_count: u128,
+    len: usize,
+) -> Vec<u8> {
     let mut keystream = Vec::<u8>::new();
     let mut count = start_count;
     while keystream.len() < len {

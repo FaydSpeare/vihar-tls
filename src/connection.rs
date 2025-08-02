@@ -15,8 +15,9 @@ use crate::messages::{
 use crate::record::RecordLayer;
 use crate::state_machine::{ConnStates, TlsAction, TlsEntity, TlsHandshakeStateMachine, TlsState};
 use crate::{TlsResult, utils};
-use log::{debug, info, trace};
+use log::{debug, trace};
 use std::io::{Read, Write};
+use std::sync::Arc;
 use std::time::Instant;
 
 #[derive(Debug, Clone)]
@@ -369,14 +370,11 @@ impl<T: Read + Write> TlsConnection<T> {
         self.handshake_state_machine.is_established()
     }
 
-    pub fn new(side: TlsEntity, stream: T, config: &TlsConfig) -> Self {
+    pub fn new(side: TlsEntity, stream: T, config: Arc<TlsConfig>) -> Self {
         Self {
             side,
             stream,
-            handshake_state_machine: TlsHandshakeStateMachine::new(
-                side,
-                config.session_ticket_store.clone(),
-            ),
+            handshake_state_machine: TlsHandshakeStateMachine::new(side, config),
             conn_states: ConnStates::new(),
             record_layer: RecordLayer::new(),
         }
@@ -459,18 +457,20 @@ impl<T: Read + Write> TlsConnection<T> {
 
         if side == TlsEntity::Client {
             let mut extensions = config.extensions.to_vec();
-            match config.session_ticket_store.get_one()? {
-                Some(ticket) => {
-                    debug!(
-                        "Using SessionTicket: {:?}",
-                        ticket
-                            .iter()
-                            .map(|b| format!("{:02x}", b))
-                            .collect::<String>()
-                    );
-                    extensions.push(SessionTicketExt::resume(ticket)?.into())
+            if let Some(store) = &config.session_ticket_store {
+                match store.get_one()? {
+                    Some(ticket) => {
+                        debug!(
+                            "Using SessionTicket: {:?}",
+                            ticket
+                                .iter()
+                                .map(|b| format!("{:02x}", b))
+                                .collect::<String>()
+                        );
+                        extensions.push(SessionTicketExt::resume(ticket)?.into())
+                    }
+                    None => extensions.push(SessionTicketExt::new().into()),
                 }
-                None => extensions.push(SessionTicketExt::new().into()),
             }
 
             let client_hello = TlsMessage::Handshake(TlsHandshake::ClientHello(ClientHello::new(
