@@ -10,8 +10,6 @@ use crate::{
     },
 };
 
-type UnknownExtensionBytes = LengthPrefixedVec<u16, u8, MaybeEmpty>;
-
 tls_codable_enum! {
     #[repr(u16)]
     pub enum ExtensionType {
@@ -32,7 +30,7 @@ pub enum Extension {
     ExtendedMasterSecret(ExtendedMasterSecretExt),
     ALPN(ALPNExt),
     ServerName(ServerNameExt),
-    Unknown(u16, UnknownExtensionBytes),
+    Unknown(u16, Vec<u8>),
 }
 
 impl Extension {
@@ -52,33 +50,41 @@ impl Extension {
 impl TlsCodable for Extension {
     fn write_to(&self, bytes: &mut Vec<u8>) {
         self.extension_type().write_to(bytes);
+        let mut writer = LengthPrefixWriter::<u16>::new(bytes);
         match self {
-            Self::RenegotiationInfo(ext) => ext.write_to(bytes),
-            Self::SignatureAlgorithms(ext) => ext.write_to(bytes),
-            Self::SessionTicket(ext) => ext.write_to(bytes),
-            Self::ExtendedMasterSecret(ext) => ext.write_to(bytes),
-            Self::ALPN(ext) => ext.write_to(bytes),
-            Self::ServerName(ext) => ext.write_to(bytes),
-            Self::Unknown(ext_type, ext) => {
-                ext_type.write_to(bytes);
-                ext.write_to(bytes)
+            Self::RenegotiationInfo(ext) => ext.write_to(&mut writer),
+            Self::SignatureAlgorithms(ext) => ext.write_to(&mut writer),
+            Self::SessionTicket(ext) => ext.write_to(&mut writer),
+            Self::ExtendedMasterSecret(ext) => ext.write_to(&mut writer),
+            Self::ALPN(ext) => ext.write_to(&mut writer),
+            Self::ServerName(ext) => ext.write_to(&mut writer),
+            Self::Unknown(_, ext_bytes) => {
+                writer.extend_from_slice(&ext_bytes);
             }
-        }
+        };
+        writer.finalize_length_prefix();
     }
     fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
         let ext_type = ExtensionType::read_from(reader)?;
+        let ext_len = u16::read_from(reader)?;
+        let mut subreader = reader.consume(ext_len.into()).map(Reader::new)?;
+
         let ext: Extension = match ext_type {
-            ExtensionType::SignatureAlgorithms => SignatureAlgorithmsExt::read_from(reader)?.into(),
-            ExtensionType::RenegotiationInfo => RenegotiationInfoExt::read_from(reader)?.into(),
-            ExtensionType::SessionTicket => SessionTicketExt::read_from(reader)?.into(),
-            ExtensionType::ExtendedMasterSecret => {
-                ExtendedMasterSecretExt::read_from(reader)?.into()
+            ExtensionType::SignatureAlgorithms => {
+                SignatureAlgorithmsExt::read_from(&mut subreader)?.into()
             }
-            ExtensionType::ALPN => ALPNExt::read_from(reader)?.into(),
-            ExtensionType::ServerName => ServerNameExt::read_from(reader)?.into(),
+            ExtensionType::RenegotiationInfo => {
+                RenegotiationInfoExt::read_from(&mut subreader)?.into()
+            }
+            ExtensionType::SessionTicket => SessionTicketExt::read_from(&mut subreader)?.into(),
+            ExtensionType::ExtendedMasterSecret => {
+                ExtendedMasterSecretExt::read_from(&mut subreader)?.into()
+            }
+            ExtensionType::ALPN => ALPNExt::read_from(&mut subreader)?.into(),
+            ExtensionType::ServerName => ServerNameExt::read_from(&mut subreader)?.into(),
             ExtensionType::Unknown(x) => {
                 warn!("unknown extension: {}", x);
-                Self::Unknown(x, UnknownExtensionBytes::read_from(reader)?)
+                Self::Unknown(x, subreader.consume_rest().to_vec())
             }
         };
         Ok(ext)
@@ -226,7 +232,6 @@ impl RenegotiationInfoExt {
 
 impl TlsCodable for RenegotiationInfoExt {
     fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
-        let _ext_len = u16::read_from(reader)?;
         let renegotiation_info = LengthPrefixedVec::<u8, u8, MaybeEmpty>::read_from(reader)?;
         if renegotiation_info.len() == 0 {
             return Ok(Self::Initial);
@@ -235,21 +240,17 @@ impl TlsCodable for RenegotiationInfoExt {
     }
 
     fn write_to(&self, bytes: &mut Vec<u8>) {
-        let mut writer = LengthPrefixWriter::<u16>::new(bytes);
         match self {
-            Self::Initial => writer.push(0u8),
-            Self::Renegotiation(info) => info.write_to(&mut writer),
+            Self::Initial => bytes.push(0u8),
+            Self::Renegotiation(info) => info.write_to(bytes),
         };
-        writer.finalize_length_prefix();
     }
 }
-
-type SessionTicket = LengthPrefixedVec<u16, u8, MaybeEmpty>;
 
 #[derive(Debug, Clone)]
 pub enum SessionTicketExt {
     Empty,
-    Resumption(SessionTicket),
+    Resumption(Vec<u8>),
 }
 
 impl SessionTicketExt {
@@ -257,25 +258,22 @@ impl SessionTicketExt {
         Self::Empty
     }
 
-    pub fn resume(ticket: Vec<u8>) -> Result<Self, CodingError> {
-        Ok(Self::Resumption(ticket.try_into()?))
+    pub fn resume(ticket: Vec<u8>) -> Self {
+        Self::Resumption(ticket)
     }
 }
 
 impl TlsCodable for SessionTicketExt {
     fn write_to(&self, bytes: &mut Vec<u8>) {
-        match self {
-            Self::Empty => 0u16.write_to(bytes),
-            Self::Resumption(ticket) => ticket.write_to(bytes),
-        };
+        if let Self::Resumption(ticket) = self {
+            bytes.extend_from_slice(&ticket);
+        }
     }
     fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
-        let ext_len = u16::read_from(reader)?;
-        if ext_len == 0 {
+        if reader.is_consumed() {
             return Ok(Self::Empty);
         }
-        let ticket = SessionTicket::read_from(reader)?;
-        Ok(Self::Resumption(ticket))
+        Ok(Self::Resumption(reader.consume_rest().to_vec()))
     }
 }
 
@@ -289,13 +287,11 @@ impl ExtendedMasterSecretExt {
 }
 
 impl TlsCodable for ExtendedMasterSecretExt {
-    fn write_to(&self, bytes: &mut Vec<u8>) {
-        0u16.write_to(bytes);
-    }
+    fn write_to(&self, _bytes: &mut Vec<u8>) {}
+
     fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
-        let ext_len = u16::read_from(reader)?;
-        if ext_len > 0 {
-            return Err(CodingError::LengthTooLarge(0, ext_len.into()));
+        if !reader.is_consumed() {
+            return Err(CodingError::InvalidLength);
         }
         Ok(Self::new())
     }
@@ -349,7 +345,6 @@ pub struct SignatureAlgorithmsExt {
 
 impl TlsCodable for SignatureAlgorithmsExt {
     fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
-        let _ext_len = u16::read_from(reader)?;
         let algorithm_count = (u16::read_from(reader)? / 2) as usize;
 
         let mut algorithms = vec![];
@@ -365,9 +360,7 @@ impl TlsCodable for SignatureAlgorithmsExt {
     }
 
     fn write_to(&self, bytes: &mut Vec<u8>) {
-        let mut writer = LengthPrefixWriter::<u16>::new(bytes);
-        self.algorithms.write_to(&mut writer);
-        writer.finalize_length_prefix();
+        self.algorithms.write_to(bytes);
     }
 }
 
@@ -412,12 +405,9 @@ impl ALPNExt {
 
 impl TlsCodable for ALPNExt {
     fn write_to(&self, bytes: &mut Vec<u8>) {
-        let mut writer = LengthPrefixWriter::<u16>::new(bytes);
-        self.protocols.write_to(&mut writer);
-        writer.finalize_length_prefix();
+        self.protocols.write_to(bytes);
     }
     fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
-        let _ext_len = u16::read_from(reader)?;
         let protocols = ProtocolList::read_from(reader)?;
         Ok(Self { protocols })
     }
@@ -483,7 +473,7 @@ impl ServerNameExt {
         Self {
             list: vec![
                 host_name.clone(),
-                ServerName::Unknown(1, vec![1, 2, 3].try_into().unwrap()),
+                // ServerName::Unknown(1, vec![1, 2, 3].try_into().unwrap()),
             ]
             .try_into()
             .unwrap(),
@@ -526,7 +516,6 @@ impl ServerNameExt {
 //
 impl TlsCodable for ServerNameExt {
     fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
-        let _ext_len = u16::read_from(reader)?;
         let list = ServerNameList::read_from(reader)?;
 
         let mut seen = HashSet::new();
@@ -541,8 +530,6 @@ impl TlsCodable for ServerNameExt {
     }
 
     fn write_to(&self, bytes: &mut Vec<u8>) {
-        let mut writer = LengthPrefixWriter::<u16>::new(bytes);
-        self.list.write_to(&mut writer);
-        writer.finalize_length_prefix();
+        self.list.write_to(bytes);
     }
 }

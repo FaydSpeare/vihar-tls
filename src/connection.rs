@@ -1,4 +1,4 @@
-use crate::alert::{TLSAlert, TLSAlertDesc, TLSAlertLevel};
+use crate::alert::{TLSAlert, TLSAlertDesc};
 use crate::ciphersuite::{
     CipherSuite, CipherSuiteId, CipherSuiteMethods, CipherType, CompressionAlgorithm, EncAlgorithm,
     MacAlgorithm, PrfAlgorithm,
@@ -480,7 +480,7 @@ impl<T: Read + Write> TlsConnection<T> {
                                 .map(|b| format!("{:02x}", b))
                                 .collect::<String>()
                         );
-                        extensions.push(SessionTicketExt::resume(ticket)?.into())
+                        extensions.push(SessionTicketExt::resume(ticket).into())
                     }
                     None => extensions.push(SessionTicketExt::new().into()),
                 }
@@ -525,7 +525,7 @@ impl<T: Read + Write> TlsConnection<T> {
 
         match session_ticket {
             None => extensions.push(SessionTicketExt::new().into()),
-            Some(ticket) => extensions.push(SessionTicketExt::resume(ticket)?.into()),
+            Some(ticket) => extensions.push(SessionTicketExt::resume(ticket).into()),
         }
 
         extensions.push(ExtendedMasterSecretExt::new().into());

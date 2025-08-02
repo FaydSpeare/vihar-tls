@@ -160,6 +160,7 @@ impl TlsCodable for ClientHello {
         let cipher_suites = CipherSuites::read_from(reader)?;
         let compression_methods = CompressionMethods::read_from(reader)?;
         let extensions = Extensions::read_from(reader)?;
+        // println!("Client Extensions: {:#?}", extensions);
         Ok(Self {
             client_version,
             random,
@@ -232,7 +233,7 @@ impl TlsCodable for ServerHello {
         let cipher_suite = CipherSuiteId::read_from(reader)?;
         let compression_method = CompressionMethodId::read_from(reader)?;
         let extensions = Extensions::read_from(reader)?;
-        println!("Server Extensions: {:#?}", extensions);
+        // println!("Server Extensions: {:#?}", extensions);
         Ok(Self {
             server_version,
             random,
@@ -466,7 +467,7 @@ impl TlsCodable for Finished {
         bytes.extend_from_slice(&self.verify_data);
     }
     fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
-        let verify_data = reader.consume_rest()?.to_vec();
+        let verify_data = reader.consume_rest().to_vec();
         Ok(Self { verify_data })
     }
 }

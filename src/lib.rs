@@ -47,6 +47,8 @@ pub enum UnrecognisedServerNamePolicy {
 
 #[derive(Debug, Clone)]
 pub struct ValidationPolicy {
+
+    // Google just sends a fatal decode_error rather than unrecognised_name
     pub unrecognised_server_name: UnrecognisedServerNamePolicy,
 }
 

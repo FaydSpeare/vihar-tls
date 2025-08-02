@@ -69,13 +69,13 @@ impl<'a> Reader<'a> {
         self.pos
     }
 
-    pub fn consume_rest(&mut self) -> Result<&'a [u8], CodingError> {
+    pub fn consume_rest(&mut self) -> &[u8] {
         if self.pos >= self.buffer.len() {
-            return Err(CodingError::RanOutOfData);
+            return &[];
         }
         let slice = &self.buffer[self.pos..];
         self.pos = self.buffer.len();
-        Ok(slice)
+        slice
     }
 }
 
