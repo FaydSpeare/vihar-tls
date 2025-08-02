@@ -1,12 +1,13 @@
 use crate::{
     encoding::{CodingError, Reader, TlsCodable},
-    messages::{TLSContentType, TlsPlaintext},
+    messages::{TlsContentType, TlsPlaintext},
 };
 
 tls_codable_enum! {
     #[repr(u8)]
-    pub enum TLSAlertDesc {
+    pub enum TlsAlertDesc {
         CloseNotify = 0,
+        UnexpectedMessage = 10,
         BadRecordMac = 20,
         RecordOverflow = 22,
         DecompressionFailure = 30,
@@ -33,54 +34,54 @@ tls_codable_enum! {
 
 tls_codable_enum! {
     #[repr(u8)]
-    pub enum TLSAlertLevel {
+    pub enum TlsAlertLevel {
         Warning = 1,
         Fatal = 2,
     }
 }
 
 #[derive(Debug)]
-pub struct TLSAlert {
-    level: TLSAlertLevel,
-    description: TLSAlertDesc,
+pub struct TlsAlert {
+    level: TlsAlertLevel,
+    description: TlsAlertDesc,
 }
 
-impl TLSAlert {
-    pub fn new(level: TLSAlertLevel, description: TLSAlertDesc) -> Self {
+impl TlsAlert {
+    pub fn new(level: TlsAlertLevel, description: TlsAlertDesc) -> Self {
         Self { level, description }
     }
-    pub fn fatal(description: TLSAlertDesc) -> Self {
+    pub fn fatal(description: TlsAlertDesc) -> Self {
         Self {
-            level: TLSAlertLevel::Fatal,
+            level: TlsAlertLevel::Fatal,
             description,
         }
     }
 
-    pub fn warning(description: TLSAlertDesc) -> Self {
+    pub fn warning(description: TlsAlertDesc) -> Self {
         Self {
-            level: TLSAlertLevel::Warning,
+            level: TlsAlertLevel::Warning,
             description,
         }
     }
 }
 
-impl TlsCodable for TLSAlert {
+impl TlsCodable for TlsAlert {
     fn write_to(&self, bytes: &mut Vec<u8>) {
         self.level.write_to(bytes);
         self.description.write_to(bytes);
     }
     fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
         Ok(Self {
-            level: TLSAlertLevel::read_from(reader)?,
-            description: TLSAlertDesc::read_from(reader)?,
+            level: TlsAlertLevel::read_from(reader)?,
+            description: TlsAlertDesc::read_from(reader)?,
         })
     }
 }
 
-impl TryFrom<TLSAlert> for TlsPlaintext {
+impl TryFrom<TlsAlert> for TlsPlaintext {
     type Error = CodingError;
 
-    fn try_from(value: TLSAlert) -> Result<Self, Self::Error> {
-        TlsPlaintext::new(TLSContentType::Alert, value.get_encoding())
+    fn try_from(value: TlsAlert) -> Result<Self, Self::Error> {
+        TlsPlaintext::new(TlsContentType::Alert, value.get_encoding())
     }
 }

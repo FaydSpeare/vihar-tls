@@ -1,11 +1,11 @@
 use log::trace;
 
 use crate::{
-    TlsError, ValidationPolicy,
-    alert::TLSAlert,
+    TlsError, TlsValidateable, ValidationPolicy,
+    alert::TlsAlert,
     connection::ConnState,
     encoding::{Reader, TlsCodable},
-    messages::{TLSCiphertext, TLSContentType, TlsHandshake, TlsMessage},
+    messages::{TlsCiphertext, TlsContentType, TlsHandshake, TlsMessage},
 };
 
 pub struct RecordLayer {
@@ -34,21 +34,23 @@ impl RecordLayer {
     ) -> Result<TlsMessage, TlsError> {
         loop {
             let mut reader = Reader::new(&self.buffer);
-            let plaintext = TLSCiphertext::read_from(&mut reader)
-                .and_then(|ciphertext| conn_state.decrypt(ciphertext))?;
-            self.buffer.drain(..reader.bytes_consumed());
+            let ciphertext = TlsCiphertext::read_from(&mut reader)?;
+            let plaintext = conn_state.decrypt(ciphertext)?;
 
+            plaintext.validate(validation_policy)?;
+
+            self.buffer.drain(..reader.bytes_consumed());
             match plaintext.content_type {
-                TLSContentType::ChangeCipherSpec => {
+                TlsContentType::ChangeCipherSpec => {
                     return Ok(TlsMessage::ChangeCipherSpec);
                 }
-                TLSContentType::ApplicationData => {
+                TlsContentType::ApplicationData => {
                     return Ok(TlsMessage::ApplicationData(plaintext.fragment.into_vec()));
                 }
-                TLSContentType::Alert => {
+                TlsContentType::Alert => {
                     self.alert_buffer.extend(plaintext.fragment.into_vec());
                     let mut reader = Reader::new(&self.alert_buffer);
-                    match TLSAlert::read_from(&mut reader) {
+                    match TlsAlert::read_from(&mut reader) {
                         Ok(alert) => {
                             self.alert_buffer.drain(..reader.bytes_consumed());
                             return Ok(TlsMessage::Alert(alert));
@@ -56,7 +58,7 @@ impl RecordLayer {
                         Err(e) => trace!("Alert parsing failed: {e}"),
                     }
                 }
-                TLSContentType::Handshake => {
+                TlsContentType::Handshake => {
                     self.handshake_buffer.extend(plaintext.fragment.into_vec());
                     let mut reader = Reader::new(&self.handshake_buffer);
                     match TlsHandshake::read_from(&mut reader) {
@@ -70,7 +72,7 @@ impl RecordLayer {
                         Err(e) => trace!("Handshake parsing failed: {e}"),
                     }
                 }
-                TLSContentType::Unknown(x) => unimplemented!("Unknown content type: {x}"),
+                TlsContentType::Unknown(x) => unimplemented!("Unknown content type: {x}"),
             }
         }
     }

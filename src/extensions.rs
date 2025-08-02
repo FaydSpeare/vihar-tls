@@ -3,7 +3,7 @@ use std::{collections::HashSet, fmt::Debug};
 
 use crate::{
     UnrecognisedServerNamePolicy, ValidationPolicy,
-    alert::{TLSAlert, TLSAlertDesc},
+    alert::{TlsAlert, TlsAlertDesc},
     encoding::{
         CodingError, LengthPrefixWriter, LengthPrefixedVec, MaybeEmpty, NonEmpty, Reader,
         Reconstrainable, TlsCodable,
@@ -142,7 +142,7 @@ impl Extensions {
         Self(None)
     }
 
-    pub fn validate(&self, policy: &ValidationPolicy) -> Result<(), TLSAlert> {
+    pub fn validate(&self, policy: &ValidationPolicy) -> Result<(), TlsAlert> {
         if let Some(extensions) = &self.0 {
             for item in extensions.iter() {
                 if let Extension::ServerName(ext) = item {
@@ -480,14 +480,14 @@ impl ServerNameExt {
         }
     }
 
-    pub fn validate(&self, policy: &ValidationPolicy) -> Result<(), TLSAlert> {
+    pub fn validate(&self, policy: &ValidationPolicy) -> Result<(), TlsAlert> {
         if let UnrecognisedServerNamePolicy::Alert(level) = policy.unrecognised_server_name {
             if self
                 .list
                 .iter()
                 .any(|server_name| matches!(server_name, ServerName::Unknown(_, _)))
             {
-                return Err(TLSAlert::new(level, TLSAlertDesc::UnrecognisedName));
+                return Err(TlsAlert::new(level, TlsAlertDesc::UnrecognisedName));
             }
         }
         Ok(())

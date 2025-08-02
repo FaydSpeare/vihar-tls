@@ -1,4 +1,4 @@
-use crate::alert::{TLSAlert, TLSAlertDesc};
+use crate::alert::{TlsAlert, TlsAlertDesc};
 use crate::ciphersuite::{
     CipherSuite, CipherSuiteId, CipherSuiteMethods, CipherType, CompressionAlgorithm, EncAlgorithm,
     MacAlgorithm, PrfAlgorithm,
@@ -10,7 +10,7 @@ use crate::extensions::{
     ALPNExt, ExtendedMasterSecretExt, RenegotiationInfoExt, ServerNameExt, SessionTicketExt,
 };
 use crate::messages::{
-    ClientHello, SessionId, TLSCiphertext, TlsCompressed, TlsHandshake, TlsMessage, TlsPlaintext,
+    ClientHello, SessionId, TlsCiphertext, TlsCompressed, TlsHandshake, TlsMessage, TlsPlaintext,
 };
 use crate::record::RecordLayer;
 use crate::state_machine::{ConnStates, TlsAction, TlsEntity, TlsHandshakeStateMachine, TlsState};
@@ -115,9 +115,9 @@ pub struct InitialConnState {
 }
 
 impl InitialConnState {
-    pub fn encrypt(&mut self, plaintext: TlsPlaintext) -> TLSCiphertext {
+    pub fn encrypt(&mut self, plaintext: TlsPlaintext) -> TlsCiphertext {
         self.seq_num += 1;
-        TLSCiphertext {
+        TlsCiphertext {
             content_type: plaintext.content_type,
             version: plaintext.version,
             fragment: plaintext.fragment.reconstrain().expect(
@@ -126,7 +126,7 @@ impl InitialConnState {
         }
     }
 
-    pub fn decrypt(&mut self, ciphertext: TLSCiphertext) -> Result<TlsPlaintext, CodingError> {
+    pub fn decrypt(&mut self, ciphertext: TlsCiphertext) -> Result<TlsPlaintext, TlsError> {
         self.seq_num += 1;
         Ok(TlsPlaintext {
             content_type: ciphertext.content_type,
@@ -161,10 +161,7 @@ impl SecureConnState {
         }
     }
 
-    fn decrypt_block_cipher(
-        &self,
-        ciphertext: TLSCiphertext,
-    ) -> Result<TlsCompressed, CodingError> {
+    fn decrypt_block_cipher(&self, ciphertext: TlsCiphertext) -> Result<TlsCompressed, TlsError> {
         let content_type = ciphertext.content_type;
         let version = ciphertext.version;
         let (iv, ciphertext) = ciphertext
@@ -176,10 +173,16 @@ impl SecureConnState {
             .decrypt(ciphertext, &self.enc_key, iv, None);
 
         let len = decrypted.len();
-        let padding = decrypted[len - 1] as usize;
+        let padding_len = decrypted[len - 1];
         let mac_len = self.params.mac_algorithm.mac_length();
-        let fragment = decrypted[..len - padding - 1 - mac_len].to_vec();
-        let actual_mac = decrypted[len - padding - 1 - mac_len..len - padding - 1].to_vec();
+        let fragment_len = len - (padding_len as usize) - 1 - mac_len;
+        let (fragment, mac_and_padding) = decrypted.split_at(fragment_len);
+        let (actual_mac, padding_bytes) = mac_and_padding.split_at(mac_len);
+
+        if padding_bytes.iter().any(|b| *b != padding_len) {
+            debug!("invalid padding bytes: {:?}", padding_bytes);
+            return Err(TlsAlert::fatal(TlsAlertDesc::BadRecordMac).into());
+        }
 
         let mut bytes = Vec::<u8>::new();
         bytes.extend_from_slice(&self.seq_num.to_be_bytes());
@@ -189,16 +192,20 @@ impl SecureConnState {
         bytes.extend_from_slice(&fragment);
 
         let expected_mac = self.params.mac_algorithm.mac(&self.mac_key, &bytes);
-        assert_eq!(expected_mac, actual_mac, "bad_record_mac");
+        if actual_mac != expected_mac {
+            debug!("mac verification failed");
+            return Err(TlsAlert::fatal(TlsAlertDesc::BadRecordMac).into());
+        }
 
         Ok(TlsCompressed {
             content_type,
             version,
-            fragment: fragment.try_into()?,
+            fragment: fragment.to_vec().try_into()?,
         })
     }
 
-    fn decrypt_aead_cipher(&self, ciphertext: TLSCiphertext) -> Result<TlsCompressed, CodingError> {
+    // TODO: send bad_record_mac if decryption fails?
+    fn decrypt_aead_cipher(&self, ciphertext: TlsCiphertext) -> Result<TlsCompressed, TlsError> {
         let content_type = ciphertext.content_type;
         let version = ciphertext.version;
         let (explicit, ciphertext) = ciphertext
@@ -209,12 +216,14 @@ impl SecureConnState {
         aad.extend_from_slice(&self.seq_num.to_be_bytes());
         aad.push(u8::from(content_type));
         aad.extend([3, 3]);
+
         // Remeber the -16 to remove the tag length
         aad.extend(((ciphertext.len() - 16) as u16).to_be_bytes());
         let fragment =
             self.params
                 .enc_algorithm
                 .decrypt(ciphertext, &self.enc_key, &iv, Some(&aad));
+
         Ok(TlsCompressed {
             content_type,
             version,
@@ -225,7 +234,7 @@ impl SecureConnState {
     fn encrypt_block_cipher(
         &self,
         compressed: TlsCompressed,
-    ) -> Result<TLSCiphertext, CodingError> {
+    ) -> Result<TlsCiphertext, CodingError> {
         let mut bytes = Vec::<u8>::new();
         bytes.extend_from_slice(&self.seq_num.to_be_bytes());
         bytes.push(u8::from(compressed.content_type));
@@ -256,14 +265,14 @@ impl SecureConnState {
         let mut fragment = Vec::<u8>::new();
         fragment.extend_from_slice(&iv);
         fragment.extend_from_slice(&ciphertext);
-        Ok(TLSCiphertext {
+        Ok(TlsCiphertext {
             content_type: compressed.content_type,
             version: compressed.version,
             fragment: fragment.try_into()?,
         })
     }
 
-    fn encrypt_aead_cipher(&self, compressed: TlsCompressed) -> Result<TLSCiphertext, CodingError> {
+    fn encrypt_aead_cipher(&self, compressed: TlsCompressed) -> Result<TlsCiphertext, CodingError> {
         let implicit: [u8; 4] = self.write_iv.clone().try_into().unwrap();
         let explicit = utils::get_random_bytes(self.params.enc_algorithm.record_iv_length());
         let nonce = [&implicit[..], &explicit[..]].concat();
@@ -281,7 +290,7 @@ impl SecureConnState {
             Some(&aad),
         );
         let fragment = [&explicit, &aead_ciphertext[..]].concat();
-        Ok(TLSCiphertext {
+        Ok(TlsCiphertext {
             content_type: compressed.content_type,
             version: compressed.version,
             fragment: fragment.try_into()?,
@@ -300,7 +309,7 @@ impl SecureConnState {
         }
     }
 
-    pub fn decompress(&mut self, compressed: TlsCompressed) -> Result<TlsPlaintext, CodingError> {
+    pub fn decompress(&mut self, compressed: TlsCompressed) -> Result<TlsPlaintext, TlsError> {
         match self.params.compression_algorithm {
             CompressionAlgorithm::Null => Ok(TlsPlaintext {
                 content_type: compressed.content_type,
@@ -310,7 +319,7 @@ impl SecureConnState {
         }
     }
 
-    pub fn encrypt(&mut self, plaintext: TlsPlaintext) -> Result<TLSCiphertext, CodingError> {
+    pub fn encrypt(&mut self, plaintext: TlsPlaintext) -> Result<TlsCiphertext, CodingError> {
         let compressed = self.compress(plaintext);
         let ciphertext = match self.params.enc_algorithm.cipher_type() {
             CipherType::Block => self.encrypt_block_cipher(compressed),
@@ -321,12 +330,12 @@ impl SecureConnState {
         ciphertext
     }
 
-    pub fn decrypt(&mut self, ciphertext: TLSCiphertext) -> Result<TlsPlaintext, CodingError> {
+    pub fn decrypt(&mut self, ciphertext: TlsCiphertext) -> Result<TlsPlaintext, TlsError> {
         let compressed = match self.params.enc_algorithm.cipher_type() {
-            CipherType::Block => self.decrypt_block_cipher(ciphertext),
-            CipherType::Aead => self.decrypt_aead_cipher(ciphertext),
+            CipherType::Block => self.decrypt_block_cipher(ciphertext)?,
+            CipherType::Aead => self.decrypt_aead_cipher(ciphertext)?,
             CipherType::Stream => unimplemented!(),
-        }?;
+        };
         self.seq_num += 1;
         self.decompress(compressed)
     }
@@ -342,14 +351,14 @@ impl ConnState {
     pub fn encrypt<T: TryInto<TlsPlaintext, Error = CodingError>>(
         &mut self,
         plaintext: T,
-    ) -> Result<TLSCiphertext, CodingError> {
+    ) -> Result<TlsCiphertext, CodingError> {
         match self {
             Self::Initial(state) => Ok(state.encrypt(plaintext.try_into()?)),
             Self::Secure(state) => state.encrypt(plaintext.try_into()?),
         }
     }
 
-    pub fn decrypt(&mut self, ciphertext: TLSCiphertext) -> Result<TlsPlaintext, CodingError> {
+    pub fn decrypt(&mut self, ciphertext: TlsCiphertext) -> Result<TlsPlaintext, TlsError> {
         match self {
             Self::Initial(state) => state.decrypt(ciphertext),
             Self::Secure(state) => state.decrypt(ciphertext),
@@ -381,17 +390,6 @@ impl<T: Read + Write> TlsConnection<T> {
             record_layer: RecordLayer::new(),
         }
     }
-
-    // pub fn new_with_context(domain: &str, ctx: TlsContext) -> TLSResult<Self> {
-    //     info!("Establishing TLS with {}", domain);
-    //     let port = if domain == "localhost" { "4433" } else { "443" };
-    //     Ok(Self {
-    //         stream: TcpStream::connect(format!("{domain}:{port}"))?,
-    //         handshake_state_machine: TlsHandshakeStateMachine::from_context(ctx),
-    //         conn_states: ConnStates::new(),
-    //         record_layer: RecordLayer::new(),
-    //     })
-    // }
 
     fn process_message(&mut self, msg: &TlsMessage) -> TlsResult<()> {
         for action in self.handshake_state_machine.transition(msg)? {
@@ -438,7 +436,10 @@ impl<T: Read + Write> TlsConnection<T> {
                 Err(e) => match e {
                     TlsError::Alert(alert) => self.send_alert(alert)?,
                     TlsError::Coding(e) => {
-                        trace!("Record layer parsing failed: {e}")
+                        debug!("Record layer parsing failed: {e}");
+                        
+                        // Not if we just need more data...
+                        // self.send_alert(TLSAlert::fatal(TLSAlertDesc::DecodeError))?;
                     }
                 },
             };
@@ -459,7 +460,7 @@ impl<T: Read + Write> TlsConnection<T> {
         Ok(())
     }
 
-    fn send_alert(&mut self, alert: TLSAlert) -> TlsResult<()> {
+    fn send_alert(&mut self, alert: TlsAlert) -> TlsResult<()> {
         let ciphertext = self.conn_states.write.encrypt(TlsMessage::Alert(alert))?;
         self.send_bytes(&ciphertext.get_encoding())?;
         Ok(())
@@ -587,7 +588,7 @@ impl<T: Read + Write> TlsConnection<T> {
     }
 
     pub fn notify_close(&mut self) -> TlsResult<()> {
-        let alert = TLSAlert::warning(TLSAlertDesc::CloseNotify);
+        let alert = TlsAlert::warning(TlsAlertDesc::CloseNotify);
         let ciphertext = self.conn_states.write.encrypt(alert)?;
         self.send_bytes(&ciphertext.get_encoding())?;
         Ok(())

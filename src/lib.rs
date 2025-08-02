@@ -1,4 +1,4 @@
-use alert::{TLSAlert, TLSAlertLevel};
+use alert::{TlsAlert, TlsAlertLevel};
 use encoding::CodingError;
 use thiserror::Error;
 
@@ -30,18 +30,18 @@ pub enum TlsError {
     Coding(#[from] CodingError),
 
     #[error("TlsAlert: {0:?}")]
-    Alert(TLSAlert),
+    Alert(TlsAlert),
 }
 
-impl From<TLSAlert> for TlsError {
-    fn from(value: TLSAlert) -> Self {
+impl From<TlsAlert> for TlsError {
+    fn from(value: TlsAlert) -> Self {
         Self::Alert(value)
     }
 }
 
 #[derive(Debug, Clone)]
 pub enum UnrecognisedServerNamePolicy {
-    Alert(TLSAlertLevel),
+    Alert(TlsAlertLevel),
     Ignore,
 }
 
@@ -55,13 +55,13 @@ pub struct ValidationPolicy {
 impl Default for ValidationPolicy {
     fn default() -> Self {
         Self {
-            unrecognised_server_name: UnrecognisedServerNamePolicy::Alert(TLSAlertLevel::Fatal),
+            unrecognised_server_name: UnrecognisedServerNamePolicy::Alert(TlsAlertLevel::Fatal),
         }
     }
 }
 
-pub trait TlsValidable {
-    fn validate(&self, policy: &ValidationPolicy) -> Result<(), TLSAlert>;
+pub trait TlsValidateable {
+    fn validate(&self, policy: &ValidationPolicy) -> Result<(), TlsAlert>;
 }
 
 /*

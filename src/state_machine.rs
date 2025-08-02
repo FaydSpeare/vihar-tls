@@ -16,7 +16,7 @@ use crate::signature::{
 use crate::storage::SessionTicketInfo;
 use crate::{
     TlsResult,
-    alert::TLSAlert,
+    alert::TlsAlert,
     ciphersuite::{CipherSuite, CipherSuiteMethods, KeyExchangeAlgorithm},
     connection::{ConnState, InitialConnState, SecureConnState, SecurityParams},
     encoding::TlsCodable,
@@ -63,7 +63,7 @@ pub enum TlsEntity {
 
 #[derive(Debug)]
 pub enum TlsAction {
-    SendAlert(TLSAlert),
+    SendAlert(TlsAlert),
     ChangeCipherSpec(TlsEntity, ConnState),
     SendHandshakeMsg(TlsHandshake),
 }
@@ -190,6 +190,7 @@ impl HandleRecord for AwaitClientHello {
             .collect();
         debug!("CipherSuites: {:#?}", suites);
 
+        // TODO: send handshake_failure alert if no good
         let selected_cipher_suite = *hello.cipher_suites.last().unwrap();
         debug!(
             "Selected CipherSuite {}",
