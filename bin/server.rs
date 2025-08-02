@@ -1,6 +1,6 @@
 use std::{net::TcpListener, thread::sleep, time::Duration};
 
-use vihar_tls::{client::TlsConfigBuilder, server::TlsServer};
+use vihar_tls::{client::TlsConfigBuilder, server::TlsServer, UnrecognisedServerNamePolicy, ValidationPolicy};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
@@ -12,6 +12,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         TlsConfigBuilder::new()
             .with_session_ticket_store("server-sdb")
             .with_certificate_pem("testing/rsacert.pem", "testing/rsakey.pem")
+            .with_validation_policy(ValidationPolicy {
+                unrecognised_server_name: UnrecognisedServerNamePolicy::Ignore,
+            })
             .build(),
         tcp_stream,
     );

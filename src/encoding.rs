@@ -26,6 +26,9 @@ pub enum CodingError {
 
     #[error("Invalid {0} enum value: {1}")]
     InvalidEnumValue(&'static str, usize),
+
+    #[error("Duplicate server name types are prohibited in the SNI extension")]
+    DuplicateServerNameType,
 }
 
 pub struct Reader<'a> {

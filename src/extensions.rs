@@ -1,9 +1,13 @@
 use log::warn;
-use std::fmt::Debug;
+use std::{collections::HashSet, fmt::Debug};
 
-use crate::encoding::{
-    CodingError, LengthPrefixWriter, LengthPrefixedVec, MaybeEmpty, NonEmpty, Reader,
-    Reconstrainable, TlsCodable,
+use crate::{
+    UnrecognisedServerNamePolicy, ValidationPolicy,
+    alert::{TLSAlert, TLSAlertDesc},
+    encoding::{
+        CodingError, LengthPrefixWriter, LengthPrefixedVec, MaybeEmpty, NonEmpty, Reader,
+        Reconstrainable, TlsCodable,
+    },
 };
 
 type UnknownExtensionBytes = LengthPrefixedVec<u16, u8, MaybeEmpty>;
@@ -15,6 +19,7 @@ tls_codable_enum! {
         RenegotiationInfo = 0xff01,
         SessionTicket = 0x0023,
         ExtendedMasterSecret = 0x0017,
+        ServerName = 0x0000,
         ALPN = 0x0010
     }
 }
@@ -26,6 +31,7 @@ pub enum Extension {
     SessionTicket(SessionTicketExt),
     ExtendedMasterSecret(ExtendedMasterSecretExt),
     ALPN(ALPNExt),
+    ServerName(ServerNameExt),
     Unknown(u16, UnknownExtensionBytes),
 }
 
@@ -37,6 +43,7 @@ impl Extension {
             Self::SessionTicket(_) => ExtensionType::SessionTicket,
             Self::ExtendedMasterSecret(_) => ExtensionType::ExtendedMasterSecret,
             Self::ALPN(_) => ExtensionType::ALPN,
+            Self::ServerName(_) => ExtensionType::ServerName,
             Self::Unknown(x, _) => ExtensionType::Unknown(*x),
         }
     }
@@ -51,6 +58,7 @@ impl TlsCodable for Extension {
             Self::SessionTicket(ext) => ext.write_to(bytes),
             Self::ExtendedMasterSecret(ext) => ext.write_to(bytes),
             Self::ALPN(ext) => ext.write_to(bytes),
+            Self::ServerName(ext) => ext.write_to(bytes),
             Self::Unknown(ext_type, ext) => {
                 ext_type.write_to(bytes);
                 ext.write_to(bytes)
@@ -67,6 +75,7 @@ impl TlsCodable for Extension {
                 ExtendedMasterSecretExt::read_from(reader)?.into()
             }
             ExtensionType::ALPN => ALPNExt::read_from(reader)?.into(),
+            ExtensionType::ServerName => ServerNameExt::read_from(reader)?.into(),
             ExtensionType::Unknown(x) => {
                 warn!("unknown extension: {}", x);
                 Self::Unknown(x, UnknownExtensionBytes::read_from(reader)?)
@@ -106,6 +115,12 @@ impl From<ALPNExt> for Extension {
     }
 }
 
+impl From<ServerNameExt> for Extension {
+    fn from(value: ServerNameExt) -> Self {
+        Self::ServerName(value)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Extensions(pub Option<LengthPrefixedVec<u16, Extension, NonEmpty>>);
 
@@ -119,6 +134,17 @@ impl Extensions {
 
     pub fn empty() -> Self {
         Self(None)
+    }
+
+    pub fn validate(&self, policy: &ValidationPolicy) -> Result<(), TLSAlert> {
+        if let Some(extensions) = &self.0 {
+            for item in extensions.iter() {
+                if let Extension::ServerName(ext) = item {
+                    ext.validate(policy)?;
+                }
+            }
+        }
+        Ok(())
     }
 
     pub fn includes_secure_renegotiation(&self) -> bool {
@@ -394,5 +420,129 @@ impl TlsCodable for ALPNExt {
         let _ext_len = u16::read_from(reader)?;
         let protocols = ProtocolList::read_from(reader)?;
         Ok(Self { protocols })
+    }
+}
+
+type HostName = LengthPrefixedVec<u16, u8, NonEmpty>;
+type ServerNameList = LengthPrefixedVec<u16, ServerName, NonEmpty>;
+type UnknownName = LengthPrefixedVec<u16, u8, MaybeEmpty>;
+
+tls_codable_enum! {
+    #[repr(u8)]
+    enum NameType {
+        HostName = 0
+    }
+}
+
+#[derive(Debug, Clone)]
+enum ServerName {
+    HostName(HostName),
+    Unknown(u8, UnknownName),
+}
+
+impl ServerName {
+    fn name_type(&self) -> NameType {
+        match self {
+            Self::HostName(_) => NameType::HostName,
+            Self::Unknown(x, _) => NameType::from(*x),
+        }
+    }
+}
+
+impl TlsCodable for ServerName {
+    fn write_to(&self, bytes: &mut Vec<u8>) {
+        self.name_type().write_to(bytes);
+        match self {
+            Self::HostName(host_name) => {
+                host_name.write_to(bytes);
+            }
+            Self::Unknown(_, unknown_name) => {
+                unknown_name.write_to(bytes);
+            }
+        }
+    }
+
+    fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
+        Ok(match NameType::read_from(reader)? {
+            NameType::HostName => Self::HostName(HostName::read_from(reader)?),
+            NameType::Unknown(name_type) => {
+                Self::Unknown(name_type, UnknownName::read_from(reader)?)
+            }
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ServerNameExt {
+    list: ServerNameList,
+}
+
+impl ServerNameExt {
+    pub fn new(host_name: &str) -> Self {
+        let host_name = ServerName::HostName(host_name.as_bytes().to_vec().try_into().unwrap());
+        Self {
+            list: vec![
+                host_name.clone(),
+                ServerName::Unknown(1, vec![1, 2, 3].try_into().unwrap()),
+            ]
+            .try_into()
+            .unwrap(),
+        }
+    }
+
+    pub fn validate(&self, policy: &ValidationPolicy) -> Result<(), TLSAlert> {
+        if let UnrecognisedServerNamePolicy::Alert(level) = policy.unrecognised_server_name {
+            if self
+                .list
+                .iter()
+                .any(|server_name| matches!(server_name, ServerName::Unknown(_, _)))
+            {
+                return Err(TLSAlert::new(level, TLSAlertDesc::UnrecognisedName));
+            }
+        }
+        Ok(())
+    }
+}
+
+// TODO:
+// A server that receives a client hello containing the "server_name"
+//     extension MAY use the information contained in the extension to guide
+//     its selection of an appropriate certificate to return to the client,
+//     and/or other aspects of security policy.  In this event, the server
+//     SHALL include an extension of type "server_name" in the (extended)
+//     server hello.  The "extension_data" field of this extension SHALL be
+//     empty.
+//
+//     When the server is deciding whether or not to accept a request to
+//     resume a session, the contents of a server_name extension MAY be used
+//     in the lookup of the session in the session cache.  The client SHOULD
+//     include the same server_name extension in the session resumption
+//     request as it did in the full handshake that established the session.
+//     A server that implements this extension MUST NOT accept the request
+//     to resume the session if the server_name extension contains a
+//     different name.  Instead, it proceeds with a full handshake to
+//     establish a new session.  When resuming a session, the server MUST
+//     NOT include a server_name extension in the server hello.
+//
+impl TlsCodable for ServerNameExt {
+    fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
+        let _ext_len = u16::read_from(reader)?;
+        let list = ServerNameList::read_from(reader)?;
+
+        let mut seen = HashSet::new();
+        if !list
+            .iter()
+            .all(|server_name| seen.insert(server_name.name_type()))
+        {
+            return Err(CodingError::DuplicateServerNameType);
+        }
+
+        Ok(Self { list })
+    }
+
+    fn write_to(&self, bytes: &mut Vec<u8>) {
+        let mut writer = LengthPrefixWriter::<u16>::new(bytes);
+        self.list.write_to(&mut writer);
+        writer.finalize_length_prefix();
     }
 }

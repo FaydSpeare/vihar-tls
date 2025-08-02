@@ -1,7 +1,7 @@
 use log::trace;
 
 use crate::{
-    TlsResult,
+    TlsError, ValidationPolicy,
     alert::TLSAlert,
     connection::ConnState,
     encoding::{Reader, TlsCodable},
@@ -27,7 +27,11 @@ impl RecordLayer {
         self.buffer.extend_from_slice(bytes);
     }
 
-    pub fn try_parse_message(&mut self, conn_state: &mut ConnState) -> TlsResult<TlsMessage> {
+    pub fn try_parse_message(
+        &mut self,
+        conn_state: &mut ConnState,
+        validation_policy: &ValidationPolicy,
+    ) -> Result<TlsMessage, TlsError> {
         loop {
             let mut reader = Reader::new(&self.buffer);
             let plaintext = TLSCiphertext::read_from(&mut reader)
@@ -57,6 +61,9 @@ impl RecordLayer {
                     let mut reader = Reader::new(&self.handshake_buffer);
                     match TlsHandshake::read_from(&mut reader) {
                         Ok(handshake) => {
+                            // Validation of handshake, which may return errors
+                            handshake.validate(&validation_policy)?;
+
                             self.handshake_buffer.drain(..reader.bytes_consumed());
                             return Ok(TlsMessage::Handshake(handshake));
                         }

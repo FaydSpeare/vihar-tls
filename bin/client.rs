@@ -1,6 +1,9 @@
 use std::{net::TcpStream, thread::sleep, time::Duration};
 
-use vihar_tls::client::{TlsClient, TlsConfigBuilder};
+use vihar_tls::{
+    UnrecognisedServerNamePolicy, ValidationPolicy,
+    client::{TlsClient, TlsConfigBuilder},
+};
 
 fn get_addr_from_env() -> String {
     let mut args = std::env::args();
@@ -21,6 +24,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tcp_stream = TcpStream::connect(addr)?;
     let mut client = TlsClient::new(
         TlsConfigBuilder::new()
+            .with_server_name("google.com")
             .with_session_ticket_store("sdb")
             .build(),
         tcp_stream,

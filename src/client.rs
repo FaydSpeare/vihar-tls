@@ -7,7 +7,7 @@ use rsa::{RsaPrivateKey, pkcs8::DecodePrivateKey};
 use x509_parser::pem::parse_x509_pem;
 
 use crate::{
-    TlsResult,
+    TlsResult, ValidationPolicy,
     ciphersuite::CipherSuiteId,
     connection::TlsConnection,
     extensions::{ALPNExt, ExtendedMasterSecretExt, Extension, RenegotiationInfoExt},
@@ -26,6 +26,8 @@ pub struct TlsConfigBuilder {
     pub extensions: Option<Box<[Extension]>>,
     pub session_ticket_store: Option<Box<dyn SessionTicketStorage>>,
     pub certificate: Option<CertificateAndPrivateKey>,
+    pub server_name: Option<String>,
+    pub validation_policy: Option<ValidationPolicy>,
 }
 
 impl TlsConfigBuilder {
@@ -52,6 +54,8 @@ impl TlsConfigBuilder {
             ),
             session_ticket_store: None,
             certificate: None,
+            server_name: None,
+            validation_policy: None,
         }
     }
 
@@ -61,6 +65,8 @@ impl TlsConfigBuilder {
             extensions: self.extensions.unwrap(),
             session_ticket_store: self.session_ticket_store,
             certificate: self.certificate,
+            server_name: self.server_name,
+            validation_policy: self.validation_policy.unwrap_or_default(),
         }
     }
 
@@ -69,11 +75,17 @@ impl TlsConfigBuilder {
         self
     }
 
-    pub fn with_certificate_pem(
-        mut self,
-        certificate_path: &str,
-        private_key_path: &str,
-    ) -> Self {
+    pub fn with_server_name(mut self, server_name: &str) -> Self {
+        self.server_name = Some(server_name.to_string());
+        self
+    }
+
+    pub fn with_validation_policy(mut self, policy: ValidationPolicy) -> Self {
+        self.validation_policy = Some(policy);
+        self
+    }
+
+    pub fn with_certificate_pem(mut self, certificate_path: &str, private_key_path: &str) -> Self {
         let certificate_pem = std::fs::read(certificate_path).expect("Failed to read certificate");
         let certificate_der = parse_x509_pem(&certificate_pem)
             .expect("Failed to parse certificate")
@@ -97,6 +109,8 @@ pub struct TlsConfig {
     pub extensions: Box<[Extension]>,
     pub session_ticket_store: Option<Box<dyn SessionTicketStorage>>,
     pub certificate: Option<CertificateAndPrivateKey>,
+    pub server_name: Option<String>,
+    pub validation_policy: ValidationPolicy,
 }
 
 pub struct TlsClient<T: Read + Write> {

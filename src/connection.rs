@@ -7,14 +7,14 @@ use crate::client::TlsConfig;
 use crate::encoding::TlsCodable;
 use crate::encoding::{CodingError, Reconstrainable};
 use crate::extensions::{
-    ALPNExt, ExtendedMasterSecretExt, RenegotiationInfoExt, SessionTicketExt,
+    ALPNExt, ExtendedMasterSecretExt, RenegotiationInfoExt, ServerNameExt, SessionTicketExt,
 };
 use crate::messages::{
     ClientHello, SessionId, TLSCiphertext, TlsCompressed, TlsHandshake, TlsMessage, TlsPlaintext,
 };
 use crate::record::RecordLayer;
 use crate::state_machine::{ConnStates, TlsAction, TlsEntity, TlsHandshakeStateMachine, TlsState};
-use crate::{TlsResult, utils};
+use crate::{TlsError, TlsResult, utils};
 use log::{debug, trace};
 use std::io::{Read, Write};
 use std::sync::Arc;
@@ -362,6 +362,7 @@ pub struct TlsConnection<T: Read + Write> {
     pub handshake_state_machine: TlsHandshakeStateMachine,
     conn_states: ConnStates,
     record_layer: RecordLayer,
+    config: Arc<TlsConfig>,
     side: TlsEntity,
 }
 
@@ -374,7 +375,8 @@ impl<T: Read + Write> TlsConnection<T> {
         Self {
             side,
             stream,
-            handshake_state_machine: TlsHandshakeStateMachine::new(side, config),
+            handshake_state_machine: TlsHandshakeStateMachine::new(side, config.clone()),
+            config,
             conn_states: ConnStates::new(),
             record_layer: RecordLayer::new(),
         }
@@ -421,7 +423,7 @@ impl<T: Read + Write> TlsConnection<T> {
         loop {
             match self
                 .record_layer
-                .try_parse_message(&mut self.conn_states.read)
+                .try_parse_message(&mut self.conn_states.read, &self.config.validation_policy)
             {
                 Ok(msg) => {
                     // println!("{:?}", msg);
@@ -433,7 +435,12 @@ impl<T: Read + Write> TlsConnection<T> {
                     }
                     return Ok(msg);
                 }
-                Err(e) => trace!("Record layer parsing failed: {e}"),
+                Err(e) => match e {
+                    TlsError::Alert(alert) => self.send_alert(alert)?,
+                    TlsError::Coding(e) => {
+                        trace!("Record layer parsing failed: {e}")
+                    }
+                },
             };
 
             let mut buf = [0u8; 8096];
@@ -449,6 +456,12 @@ impl<T: Read + Write> TlsConnection<T> {
 
     fn send_bytes(&mut self, bytes: &[u8]) -> TlsResult<()> {
         self.stream.write_all(bytes)?;
+        Ok(())
+    }
+
+    fn send_alert(&mut self, alert: TLSAlert) -> TlsResult<()> {
+        let ciphertext = self.conn_states.write.encrypt(TlsMessage::Alert(alert))?;
+        self.send_bytes(&ciphertext.get_encoding())?;
         Ok(())
     }
 
@@ -471,6 +484,10 @@ impl<T: Read + Write> TlsConnection<T> {
                     }
                     None => extensions.push(SessionTicketExt::new().into()),
                 }
+            }
+
+            if let Some(server_name) = &config.server_name {
+                extensions.push(ServerNameExt::new(&server_name).into());
             }
 
             let client_hello = TlsMessage::Handshake(TlsHandshake::ClientHello(ClientHello::new(
@@ -570,7 +587,7 @@ impl<T: Read + Write> TlsConnection<T> {
     }
 
     pub fn notify_close(&mut self) -> TlsResult<()> {
-        let alert = TLSAlert::new(TLSAlertLevel::Warning, TLSAlertDesc::CloseNotify);
+        let alert = TLSAlert::warning(TLSAlertDesc::CloseNotify);
         let ciphertext = self.conn_states.write.encrypt(alert)?;
         self.send_bytes(&ciphertext.get_encoding())?;
         Ok(())

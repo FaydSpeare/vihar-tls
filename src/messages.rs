@@ -7,7 +7,7 @@ use crate::encoding::{
 use crate::extensions::{
     Extension, Extensions, HashAlgo, RenegotiationInfoExt, SigAlgo, SignatureAlgorithmsExt,
 };
-use crate::utils;
+use crate::{ValidationPolicy, utils};
 
 #[derive(Debug, Clone, Copy)]
 pub struct ProtocolVersion {
@@ -232,7 +232,7 @@ impl TlsCodable for ServerHello {
         let cipher_suite = CipherSuiteId::read_from(reader)?;
         let compression_method = CompressionMethodId::read_from(reader)?;
         let extensions = Extensions::read_from(reader)?;
-        // println!("Server Extensions: {:#?}", extensions);
+        println!("Server Extensions: {:#?}", extensions);
         Ok(Self {
             server_version,
             random,
@@ -555,6 +555,14 @@ impl TlsHandshake {
             Self::ClientKeyExchange(_) => TlsHandshakeType::ClientKeyExchange,
             Self::Finished(_) => TlsHandshakeType::Finished,
         }
+    }
+
+    pub fn validate(&self, policy: &ValidationPolicy) -> Result<(), TLSAlert> {
+        match self {
+            Self::ClientHello(hello) => hello.extensions.validate(policy)?,
+            _ => {}
+        }
+        Ok(())
     }
 }
 

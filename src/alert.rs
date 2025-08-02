@@ -27,6 +27,7 @@ tls_codable_enum! {
         UserCanceled = 90,
         NoRenegotiation = 100,
         UnsupportedExtension = 110,
+        UnrecognisedName = 112 // SNI
     }
 }
 
@@ -47,6 +48,19 @@ pub struct TLSAlert {
 impl TLSAlert {
     pub fn new(level: TLSAlertLevel, description: TLSAlertDesc) -> Self {
         Self { level, description }
+    }
+    pub fn fatal(description: TLSAlertDesc) -> Self {
+        Self {
+            level: TLSAlertLevel::Fatal,
+            description,
+        }
+    }
+
+    pub fn warning(description: TLSAlertDesc) -> Self {
+        Self {
+            level: TLSAlertLevel::Warning,
+            description,
+        }
     }
 }
 

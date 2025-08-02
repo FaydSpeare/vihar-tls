@@ -1,3 +1,7 @@
+use alert::{TLSAlert, TLSAlertLevel};
+use encoding::CodingError;
+use thiserror::Error;
+
 #[macro_use]
 mod macros;
 
@@ -12,13 +16,51 @@ mod signature;
 mod state_machine;
 mod utils;
 
-pub mod client;
-pub mod server;
 pub mod ciphersuite;
+pub mod client;
 pub mod connection;
+pub mod server;
 pub mod storage;
 
 pub type TlsResult<T> = Result<T, Box<dyn std::error::Error>>;
+
+#[derive(Debug, Error)]
+pub enum TlsError {
+    #[error("Coding error: {0}")]
+    Coding(#[from] CodingError),
+
+    #[error("TlsAlert: {0:?}")]
+    Alert(TLSAlert),
+}
+
+impl From<TLSAlert> for TlsError {
+    fn from(value: TLSAlert) -> Self {
+        Self::Alert(value)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum UnrecognisedServerNamePolicy {
+    Alert(TLSAlertLevel),
+    Ignore,
+}
+
+#[derive(Debug, Clone)]
+pub struct ValidationPolicy {
+    pub unrecognised_server_name: UnrecognisedServerNamePolicy,
+}
+
+impl Default for ValidationPolicy {
+    fn default() -> Self {
+        Self {
+            unrecognised_server_name: UnrecognisedServerNamePolicy::Alert(TLSAlertLevel::Fatal),
+        }
+    }
+}
+
+pub trait TlsValidable {
+    fn validate(&self, policy: &ValidationPolicy) -> Result<(), TLSAlert>;
+}
 
 /*
 * Not TODO:

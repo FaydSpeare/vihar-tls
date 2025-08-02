@@ -9,7 +9,7 @@ macro_rules! tls_codable_enum {
     ) => {
 
         #[non_exhaustive]
-        #[derive(Debug, PartialEq, Eq, Clone, Copy)]
+        #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
         #[repr($uint)]
         $enum_vis enum $enum_name {
             $(
@@ -59,7 +59,7 @@ macro_rules! tls_codable_enum {
         }
     ) => {
 
-        #[derive(Debug, PartialEq, Eq, Clone, Copy)]
+        #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
         $enum_vis enum $enum_name {
             $(
                 $enum_var
