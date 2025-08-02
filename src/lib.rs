@@ -13,6 +13,7 @@ mod state_machine;
 mod utils;
 
 pub mod client;
+pub mod server;
 pub mod ciphersuite;
 pub mod connection;
 pub mod storage;

@@ -211,6 +211,7 @@ pub enum CipherSuite {
     RsaAes256GcmSha384,
     DheRsaAes128GcmSha256,
     EcdheRsaAes128CbcSha,
+    Unknown,
 }
 
 impl From<CipherSuiteId> for CipherSuite {
@@ -227,7 +228,26 @@ impl From<CipherSuiteId> for CipherSuite {
             CipherSuiteId::RsaAes256GcmSha384 => RsaAes256GcmSha384.into(),
             CipherSuiteId::DheRsaAes128GcmSha256 => DheRsaAes128GcmSha256.into(),
             CipherSuiteId::EcdheRsaAes128CbcSha => EcdheRsaAes128CbcSha.into(),
-            _ => unimplemented!(),
+            _ => Unknown.into(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct Unknown;
+
+impl CipherSuiteMethods for Unknown {
+    fn encode(&self) -> u16 {
+        unimplemented!()
+    }
+
+    fn params(&self) -> CipherSuiteParams {
+        CipherSuiteParams {
+            name: "UNKNOWN",
+            mac_algorithm: MacAlgorithm::HmacSha1,
+            enc_algorithm: EncAlgorithm::Aes128Cbc,
+            key_exchange_algorithm: KeyExchangeAlgorithm::Rsa,
+            prf_algorithm: PrfAlgorithm::Sha256,
         }
     }
 }

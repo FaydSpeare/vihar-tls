@@ -361,6 +361,7 @@ pub struct TlsConnection<T: Read + Write> {
     pub handshake_state_machine: TlsHandshakeStateMachine,
     conn_states: ConnStates,
     record_layer: RecordLayer,
+    side: TlsEntity,
 }
 
 impl<T: Read + Write> TlsConnection<T> {
@@ -368,10 +369,12 @@ impl<T: Read + Write> TlsConnection<T> {
         self.handshake_state_machine.is_established()
     }
 
-    pub fn new(stream: T, config: &TlsConfig) -> Self {
+    pub fn new(side: TlsEntity, stream: T, config: &TlsConfig) -> Self {
         Self {
+            side,
             stream,
             handshake_state_machine: TlsHandshakeStateMachine::new(
+                side,
                 config.session_ticket_store.clone(),
             ),
             conn_states: ConnStates::new(),
@@ -392,17 +395,19 @@ impl<T: Read + Write> TlsConnection<T> {
 
     fn process_message(&mut self, msg: &TlsMessage) -> TlsResult<()> {
         for action in self.handshake_state_machine.transition(msg)? {
+            // println!("{:?}", action);
             match action {
-                TlsAction::ChangeCipherSpec(TlsEntity::Client, spec) => {
-                    let ciphertext = self
-                        .conn_states
-                        .write
-                        .encrypt(TlsMessage::ChangeCipherSpec)?;
-                    self.send_bytes(&ciphertext.get_encoding())?;
-                    self.conn_states.write = spec;
-                }
-                TlsAction::ChangeCipherSpec(TlsEntity::Server, spec) => {
-                    self.conn_states.read = spec;
+                TlsAction::ChangeCipherSpec(side, spec) => {
+                    if side == self.side {
+                        let ciphertext = self
+                            .conn_states
+                            .write
+                            .encrypt(TlsMessage::ChangeCipherSpec)?;
+                        self.send_bytes(&ciphertext.get_encoding())?;
+                        self.conn_states.write = spec;
+                    } else {
+                        self.conn_states.read = spec;
+                    }
                 }
                 TlsAction::SendHandshakeMsg(handshake) => {
                     let ciphertext = self.conn_states.write.encrypt(handshake)?;
@@ -421,6 +426,7 @@ impl<T: Read + Write> TlsConnection<T> {
                 .try_parse_message(&mut self.conn_states.read)
             {
                 Ok(msg) => {
+                    // println!("{:?}", msg);
                     match &msg {
                         TlsMessage::Handshake(_) | TlsMessage::ChangeCipherSpec => {
                             self.process_message(&msg)?
@@ -448,30 +454,32 @@ impl<T: Read + Write> TlsConnection<T> {
         Ok(())
     }
 
-    pub fn perform_handshake(&mut self, config: &TlsConfig) -> TlsResult<()> {
-        let mut extensions = config.extensions.to_vec();
-        match config.session_ticket_store.get_one()? {
-            Some(ticket) => {
-                debug!(
-                    "Using SessionTicket: {:?}",
-                    ticket
-                        .iter()
-                        .map(|b| format!("{:02x}", b))
-                        .collect::<String>()
-                );
-                extensions.push(SessionTicketExt::resume(ticket)?.into())
-            }
-            None => extensions.push(SessionTicketExt::new().into()),
-        }
-
-        let client_hello = TlsMessage::Handshake(TlsHandshake::ClientHello(ClientHello::new(
-            &config.cipher_suites,
-            extensions,
-            None,
-        )?));
-
+    pub fn complete_handshake(&mut self, side: TlsEntity, config: &TlsConfig) -> TlsResult<()> {
         let start_time = Instant::now();
-        self.process_message(&client_hello)?;
+
+        if side == TlsEntity::Client {
+            let mut extensions = config.extensions.to_vec();
+            match config.session_ticket_store.get_one()? {
+                Some(ticket) => {
+                    debug!(
+                        "Using SessionTicket: {:?}",
+                        ticket
+                            .iter()
+                            .map(|b| format!("{:02x}", b))
+                            .collect::<String>()
+                    );
+                    extensions.push(SessionTicketExt::resume(ticket)?.into())
+                }
+                None => extensions.push(SessionTicketExt::new().into()),
+            }
+
+            let client_hello = TlsMessage::Handshake(TlsHandshake::ClientHello(ClientHello::new(
+                &config.cipher_suites,
+                extensions,
+                None,
+            )?));
+            self.process_message(&client_hello)?;
+        }
 
         while !self.handshake_state_machine.is_established() {
             if let TlsMessage::Alert(a) = self.next_message()? {

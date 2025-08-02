@@ -4,7 +4,9 @@ use crate::encoding::{
     CodingError, LengthPrefixWriter, LengthPrefixedVec, MaybeEmpty, NonEmpty, Reader, TlsCodable,
     VecLen, u24,
 };
-use crate::extensions::{Extension, Extensions, HashAlgo, SigAlgo, SignatureAlgorithmsExt};
+use crate::extensions::{
+    Extension, Extensions, HashAlgo, SecureRenegotationExt, SigAlgo, SignatureAlgorithmsExt,
+};
 use crate::utils;
 
 #[derive(Debug, Clone, Copy)]
@@ -181,6 +183,20 @@ pub struct ServerHello {
 }
 
 impl ServerHello {
+    pub fn new(cipher_suite: CipherSuiteId) -> Self {
+        Self {
+            server_version: ProtocolVersion { major: 3, minor: 3 },
+            random: Random {
+                unix_time: utils::get_unix_time(),
+                random_bytes: utils::get_random_bytes(28).try_into().unwrap(),
+            },
+            session_id: SessionId(vec![].try_into().unwrap()),
+            cipher_suite,
+            compression_method: CompressionMethodId::Null,
+            extensions: Extensions::new(vec![SecureRenegotationExt::Initial.into()]).unwrap(),
+        }
+    }
+
     pub fn supports_secure_renegotiation(&self) -> bool {
         self.extensions.includes_secure_renegotiation()
     }
@@ -234,6 +250,15 @@ type CeritificateList = LengthPrefixedVec<u24, ASN1Cert, MaybeEmpty>;
 #[derive(Debug, Clone)]
 pub struct Certificate {
     pub list: CeritificateList,
+}
+
+impl Certificate {
+    pub fn new(cert: Vec<u8>) -> Self {
+        let cert: ASN1Cert = cert.try_into().unwrap();
+        Self {
+            list: vec![cert].try_into().unwrap(),
+        }
+    }
 }
 
 impl From<Certificate> for TlsHandshake {
@@ -393,7 +418,7 @@ impl TlsCodable for ServerKeyExchange {
 // TODO: split into enum
 #[derive(Debug, Clone)]
 pub struct ClientKeyExchange {
-    enc_pre_master_secret: Vec<u8>,
+    pub enc_pre_master_secret: Vec<u8>,
 }
 
 impl ClientKeyExchange {
@@ -606,7 +631,7 @@ impl TlsMessage {
     }
 }
 
-// TODO restore 16384 
+// TODO restore 16384
 u16_vec_len_with_max!(PlaintextFragmentLen, 17_384);
 u16_vec_len_with_max!(CompressedFragmentLen, 17_384 + 1024);
 u16_vec_len_with_max!(CiphertextFragmentLen, 17_384 + 2048);

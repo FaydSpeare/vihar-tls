@@ -4,13 +4,9 @@ use std::{
 };
 
 use crate::{
-    TlsResult,
-    ciphersuite::CipherSuiteId,
-    connection::TlsConnection,
-    extensions::{
+    ciphersuite::CipherSuiteId, connection::TlsConnection, extensions::{
         ALPNExt, ExtendedMasterSecretExt, Extension, SecureRenegotationExt, SessionTicketExt,
-    },
-    storage::{SessionTicketStorage, SledSessionTicketStore},
+    }, state_machine::TlsEntity, storage::{SessionTicketStorage, SledSessionTicketStore}, TlsResult
 };
 
 pub struct TlsConfig {
@@ -38,7 +34,7 @@ impl TlsConfig {
             ]
             .into(),
             session_ticket_store: Arc::from(
-                SledSessionTicketStore::open("session_tickets.sled").unwrap(),
+                SledSessionTicketStore::open("sdb").unwrap(),
             ),
         }
     }
@@ -52,14 +48,14 @@ pub struct TlsClient<T: Read + Write> {
 impl<T: Read + Write> TlsClient<T> {
     pub fn new(config: TlsConfig, stream: T) -> Self {
         Self {
-            connection: TlsConnection::new(stream, &config),
+            connection: TlsConnection::new(TlsEntity::Client, stream, &config),
             config,
         }
     }
 
     pub fn write(&mut self, buf: &[u8]) -> TlsResult<usize> {
         if !self.connection.is_established() {
-            self.connection.perform_handshake(&self.config)?;
+            self.connection.complete_handshake(TlsEntity::Client, &self.config)?;
         }
         self.connection.write(buf)?;
         Ok(buf.len())

@@ -1,9 +1,12 @@
+use log::{error, warn};
 use std::fmt::Debug;
 
 use crate::encoding::{
     CodingError, LengthPrefixWriter, LengthPrefixedVec, MaybeEmpty, NonEmpty, Reader,
     Reconstrainable, TlsCodable,
 };
+
+type UnknownExtensionBytes = LengthPrefixedVec<u16, u8, MaybeEmpty>;
 
 #[derive(Debug, Clone)]
 pub enum Extension {
@@ -12,6 +15,7 @@ pub enum Extension {
     SessionTicket(SessionTicketExt),
     ExtendedMasterSecret(ExtendedMasterSecretExt),
     ALPN(ALPNExt),
+    Unknown(u16, UnknownExtensionBytes),
 }
 
 impl TlsCodable for Extension {
@@ -22,6 +26,10 @@ impl TlsCodable for Extension {
             Self::SessionTicket(ext) => ext.write_to(bytes),
             Self::ExtendedMasterSecret(ext) => ext.write_to(bytes),
             Self::ALPN(ext) => ext.write_to(bytes),
+            Self::Unknown(ext_type, ext) => {
+                ext_type.write_to(bytes);
+                ext.write_to(bytes)
+            }
         }
     }
     fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
@@ -32,7 +40,10 @@ impl TlsCodable for Extension {
             SessionTicketExt::TYPE => SessionTicketExt::read_from(reader)?.into(),
             ExtendedMasterSecretExt::TYPE => ExtendedMasterSecretExt::read_from(reader)?.into(),
             ALPNExt::TYPE => ALPNExt::read_from(reader)?.into(),
-            _ => return Err(CodingError::UnknownExtensionType(ext_type)),
+            ext_type => {
+                warn!("unknown extension: {}", ext_type);
+                Self::Unknown(ext_type, UnknownExtensionBytes::read_from(reader)?)
+            }
         };
         Ok(ext)
     }
@@ -69,7 +80,7 @@ impl From<ALPNExt> for Extension {
 }
 
 #[derive(Debug, Clone)]
-pub struct Extensions(Option<LengthPrefixedVec<u16, Extension, NonEmpty>>);
+pub struct Extensions(pub Option<LengthPrefixedVec<u16, Extension, NonEmpty>>);
 
 impl Extensions {
     pub fn new(extensions: Vec<Extension>) -> Result<Self, CodingError> {
