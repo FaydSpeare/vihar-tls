@@ -5,7 +5,7 @@ use crate::encoding::{
     VecLen, u24,
 };
 use crate::extensions::{
-    Extension, Extensions, HashAlgo, SecureRenegotationExt, SigAlgo, SignatureAlgorithmsExt,
+    Extension, Extensions, HashAlgo, RenegotiationInfoExt, SigAlgo, SignatureAlgorithmsExt,
 };
 use crate::utils;
 
@@ -193,7 +193,7 @@ impl ServerHello {
             session_id: SessionId(vec![].try_into().unwrap()),
             cipher_suite,
             compression_method: CompressionMethodId::Null,
-            extensions: Extensions::new(vec![SecureRenegotationExt::Initial.into()]).unwrap(),
+            extensions: Extensions::new(vec![RenegotiationInfoExt::Initial.into()]).unwrap(),
         }
     }
 

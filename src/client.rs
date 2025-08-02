@@ -10,7 +10,7 @@ use crate::{
     TlsResult,
     ciphersuite::CipherSuiteId,
     connection::TlsConnection,
-    extensions::{ALPNExt, ExtendedMasterSecretExt, Extension, SecureRenegotationExt},
+    extensions::{ALPNExt, ExtendedMasterSecretExt, Extension, RenegotiationInfoExt},
     state_machine::TlsEntity,
     storage::{SessionTicketStorage, SledSessionTicketStore},
 };
@@ -44,7 +44,7 @@ impl TlsConfigBuilder {
             ),
             extensions: Some(
                 vec![
-                    SecureRenegotationExt::Initial.into(),
+                    RenegotiationInfoExt::Initial.into(),
                     ExtendedMasterSecretExt::new().into(),
                     ALPNExt::new(vec!["http/1.1".to_string()]).unwrap().into(),
                 ]

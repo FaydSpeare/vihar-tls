@@ -40,11 +40,3 @@ pub type TlsResult<T> = Result<T, Box<dyn std::error::Error>>;
 * DESIGN:
 * add direction to handle method of states
 */
-
-// server name
-// cipher suite selection
-// extended master secret
-// ALPN
-// secure renegotiation
-// session tickets
-//

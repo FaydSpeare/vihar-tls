@@ -20,13 +20,6 @@ pub fn public_key_from_cert(cert_der: &[u8]) -> TlsResult<Vec<u8>> {
     Ok(cert.tbs_certificate.subject_pki.raw.to_vec())
 }
 
-// pub fn rsa_public_key_from_cert(cert_der: &[u8]) -> TLSResult<RsaPublicKey> {
-//     let (_, cert) = parse_x509_certificate(cert_der)?;
-//     Ok(RsaPublicKey::from_public_key_der(
-//         &cert.tbs_certificate.subject_pki.raw,
-//     )?)
-// }
-
 pub fn get_rsa_pre_master_secret(rsa_pubkey: &RsaPublicKey) -> TlsResult<(Vec<u8>, Vec<u8>)> {
     let mut pre_master = [0u8; 48];
     let mut rng = OsRng;

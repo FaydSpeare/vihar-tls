@@ -7,7 +7,7 @@ use crate::client::TlsConfig;
 use crate::encoding::TlsCodable;
 use crate::encoding::{CodingError, Reconstrainable};
 use crate::extensions::{
-    ALPNExt, ExtendedMasterSecretExt, SecureRenegotationExt, SessionTicketExt,
+    ALPNExt, ExtendedMasterSecretExt, RenegotiationInfoExt, SessionTicketExt,
 };
 use crate::messages::{
     ClientHello, SessionId, TLSCiphertext, TlsCompressed, TlsHandshake, TlsMessage, TlsPlaintext,
@@ -501,9 +501,9 @@ impl<T: Read + Write> TlsConnection<T> {
     ) -> TlsResult<SessionId> {
         let mut extensions = match self.handshake_state_machine.state.as_ref().unwrap() {
             TlsState::Established(s) => {
-                vec![SecureRenegotationExt::renegotiation(&s.client_verify_data)?.into()]
+                vec![RenegotiationInfoExt::renegotiation(&s.client_verify_data)?.into()]
             }
-            _ => vec![SecureRenegotationExt::initial().into()],
+            _ => vec![RenegotiationInfoExt::initial().into()],
         };
 
         match session_ticket {
