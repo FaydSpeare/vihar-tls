@@ -1,6 +1,7 @@
 ## TODO
 
 
+- Delete Session from store when rejected
 - Check server certificate chain against local root certificates?
 - Record layer fragmentation on outgoing messages
 - Responding with correct alerts on serverside
