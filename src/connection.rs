@@ -4,8 +4,9 @@ use crate::ciphersuite::{
     MacAlgorithm, PrfAlgorithm,
 };
 use crate::client::TlsConfig;
+use crate::encoding::Reconstrainable;
 use crate::encoding::TlsCodable;
-use crate::encoding::{CodingError, Reconstrainable};
+use crate::errors::{DecodingError, TlsError};
 use crate::extensions::{
     ALPNExt, ExtendedMasterSecretExt, RenegotiationInfoExt, ServerNameExt, SessionTicketExt,
 };
@@ -14,7 +15,7 @@ use crate::messages::{
 };
 use crate::record::RecordLayer;
 use crate::state_machine::{ConnStates, TlsAction, TlsEntity, TlsHandshakeStateMachine, TlsState};
-use crate::{TlsError, TlsResult, utils};
+use crate::{TlsResult, utils};
 use log::{debug, trace};
 use std::io::{Read, Write};
 use std::sync::Arc;
@@ -131,7 +132,7 @@ impl InitialConnState {
         Ok(TlsPlaintext {
             content_type: ciphertext.content_type,
             version: ciphertext.version,
-            fragment: ciphertext.fragment.reconstrain()?,
+            fragment: ciphertext.fragment.reconstrain().unwrap(),
         })
     }
 }
@@ -200,7 +201,7 @@ impl SecureConnState {
         Ok(TlsCompressed {
             content_type,
             version,
-            fragment: fragment.to_vec().try_into()?,
+            fragment: fragment.to_vec().try_into().unwrap(),
         })
     }
 
@@ -227,14 +228,14 @@ impl SecureConnState {
         Ok(TlsCompressed {
             content_type,
             version,
-            fragment: fragment.try_into()?,
+            fragment: fragment.try_into().unwrap(),
         })
     }
 
     fn encrypt_block_cipher(
         &self,
         compressed: TlsCompressed,
-    ) -> Result<TlsCiphertext, CodingError> {
+    ) -> Result<TlsCiphertext, DecodingError> {
         let mut bytes = Vec::<u8>::new();
         bytes.extend_from_slice(&self.seq_num.to_be_bytes());
         bytes.push(u8::from(compressed.content_type));
@@ -272,7 +273,10 @@ impl SecureConnState {
         })
     }
 
-    fn encrypt_aead_cipher(&self, compressed: TlsCompressed) -> Result<TlsCiphertext, CodingError> {
+    fn encrypt_aead_cipher(
+        &self,
+        compressed: TlsCompressed,
+    ) -> Result<TlsCiphertext, DecodingError> {
         let implicit: [u8; 4] = self.write_iv.clone().try_into().unwrap();
         let explicit = utils::get_random_bytes(self.params.enc_algorithm.record_iv_length());
         let nonce = [&implicit[..], &explicit[..]].concat();
@@ -314,12 +318,12 @@ impl SecureConnState {
             CompressionAlgorithm::Null => Ok(TlsPlaintext {
                 content_type: compressed.content_type,
                 version: compressed.version,
-                fragment: compressed.fragment.reconstrain()?,
+                fragment: compressed.fragment.reconstrain().unwrap(),
             }),
         }
     }
 
-    pub fn encrypt(&mut self, plaintext: TlsPlaintext) -> Result<TlsCiphertext, CodingError> {
+    pub fn encrypt(&mut self, plaintext: TlsPlaintext) -> Result<TlsCiphertext, DecodingError> {
         let compressed = self.compress(plaintext);
         let ciphertext = match self.params.enc_algorithm.cipher_type() {
             CipherType::Block => self.encrypt_block_cipher(compressed),
@@ -348,10 +352,10 @@ pub enum ConnState {
 }
 
 impl ConnState {
-    pub fn encrypt<T: TryInto<TlsPlaintext, Error = CodingError>>(
+    pub fn encrypt<T: TryInto<TlsPlaintext, Error = DecodingError>>(
         &mut self,
         plaintext: T,
-    ) -> Result<TlsCiphertext, CodingError> {
+    ) -> Result<TlsCiphertext, DecodingError> {
         match self {
             Self::Initial(state) => Ok(state.encrypt(plaintext.try_into()?)),
             Self::Secure(state) => state.encrypt(plaintext.try_into()?),
@@ -393,7 +397,6 @@ impl<T: Read + Write> TlsConnection<T> {
 
     fn process_message(&mut self, msg: &TlsMessage) -> TlsResult<()> {
         for action in self.handshake_state_machine.transition(msg)? {
-            // println!("{:?}", action);
             match action {
                 TlsAction::ChangeCipherSpec(side, spec) => {
                     if side == self.side {
@@ -411,7 +414,9 @@ impl<T: Read + Write> TlsConnection<T> {
                     let ciphertext = self.conn_states.write.encrypt(handshake)?;
                     self.send_bytes(&ciphertext.get_encoding())?;
                 }
-                _ => {}
+                TlsAction::SendAlert(alert) => {
+                    self.send_alert(alert)?;
+                }
             }
         }
         Ok(())
@@ -424,10 +429,13 @@ impl<T: Read + Write> TlsConnection<T> {
                 .try_parse_message(&mut self.conn_states.read, &self.config.validation_policy)
             {
                 Ok(msg) => {
-                    // println!("{:?}", msg);
                     match &msg {
                         TlsMessage::Handshake(_) | TlsMessage::ChangeCipherSpec => {
                             self.process_message(&msg)?
+                        }
+                        TlsMessage::Alert(alert) => {
+                            println!("Received alert: {:?}", alert);
+                            return Err("Received alert during handshake".into());
                         }
                         _ => {}
                     }
@@ -435,11 +443,11 @@ impl<T: Read + Write> TlsConnection<T> {
                 }
                 Err(e) => match e {
                     TlsError::Alert(alert) => self.send_alert(alert)?,
-                    TlsError::Coding(e) => {
-                        debug!("Record layer parsing failed: {e}");
-                        
-                        // Not if we just need more data...
-                        // self.send_alert(TLSAlert::fatal(TLSAlertDesc::DecodeError))?;
+                    TlsError::Decoding(e) => {
+                        trace!("Record parsing failed: {e}");
+                        if let DecodingError::InvalidEncoding(_) = e {
+                            self.send_alert(TlsAlert::fatal(TlsAlertDesc::DecodeError))?;
+                        }
                     }
                 },
             };
@@ -500,64 +508,12 @@ impl<T: Read + Write> TlsConnection<T> {
         }
 
         while !self.handshake_state_machine.is_established() {
-            if let TlsMessage::Alert(a) = self.next_message()? {
-                println!("{:?}", a);
-                return Err("Received alert during handshake".into());
-            }
+            self.next_message()?;
         }
 
         let elapsed = Instant::now() - start_time;
         println!("elapsed: {} seconds", elapsed.as_secs_f64());
         Ok(())
-    }
-
-    pub fn handshake(
-        &mut self,
-        cipher_suites: &[CipherSuiteId],
-        session_id: Option<SessionId>,
-        session_ticket: Option<Vec<u8>>,
-    ) -> TlsResult<SessionId> {
-        let mut extensions = match self.handshake_state_machine.state.as_ref().unwrap() {
-            TlsState::Established(s) => {
-                vec![RenegotiationInfoExt::renegotiation(&s.client_verify_data)?.into()]
-            }
-            _ => vec![RenegotiationInfoExt::initial().into()],
-        };
-
-        match session_ticket {
-            None => extensions.push(SessionTicketExt::new().into()),
-            Some(ticket) => extensions.push(SessionTicketExt::resume(ticket).into()),
-        }
-
-        extensions.push(ExtendedMasterSecretExt::new().into());
-        extensions.push(ALPNExt::new(vec!["http/1.1".to_string()])?.into());
-
-        let client_hello = TlsMessage::Handshake(TlsHandshake::ClientHello(ClientHello::new(
-            cipher_suites,
-            extensions,
-            session_id,
-        )?));
-
-        let start_time = Instant::now();
-        self.process_message(&client_hello)?;
-
-        while !self.handshake_state_machine.is_established() {
-            if let TlsMessage::Alert(a) = self.next_message()? {
-                println!("{:?}", a);
-                return Err("Received alert during handshake".into());
-            }
-        }
-
-        let elapsed = Instant::now() - start_time;
-        println!("elapsed: {} seconds", elapsed.as_secs_f64());
-
-        let state = self
-            .handshake_state_machine
-            .state
-            .as_ref()
-            .unwrap()
-            .as_established()?;
-        return Ok(state.session_id.clone());
     }
 
     #[allow(dead_code)]

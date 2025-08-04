@@ -3,8 +3,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use enum_dispatch::enum_dispatch;
-use log::{debug, info};
+use log::{debug, error, info};
 
+use crate::RenegotiationPolicy;
+use crate::alert::TlsAlertDesc;
 use crate::ciphersuite::{CipherSuiteId, PrfAlgorithm};
 use crate::client::TlsConfig;
 use crate::extensions::{HashAlgo, SigAlgo};
@@ -115,6 +117,7 @@ pub enum TlsState {
     AwaitServerChangeCipher(AwaitServerChangeCipher),
     AwaitServerFinished(AwaitServerFinished),
     Established(EstablishedState),
+    Closed(ClosedState),
 }
 
 impl TlsState {
@@ -148,7 +151,7 @@ impl HandleRecord for AwaitClientHello {
             panic!("invalid transition");
         };
 
-        let TlsHandshake::ClientHello(hello) = handshake else {
+        let TlsHandshake::ClientHello(client_hello) = handshake else {
             panic!("invalid transition");
         };
 
@@ -157,23 +160,24 @@ impl HandleRecord for AwaitClientHello {
             return Ok((
                 AwaitServerHello {
                     handshakes: handshake.get_encoding(),
-                    client_random: hello.random.as_bytes(),
-                    session_id_resumption: (!hello.session_id.is_empty()).then(|| {
-                        let session_info = ctx.sessions.get(&hello.session_id).unwrap();
+                    client_random: client_hello.random.as_bytes(),
+                    session_id_resumption: (!client_hello.session_id.is_empty()).then(|| {
+                        let session_info = ctx.sessions.get(&client_hello.session_id).unwrap();
                         SessionIdResumption {
                             master_secret: session_info.master_secret,
                             cipher_suite: session_info.cipher_suite,
-                            session_id: hello.session_id.clone(),
+                            session_id: client_hello.session_id.clone(),
                         }
                     }),
-                    session_ticket_resumption: hello.extensions.get_session_ticket().and_then(
-                        |ticket| {
+                    session_ticket_resumption: client_hello
+                        .extensions
+                        .get_session_ticket()
+                        .and_then(|ticket| {
                             ctx.config
                                 .session_ticket_store
                                 .as_ref()
                                 .and_then(|store| store.get(&ticket).unwrap())
-                        },
-                    ),
+                        }),
                 }
                 .into(),
                 vec![TlsAction::SendHandshakeMsg(handshake.clone())],
@@ -182,7 +186,7 @@ impl HandleRecord for AwaitClientHello {
         info!("Received ClientHello");
         let mut handshakes = handshake.get_encoding();
 
-        let suites: Vec<_> = hello
+        let suites: Vec<_> = client_hello
             .cipher_suites
             .iter()
             .map(|x| CipherSuite::from(*x).params().name)
@@ -191,12 +195,17 @@ impl HandleRecord for AwaitClientHello {
         debug!("CipherSuites: {:#?}", suites);
 
         // TODO: send handshake_failure alert if no good
-        let selected_cipher_suite = *hello.cipher_suites.last().unwrap();
+        let selected_cipher_suite = *client_hello.cipher_suites.last().unwrap();
         debug!(
             "Selected CipherSuite {}",
             CipherSuite::from(selected_cipher_suite).params().name
         );
-        let server_hello = ServerHello::new(selected_cipher_suite);
+
+        let server_hello = ServerHello::new(
+            selected_cipher_suite,
+            client_hello.extensions.includes_secure_renegotiation(),
+            client_hello.extensions.includes_extended_master_secret(),
+        );
         let server_random = server_hello.random.as_bytes();
         let server_hello: TlsHandshake = server_hello.into();
         server_hello.write_to(&mut handshakes);
@@ -221,9 +230,14 @@ impl HandleRecord for AwaitClientHello {
         Ok((
             AwaitClientKeyExchange {
                 handshakes,
-                client_random: hello.random.as_bytes(),
+                client_random: client_hello.random.as_bytes(),
                 server_random,
                 selected_cipher_suite,
+                supported_extensions: SupportedExtensions {
+                    session_ticket: false,
+                    extended_master_secret: client_hello.extensions.includes_extended_master_secret(),
+                    secure_renegotiation: client_hello.extensions.includes_secure_renegotiation(),
+                },
             }
             .into(),
             vec![
@@ -385,6 +399,7 @@ pub struct AwaitClientKeyExchange {
     client_random: [u8; 32],
     server_random: [u8; 32],
     selected_cipher_suite: CipherSuiteId,
+    supported_extensions: SupportedExtensions,
 }
 
 impl HandleRecord for AwaitClientKeyExchange {
@@ -414,13 +429,14 @@ impl HandleRecord for AwaitClientKeyExchange {
         )?;
 
         let ciphersuite = CipherSuite::from(self.selected_cipher_suite);
+        info!("Using extended master secret: {}", self.supported_extensions.extended_master_secret);
         let master_secret = calculate_master_secret(
             &self.handshakes,
             &self.client_random,
             &self.server_random,
             &pre_master_secret,
             ciphersuite.params().prf_algorithm,
-            false,
+            self.supported_extensions.extended_master_secret,
         );
 
         let params = SecurityParams::new(
@@ -434,6 +450,7 @@ impl HandleRecord for AwaitClientKeyExchange {
             AwaitClientChangeCipher {
                 handshakes: self.handshakes,
                 params,
+                supported_extensions: self.supported_extensions,
             }
             .into(),
             vec![],
@@ -874,6 +891,7 @@ impl HandleRecord for AwaitServerChangeCipherOrCertificate {
 pub struct AwaitClientChangeCipher {
     handshakes: Vec<u8>,
     params: SecurityParams,
+    supported_extensions: SupportedExtensions,
 }
 
 impl HandleRecord for AwaitClientChangeCipher {
@@ -899,6 +917,7 @@ impl HandleRecord for AwaitClientChangeCipher {
             AwaitClientFinished {
                 handshakes: self.handshakes,
                 params: self.params,
+                supported_extensions: self.supported_extensions,
             }
             .into(),
             vec![TlsAction::ChangeCipherSpec(TlsEntity::Client, read)],
@@ -960,6 +979,7 @@ impl HandleRecord for AwaitServerChangeCipher {
 pub struct AwaitClientFinished {
     handshakes: Vec<u8>,
     params: SecurityParams,
+    supported_extensions: SupportedExtensions,
 }
 
 impl HandleRecord for AwaitClientFinished {
@@ -998,11 +1018,7 @@ impl HandleRecord for AwaitClientFinished {
         Ok((
             EstablishedState {
                 session_id: SessionId::new(&[])?,
-                supported_extensions: SupportedExtensions {
-                    extended_master_secret: false,
-                    secure_renegotiation: false,
-                    session_ticket: false,
-                },
+                supported_extensions: self.supported_extensions,
                 client_verify_data: verify_data, // TODO: fix or at least rename?
             }
             .into(),
@@ -1105,26 +1121,53 @@ pub struct EstablishedState {
 impl HandleRecord for EstablishedState {
     fn handle(
         self,
-        _ctx: &mut TlsContext,
+        ctx: &mut TlsContext,
         msg: &TlsMessage,
     ) -> TlsResult<(TlsState, Vec<TlsAction>)> {
         let TlsMessage::Handshake(handshake) = msg else {
+            return close(TlsAlertDesc::UnexpectedMessage);
+        };
+
+        let TlsHandshake::ClientHello(_) = handshake else {
             panic!("invalid transition");
         };
 
-        let TlsHandshake::ClientHello(hello) = handshake else {
-            panic!("invalid transition");
-        };
-
-        Ok((
-            AwaitServerHello {
-                handshakes: handshake.get_encoding(),
-                client_random: hello.random.as_bytes(),
-                session_id_resumption: None,
-                session_ticket_resumption: None,
+        match ctx.config.validation_policy.renegotiation {
+            RenegotiationPolicy::None => {
+                return warn(self.into(), TlsAlertDesc::NoRenegotiation);
             }
-            .into(),
-            vec![TlsAction::SendHandshakeMsg(hello.clone().into())],
-        ))
+            RenegotiationPolicy::Legacy => AwaitClientHello {}.handle(ctx, msg),
+            RenegotiationPolicy::Secure => {
+                if self.supported_extensions.secure_renegotiation {
+                    return AwaitClientHello {}.handle(ctx, msg);
+                }
+                return warn(self.into(), TlsAlertDesc::NoRenegotiation);
+            }
+        }
+    }
+}
+
+fn close(desc: TlsAlertDesc) -> TlsResult<(TlsState, Vec<TlsAction>)> {
+    Ok((
+        ClosedState {}.into(),
+        vec![TlsAction::SendAlert(TlsAlert::fatal(desc))],
+    ))
+}
+
+fn warn(state: TlsState, desc: TlsAlertDesc) -> TlsResult<(TlsState, Vec<TlsAction>)> {
+    Ok((state, vec![TlsAction::SendAlert(TlsAlert::warning(desc))]))
+}
+
+#[derive(Debug)]
+pub struct ClosedState {}
+
+impl HandleRecord for ClosedState {
+    fn handle(
+        self,
+        _ctx: &mut TlsContext,
+        _msg: &TlsMessage,
+    ) -> TlsResult<(TlsState, Vec<TlsAction>)> {
+        error!("Closed");
+        Ok((self.into(), vec![]))
     }
 }

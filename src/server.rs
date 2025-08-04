@@ -27,4 +27,10 @@ impl<T: Read + Write> TlsServer<T> {
         self.connection.write(buf)?;
         Ok(buf.len())
     }
+
+    pub fn serve(&mut self) -> TlsResult<()> {
+        loop {
+            self.connection.next_message()?;
+        }
+    }
 }

@@ -1,12 +1,11 @@
 use alert::{TlsAlert, TlsAlertLevel};
-use encoding::CodingError;
-use thiserror::Error;
 
 #[macro_use]
 mod macros;
 
 mod alert;
 mod encoding;
+mod errors;
 mod extensions;
 mod gcm;
 mod messages;
@@ -24,21 +23,6 @@ pub mod storage;
 
 pub type TlsResult<T> = Result<T, Box<dyn std::error::Error>>;
 
-#[derive(Debug, Error)]
-pub enum TlsError {
-    #[error("Coding error: {0}")]
-    Coding(#[from] CodingError),
-
-    #[error("TlsAlert: {0:?}")]
-    Alert(TlsAlert),
-}
-
-impl From<TlsAlert> for TlsError {
-    fn from(value: TlsAlert) -> Self {
-        Self::Alert(value)
-    }
-}
-
 #[derive(Debug, Clone)]
 pub enum UnrecognisedServerNamePolicy {
     Alert(TlsAlertLevel),
@@ -46,16 +30,25 @@ pub enum UnrecognisedServerNamePolicy {
 }
 
 #[derive(Debug, Clone)]
-pub struct ValidationPolicy {
+pub enum RenegotiationPolicy {
+    Legacy,
+    Secure,
+    None,
+}
 
+#[derive(Debug, Clone)]
+pub struct ValidationPolicy {
     // Google just sends a fatal decode_error rather than unrecognised_name
     pub unrecognised_server_name: UnrecognisedServerNamePolicy,
+
+    pub renegotiation: RenegotiationPolicy,
 }
 
 impl Default for ValidationPolicy {
     fn default() -> Self {
         Self {
             unrecognised_server_name: UnrecognisedServerNamePolicy::Alert(TlsAlertLevel::Fatal),
+            renegotiation: RenegotiationPolicy::Secure,
         }
     }
 }

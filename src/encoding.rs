@@ -1,35 +1,8 @@
-use std::array::TryFromSliceError;
 use std::fmt::Debug;
 use std::ops::DerefMut;
 use std::{marker::PhantomData, ops::Deref};
-use thiserror::Error;
 
-#[derive(Debug, Error)]
-pub enum CodingError {
-    #[error("Missing data")]
-    RanOutOfData,
-
-    #[error("Invalid length")]
-    InvalidLength,
-
-    #[error("Invalid slice length")]
-    InvalidSliceLength(#[from] TryFromSliceError),
-
-    #[error("Unknown extension type {0:#x}")]
-    UnknownExtensionType(u16),
-
-    #[error("Shorter length required (expected <= {0}, actual = {1})")]
-    LengthTooLarge(usize, usize),
-
-    #[error("Longer length required. (expected >= {0}, actual = {1})")]
-    LengthTooSmall(usize, usize),
-
-    #[error("Invalid {0} enum value: {1}")]
-    InvalidEnumValue(&'static str, usize),
-
-    #[error("Duplicate server name types are prohibited in the SNI extension")]
-    DuplicateServerNameType,
-}
+use crate::errors::{DecodingError, InvalidEncodingError};
 
 pub struct Reader<'a> {
     buffer: &'a [u8],
@@ -41,22 +14,22 @@ impl<'a> Reader<'a> {
         Self { buffer, pos: 0 }
     }
 
-    pub fn consume(&mut self, n: usize) -> Result<&'a [u8], CodingError> {
+    pub fn consume(&mut self, n: usize) -> Result<&'a [u8], DecodingError> {
         let slice = self.peek_slice(n)?;
         self.pos += n;
         Ok(slice)
     }
 
-    pub fn peek(&self) -> Result<u8, CodingError> {
+    pub fn peek(&self) -> Result<u8, DecodingError> {
         if self.pos + 1 > self.buffer.len() {
-            return Err(CodingError::RanOutOfData);
+            return Err(DecodingError::RanOutOfData);
         }
         Ok(self.buffer[self.pos])
     }
 
-    pub fn peek_slice(&self, n: usize) -> Result<&'a [u8], CodingError> {
+    pub fn peek_slice(&self, n: usize) -> Result<&'a [u8], DecodingError> {
         if self.pos + n > self.buffer.len() {
-            return Err(CodingError::RanOutOfData);
+            return Err(DecodingError::RanOutOfData);
         }
         Ok(&self.buffer[self.pos..self.pos + n])
     }
@@ -101,9 +74,9 @@ impl VecLen for u24 {
     const BYTE_LEN: usize = 3;
     const MAX_LEN: usize = u24::MAX as usize;
 
-    fn from_usize(value: usize) -> Result<Self, CodingError> {
-        let value = u32::try_from(value).map_err(|_| CodingError::InvalidLength)?;
-        u24::new(value).ok_or(CodingError::InvalidLength)
+    fn from_usize(value: usize) -> Result<Self, String> {
+        let value = u32::try_from(value).map_err(|_| "invalid length".to_string())?;
+        u24::new(value).ok_or("invalid length".into())
     }
     fn encode_into_slice(&self, out: &mut [u8]) {
         out.copy_from_slice(&self.0.to_be_bytes()[1..]);
@@ -112,7 +85,7 @@ impl VecLen for u24 {
 
 pub trait TlsCodable: Sized {
     fn write_to(&self, bytes: &mut Vec<u8>);
-    fn read_from(reader: &mut Reader) -> Result<Self, CodingError>;
+    fn read_from(reader: &mut Reader) -> Result<Self, DecodingError>;
     fn get_encoding(&self) -> Vec<u8> {
         let mut value = vec![];
         self.write_to(&mut value);
@@ -125,7 +98,7 @@ impl TlsCodable for u8 {
         bytes.push(*self);
     }
 
-    fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
+    fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
         Ok(reader.consume(1)?[0])
     }
 }
@@ -135,8 +108,9 @@ impl TlsCodable for u16 {
         bytes.extend_from_slice(&self.to_be_bytes());
     }
 
-    fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
-        Ok(reader.consume(2)?.try_into().map(u16::from_be_bytes)?)
+    fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
+        let bytes: [u8; 2] = reader.consume(2)?.try_into().unwrap();
+        Ok(u16::from_be_bytes(bytes))
     }
 }
 
@@ -145,7 +119,7 @@ impl TlsCodable for u24 {
         bytes.extend_from_slice(&self.0.to_be_bytes()[1..]);
     }
 
-    fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
+    fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
         let slice = reader.consume(3)?;
         let bytes = [0, slice[0], slice[1], slice[2]];
         Ok(Self(u32::from_be_bytes(bytes)))
@@ -157,8 +131,9 @@ impl TlsCodable for u32 {
         bytes.extend_from_slice(&self.to_be_bytes());
     }
 
-    fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
-        Ok(reader.consume(4)?.try_into().map(u32::from_be_bytes)?)
+    fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
+        let bytes: [u8; 4] = reader.consume(4)?.try_into().unwrap();
+        Ok(u32::from_be_bytes(bytes))
     }
 }
 
@@ -167,8 +142,8 @@ impl<const N: usize> TlsCodable for [u8; N] {
         bytes.extend_from_slice(&self[..]);
     }
 
-    fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
-        Ok(reader.consume(N)?.try_into()?)
+    fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
+        Ok(reader.consume(N)?.try_into().unwrap())
     }
 }
 
@@ -176,7 +151,7 @@ pub trait VecLen: Debug + TlsCodable + Into<usize> {
     const BYTE_LEN: usize;
     const MAX_LEN: usize;
 
-    fn from_usize(value: usize) -> Result<Self, CodingError>;
+    fn from_usize(value: usize) -> Result<Self, String>;
     fn encode_into_slice(&self, out: &mut [u8]);
 }
 
@@ -184,8 +159,8 @@ impl VecLen for u8 {
     const BYTE_LEN: usize = 1;
     const MAX_LEN: usize = u8::MAX as usize;
 
-    fn from_usize(value: usize) -> Result<Self, CodingError> {
-        Self::try_from(value).map_err(|_| CodingError::InvalidLength)
+    fn from_usize(value: usize) -> Result<Self, String> {
+        Self::try_from(value).map_err(|_| "invalid length".into())
     }
     fn encode_into_slice(&self, out: &mut [u8]) {
         out[0] = *self;
@@ -196,8 +171,8 @@ impl VecLen for u16 {
     const BYTE_LEN: usize = 2;
     const MAX_LEN: usize = u16::MAX as usize;
 
-    fn from_usize(value: usize) -> Result<Self, CodingError> {
-        Self::try_from(value).map_err(|_| CodingError::InvalidLength)
+    fn from_usize(value: usize) -> Result<Self, String> {
+        Self::try_from(value).map_err(|_| "invalid length".into())
     }
     fn encode_into_slice(&self, out: &mut [u8]) {
         out.copy_from_slice(&self.to_be_bytes());
@@ -211,7 +186,7 @@ struct TlsListIter<'a, L: VecLen, T: TlsCodable> {
 }
 
 impl<'a, L: VecLen, T: TlsCodable> TlsListIter<'a, L, T> {
-    fn new(reader: &'a mut Reader) -> Result<Self, CodingError> {
+    fn new(reader: &'a mut Reader) -> Result<Self, DecodingError> {
         let len = L::read_from(reader).map(Into::into)?;
         Ok(Self {
             reader: Reader::new(reader.consume(len)?),
@@ -222,7 +197,7 @@ impl<'a, L: VecLen, T: TlsCodable> TlsListIter<'a, L, T> {
 }
 
 impl<'a, L: VecLen, T: TlsCodable> Iterator for TlsListIter<'a, L, T> {
-    type Item = Result<T, CodingError>;
+    type Item = Result<T, DecodingError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         (!self.reader.is_consumed()).then_some(T::read_from(&mut self.reader))
@@ -259,7 +234,7 @@ impl<L: VecLen, T: TlsCodable, C: Cardinality> LengthPrefixedVec<L, T, C> {
 }
 
 pub trait Reconstrainable<L: VecLen, T: TlsCodable, C: Cardinality> {
-    fn reconstrain(self) -> Result<LengthPrefixedVec<L, T, C>, CodingError>;
+    fn reconstrain(self) -> Result<LengthPrefixedVec<L, T, C>, InvalidEncodingError>;
 }
 
 impl<L1, L2, T, C1, C2> Reconstrainable<L2, T, C2> for LengthPrefixedVec<L1, T, C1>
@@ -270,12 +245,18 @@ where
     C1: Cardinality,
     C2: Cardinality,
 {
-    fn reconstrain(self) -> Result<LengthPrefixedVec<L2, T, C2>, CodingError> {
+    fn reconstrain(self) -> Result<LengthPrefixedVec<L2, T, C2>, InvalidEncodingError> {
         if self.len() < C2::MIN_LEN {
-            return Err(CodingError::LengthTooSmall(C2::MIN_LEN, self.len()));
+            return Err(InvalidEncodingError::LengthTooSmall(
+                C2::MIN_LEN,
+                self.len(),
+            ));
         }
         if self.len() > L2::MAX_LEN {
-            return Err(CodingError::LengthTooLarge(L2::MAX_LEN, self.len()));
+            return Err(InvalidEncodingError::LengthTooLarge(
+                L2::MAX_LEN,
+                self.len(),
+            ));
         }
         Ok(LengthPrefixedVec::<L2, T, C2> {
             items: self.items,
@@ -294,10 +275,10 @@ impl<L: VecLen, T: TlsCodable, C: Cardinality> TlsCodable for LengthPrefixedVec<
         writer.finalize_length_prefix();
     }
 
-    fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
+    fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
         let items = TlsListIter::<L, T>::new(reader)?.collect::<Result<Vec<_>, _>>()?;
         if items.len() < C::MIN_LEN {
-            return Err(CodingError::LengthTooSmall(C::MIN_LEN, items.len()));
+            return Err(InvalidEncodingError::LengthTooSmall(C::MIN_LEN, items.len()).into());
         }
         Ok(Self {
             items,
@@ -315,14 +296,14 @@ impl<L: VecLen, T: TlsCodable, C: Cardinality> Deref for LengthPrefixedVec<L, T,
 }
 
 impl<L: VecLen, T: TlsCodable, C: Cardinality> TryFrom<Vec<T>> for LengthPrefixedVec<L, T, C> {
-    type Error = CodingError;
+    type Error = InvalidEncodingError;
 
     fn try_from(value: Vec<T>) -> Result<Self, Self::Error> {
         if value.len() < C::MIN_LEN {
-            return Err(CodingError::LengthTooSmall(C::MIN_LEN, value.len()));
+            return Err(InvalidEncodingError::LengthTooSmall(C::MIN_LEN, value.len()));
         }
         if value.len() > L::MAX_LEN {
-            return Err(CodingError::LengthTooLarge(L::MAX_LEN, value.len()));
+            return Err(InvalidEncodingError::LengthTooLarge(L::MAX_LEN, value.len()));
         }
         Ok(Self {
             items: value,
@@ -338,7 +319,7 @@ impl<T: TlsCodable> TlsCodable for Option<T> {
             value.write_to(bytes)
         }
     }
-    fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
+    fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
         Ok((!reader.is_consumed()).then_some(T::read_from(reader)?))
     }
 }
@@ -399,7 +380,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_u24_prefixed_list() -> Result<(), CodingError> {
+    fn test_u24_prefixed_list() -> Result<(), DecodingError> {
         let data = vec![0, 0, 4, 0, 2, 81, 8];
         let mut reader = Reader::new(&data);
         let list = LengthPrefixedVec::<u24, u16, NonEmpty>::read_from(&mut reader)?;
@@ -410,11 +391,21 @@ mod tests {
     }
 
     #[test]
-    fn test_list_missing_data() -> Result<(), CodingError> {
+    fn test_list_missing_data() -> Result<(), DecodingError> {
         let data = vec![4, 0, 1, 8];
         let mut reader = Reader::new(&data);
         let result = LengthPrefixedVec::<u8, u16, NonEmpty>::read_from(&mut reader);
-        assert!(matches!(result, Err(CodingError::RanOutOfData)));
+        assert!(matches!(result, Err(DecodingError::RanOutOfData)));
+        Ok(())
+    }
+
+    #[test]
+    fn test_list_data_too_long() -> Result<(), DecodingError> {
+        let data = vec![4, 0, 1, 2, 3, 4];
+        let mut reader = Reader::new(&data);
+        let result = LengthPrefixedVec::<u8, u8, NonEmpty>::read_from(&mut reader)?;
+        println!("{:?}", result);
+
         Ok(())
     }
 }

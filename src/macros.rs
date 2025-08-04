@@ -1,57 +1,5 @@
 macro_rules! tls_codable_enum {
     (
-        #[without_unknown]
-        #[repr($uint:ty)]
-        $enum_vis:vis enum $enum_name:ident
-        {
-          $($enum_var:ident = $enum_val:literal),* $(,)?
-        }
-    ) => {
-
-        #[non_exhaustive]
-        #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
-        #[repr($uint)]
-        $enum_vis enum $enum_name {
-            $(
-                $enum_var = $enum_val
-            ),*
-        }
-
-        impl From<$enum_name> for $uint {
-            fn from(value: $enum_name) -> Self {
-                match value {
-                    $(
-                        $enum_name::$enum_var => $enum_val
-                    ),*
-                }
-            }
-        }
-
-        impl TryFrom<$uint> for $enum_name {
-            type Error = crate::encoding::CodingError;
-
-            fn try_from(value: $uint) -> Result<Self, Self::Error> {
-                match value {
-                    $(
-                        $enum_val => Ok($enum_name::$enum_var)
-                    ),*
-                    ,v => Err(crate::encoding::CodingError::InvalidEnumValue(stringify!($enum_name), v as usize))
-                }
-            }
-        }
-
-        impl crate::encoding::TlsCodable for $enum_name {
-            fn write_to(&self, bytes: &mut Vec<u8>) {
-               <$uint>::from(*self).write_to(bytes);
-            }
-
-            fn read_from(reader: &mut crate::encoding::Reader) -> Result<Self, crate::encoding::CodingError> {
-                let value = <$uint>::read_from(reader)?;
-                Self::try_from(value)
-            }
-        }
-    };
-    (
         #[repr($uint:ty)]
         $enum_vis:vis enum $enum_name:ident
         {
@@ -94,7 +42,7 @@ macro_rules! tls_codable_enum {
                <$uint>::from(*self).write_to(bytes);
             }
 
-            fn read_from(reader: &mut crate::encoding::Reader) -> Result<Self, crate::encoding::CodingError> {
+            fn read_from(reader: &mut crate::encoding::Reader) -> Result<Self, crate::errors::DecodingError> {
                 let value = <$uint>::read_from(reader)?;
                 Ok(Self::from(value))
             }
@@ -118,7 +66,9 @@ macro_rules! u16_vec_len_with_max {
             fn write_to(&self, bytes: &mut Vec<u8>) {
                 self.0.write_to(bytes)
             }
-            fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
+
+            // TODO check if value is < MAX 
+            fn read_from(reader: &mut Reader) -> Result<Self, crate::errors::DecodingError> {
                 Ok(Self(u16::read_from(reader)?))
             }
         }
@@ -133,9 +83,10 @@ macro_rules! u16_vec_len_with_max {
             const BYTE_LEN: usize = 2;
             const MAX_LEN: usize = Self::MAX as usize;
 
-            fn from_usize(value: usize) -> Result<Self, CodingError> {
-                let value = u16::try_from(value).map_err(|_| CodingError::InvalidLength)?;
-                Self::new(value).ok_or(CodingError::InvalidLength)
+            // TODO, if > Max then this will throw, but the error is ignored in veclen
+            fn from_usize(value: usize) -> Result<Self, String> {
+                let value = u16::try_from(value).map_err(|_| "invalid length".to_string())?;
+                Self::new(value).ok_or("invalid length".to_string())
             }
             fn encode_into_slice(&self, out: &mut [u8]) {
                 out.copy_from_slice(&self.0.to_be_bytes());

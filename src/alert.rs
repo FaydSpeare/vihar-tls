@@ -1,5 +1,6 @@
 use crate::{
-    encoding::{CodingError, Reader, TlsCodable},
+    encoding::{Reader, TlsCodable},
+    errors::DecodingError,
     messages::{TlsContentType, TlsPlaintext},
 };
 
@@ -70,7 +71,7 @@ impl TlsCodable for TlsAlert {
         self.level.write_to(bytes);
         self.description.write_to(bytes);
     }
-    fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
+    fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
         Ok(Self {
             level: TlsAlertLevel::read_from(reader)?,
             description: TlsAlertDesc::read_from(reader)?,
@@ -79,7 +80,7 @@ impl TlsCodable for TlsAlert {
 }
 
 impl TryFrom<TlsAlert> for TlsPlaintext {
-    type Error = CodingError;
+    type Error = DecodingError;
 
     fn try_from(value: TlsAlert) -> Result<Self, Self::Error> {
         TlsPlaintext::new(TlsContentType::Alert, value.get_encoding())

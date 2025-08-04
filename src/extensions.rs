@@ -5,9 +5,10 @@ use crate::{
     UnrecognisedServerNamePolicy, ValidationPolicy,
     alert::{TlsAlert, TlsAlertDesc},
     encoding::{
-        CodingError, LengthPrefixWriter, LengthPrefixedVec, MaybeEmpty, NonEmpty, Reader,
-        Reconstrainable, TlsCodable,
+        LengthPrefixWriter, LengthPrefixedVec, MaybeEmpty, NonEmpty, Reader, Reconstrainable,
+        TlsCodable,
     },
+    errors::{DecodingError, InvalidEncodingError},
 };
 
 tls_codable_enum! {
@@ -64,7 +65,7 @@ impl TlsCodable for Extension {
         };
         writer.finalize_length_prefix();
     }
-    fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
+    fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
         let ext_type = ExtensionType::read_from(reader)?;
         let ext_len = u16::read_from(reader)?;
         let mut subreader = reader.consume(ext_len.into()).map(Reader::new)?;
@@ -131,7 +132,7 @@ impl From<ServerNameExt> for Extension {
 pub struct Extensions(pub Option<LengthPrefixedVec<u16, Extension, NonEmpty>>);
 
 impl Extensions {
-    pub fn new(extensions: Vec<Extension>) -> Result<Self, CodingError> {
+    pub fn new(extensions: Vec<Extension>) -> Result<Self, DecodingError> {
         if extensions.len() == 0 {
             return Ok(Self::empty());
         }
@@ -200,7 +201,7 @@ impl TlsCodable for Extensions {
             extensions.write_to(bytes);
         }
     }
-    fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
+    fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
         if reader.is_consumed() {
             return Ok(Self(None));
         }
@@ -217,31 +218,31 @@ impl TlsCodable for Extensions {
 
 #[derive(Debug, Clone)]
 pub enum RenegotiationInfoExt {
-    Initial,
+    IndicateSupport,
     Renegotiation(LengthPrefixedVec<u8, u8, NonEmpty>),
 }
 
 impl RenegotiationInfoExt {
-    pub fn initial() -> Self {
-        Self::Initial
+    pub fn indicate_support() -> Self {
+        Self::IndicateSupport
     }
-    pub fn renegotiation(renegotiation_info: &[u8]) -> Result<Self, CodingError> {
+    pub fn renegotiation(renegotiation_info: &[u8]) -> Result<Self, DecodingError> {
         Ok(Self::Renegotiation(renegotiation_info.to_vec().try_into()?))
     }
 }
 
 impl TlsCodable for RenegotiationInfoExt {
-    fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
+    fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
         let renegotiation_info = LengthPrefixedVec::<u8, u8, MaybeEmpty>::read_from(reader)?;
         if renegotiation_info.len() == 0 {
-            return Ok(Self::Initial);
+            return Ok(Self::IndicateSupport);
         }
         Ok(Self::Renegotiation(renegotiation_info.reconstrain()?))
     }
 
     fn write_to(&self, bytes: &mut Vec<u8>) {
         match self {
-            Self::Initial => bytes.push(0u8),
+            Self::IndicateSupport => bytes.push(0u8),
             Self::Renegotiation(info) => info.write_to(bytes),
         };
     }
@@ -269,7 +270,7 @@ impl TlsCodable for SessionTicketExt {
             bytes.extend_from_slice(&ticket);
         }
     }
-    fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
+    fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
         if reader.is_consumed() {
             return Ok(Self::Empty);
         }
@@ -281,7 +282,7 @@ impl TlsCodable for SessionTicketExt {
 pub struct ExtendedMasterSecretExt {}
 
 impl ExtendedMasterSecretExt {
-    pub fn new() -> Self {
+    pub fn indicate_support() -> Self {
         Self {}
     }
 }
@@ -289,11 +290,11 @@ impl ExtendedMasterSecretExt {
 impl TlsCodable for ExtendedMasterSecretExt {
     fn write_to(&self, _bytes: &mut Vec<u8>) {}
 
-    fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
+    fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
         if !reader.is_consumed() {
-            return Err(CodingError::InvalidLength);
+            return Err(InvalidEncodingError::InvalidExtensionLength.into());
         }
-        Ok(Self::new())
+        Ok(Self::indicate_support())
     }
 }
 
@@ -325,7 +326,7 @@ struct SignatureAndHashAlgorithm {
 }
 
 impl TlsCodable for SignatureAndHashAlgorithm {
-    fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
+    fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
         Ok(Self {
             hash: HashAlgo::read_from(reader)?,
             signature: SigAlgo::read_from(reader)?,
@@ -344,7 +345,7 @@ pub struct SignatureAlgorithmsExt {
 }
 
 impl TlsCodable for SignatureAlgorithmsExt {
-    fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
+    fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
         let algorithm_count = (u16::read_from(reader)? / 2) as usize;
 
         let mut algorithms = vec![];
@@ -368,7 +369,7 @@ impl SignatureAlgorithmsExt {
     pub fn new_from_product(
         signature_algorithms: Vec<SigAlgo>,
         hash_algorithms: Vec<HashAlgo>,
-    ) -> Result<Self, CodingError> {
+    ) -> Result<Self, DecodingError> {
         let algorithms: Vec<SignatureAndHashAlgorithm> = signature_algorithms
             .iter()
             .flat_map(|&signature| {
@@ -392,7 +393,7 @@ pub struct ALPNExt {
 }
 
 impl ALPNExt {
-    pub fn new(names: Vec<String>) -> Result<Self, CodingError> {
+    pub fn new(names: Vec<String>) -> Result<Self, DecodingError> {
         let mut protocols = vec![];
         for name in names {
             protocols.push(ProtocolName::try_from(name.into_bytes())?)
@@ -407,7 +408,7 @@ impl TlsCodable for ALPNExt {
     fn write_to(&self, bytes: &mut Vec<u8>) {
         self.protocols.write_to(bytes);
     }
-    fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
+    fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
         let protocols = ProtocolList::read_from(reader)?;
         Ok(Self { protocols })
     }
@@ -452,7 +453,7 @@ impl TlsCodable for ServerName {
         }
     }
 
-    fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
+    fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
         Ok(match NameType::read_from(reader)? {
             NameType::HostName => Self::HostName(HostName::read_from(reader)?),
             NameType::Unknown(name_type) => {
@@ -481,6 +482,17 @@ impl ServerNameExt {
     }
 
     pub fn validate(&self, policy: &ValidationPolicy) -> Result<(), TlsAlert> {
+        let mut seen = HashSet::new();
+
+        // Duplicate server names are not allowed
+        if !self
+            .list
+            .iter()
+            .all(|server_name| seen.insert(server_name.name_type()))
+        {
+            return Err(TlsAlert::fatal(TlsAlertDesc::DecodeError));
+        }
+
         if let UnrecognisedServerNamePolicy::Alert(level) = policy.unrecognised_server_name {
             if self
                 .list
@@ -515,16 +527,8 @@ impl ServerNameExt {
 //     NOT include a server_name extension in the server hello.
 //
 impl TlsCodable for ServerNameExt {
-    fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
+    fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
         let list = ServerNameList::read_from(reader)?;
-
-        let mut seen = HashSet::new();
-        if !list
-            .iter()
-            .all(|server_name| seen.insert(server_name.name_type()))
-        {
-            return Err(CodingError::DuplicateServerNameType);
-        }
 
         Ok(Self { list })
     }

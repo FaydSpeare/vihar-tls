@@ -1,10 +1,11 @@
 use log::trace;
 
 use crate::{
-    TlsError, TlsValidateable, ValidationPolicy,
+    TlsValidateable, ValidationPolicy,
     alert::TlsAlert,
     connection::ConnState,
     encoding::{Reader, TlsCodable},
+    errors::TlsError,
     messages::{TlsCiphertext, TlsContentType, TlsHandshake, TlsMessage},
 };
 

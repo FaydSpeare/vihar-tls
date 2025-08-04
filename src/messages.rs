@@ -3,13 +3,14 @@ use log::debug;
 use crate::alert::{TlsAlert, TlsAlertDesc};
 use crate::ciphersuite::CipherSuiteId;
 use crate::encoding::{
-    CodingError, LengthPrefixWriter, LengthPrefixedVec, MaybeEmpty, NonEmpty, Reader, TlsCodable,
-    VecLen, u24,
+    LengthPrefixWriter, LengthPrefixedVec, MaybeEmpty, NonEmpty, Reader, TlsCodable, VecLen, u24,
 };
+use crate::errors::{DecodingError, InvalidEncodingError};
 use crate::extensions::{
-    Extension, Extensions, HashAlgo, RenegotiationInfoExt, SigAlgo, SignatureAlgorithmsExt,
+    ExtendedMasterSecretExt, Extension, Extensions, HashAlgo, RenegotiationInfoExt, SigAlgo,
+    SignatureAlgorithmsExt,
 };
-use crate::{utils, TlsValidateable, ValidationPolicy};
+use crate::{TlsValidateable, ValidationPolicy, utils};
 
 #[derive(Debug, Clone, Copy)]
 pub struct ProtocolVersion {
@@ -23,7 +24,7 @@ impl TlsCodable for ProtocolVersion {
         self.minor.write_to(bytes);
     }
 
-    fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
+    fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
         Ok(ProtocolVersion {
             major: u8::read_from(reader)?,
             minor: u8::read_from(reader)?,
@@ -42,7 +43,7 @@ impl TlsCodable for Random {
         self.unix_time.write_to(bytes);
         self.random_bytes.write_to(bytes);
     }
-    fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
+    fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
         Ok(Random {
             unix_time: u32::read_from(reader)?,
             random_bytes: TlsCodable::read_from(reader)?,
@@ -65,9 +66,12 @@ pub struct SessionId(LengthPrefixedVec<u8, u8, MaybeEmpty>);
 impl SessionId {
     const MAX_LEN: usize = 32;
 
-    pub fn new(session_id: &[u8]) -> Result<Self, CodingError> {
+    pub fn new(session_id: &[u8]) -> Result<Self, InvalidEncodingError> {
         if session_id.len() > Self::MAX_LEN {
-            return Err(CodingError::LengthTooLarge(Self::MAX_LEN, session_id.len()));
+            return Err(InvalidEncodingError::LengthTooLarge(
+                Self::MAX_LEN,
+                session_id.len(),
+            ));
         }
         Ok(Self(session_id.to_vec().try_into()?))
     }
@@ -82,10 +86,12 @@ impl TlsCodable for SessionId {
         debug_assert!(self.0.len() <= Self::MAX_LEN);
         self.0.write_to(bytes);
     }
-    fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
+    fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
         let session_id = LengthPrefixedVec::<u8, u8, MaybeEmpty>::read_from(reader)?;
         if session_id.len() > Self::MAX_LEN {
-            return Err(CodingError::LengthTooLarge(Self::MAX_LEN, session_id.len()));
+            return Err(
+                InvalidEncodingError::LengthTooLarge(Self::MAX_LEN, session_id.len()).into(),
+            );
         }
         Ok(Self(session_id))
     }
@@ -116,7 +122,7 @@ impl ClientHello {
         suites: &[CipherSuiteId],
         mut extensions: Vec<Extension>,
         session_id: Option<SessionId>,
-    ) -> Result<Self, CodingError> {
+    ) -> Result<Self, DecodingError> {
         extensions.push(
             SignatureAlgorithmsExt::new_from_product(
                 vec![SigAlgo::Rsa, SigAlgo::Dsa],
@@ -155,7 +161,7 @@ impl TlsCodable for ClientHello {
         self.extensions.write_to(bytes);
     }
 
-    fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
+    fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
         let client_version = ProtocolVersion::read_from(reader)?;
         let random = Random::read_from(reader)?;
         let session_id = SessionId::read_from(reader)?;
@@ -186,7 +192,18 @@ pub struct ServerHello {
 }
 
 impl ServerHello {
-    pub fn new(cipher_suite: CipherSuiteId) -> Self {
+    pub fn new(
+        cipher_suite: CipherSuiteId,
+        with_renegotiation_info: bool,
+        with_extended_master_secret: bool,
+    ) -> Self {
+        let mut extensions = vec![];
+        if with_renegotiation_info {
+            extensions.push(RenegotiationInfoExt::IndicateSupport.into());
+        }
+        if with_extended_master_secret {
+            extensions.push(ExtendedMasterSecretExt::indicate_support().into());
+        }
         Self {
             server_version: ProtocolVersion { major: 3, minor: 3 },
             random: Random {
@@ -196,7 +213,7 @@ impl ServerHello {
             session_id: SessionId(vec![].try_into().unwrap()),
             cipher_suite,
             compression_method: CompressionMethodId::Null,
-            extensions: Extensions::new(vec![RenegotiationInfoExt::Initial.into()]).unwrap(),
+            extensions: Extensions::new(extensions).unwrap(),
         }
     }
 
@@ -228,7 +245,7 @@ impl TlsCodable for ServerHello {
         self.compression_method.write_to(bytes);
         self.extensions.write_to(bytes);
     }
-    fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
+    fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
         let server_version = ProtocolVersion::read_from(reader)?;
         let random = Random::read_from(reader)?;
         let session_id = SessionId::read_from(reader)?;
@@ -274,7 +291,7 @@ impl TlsCodable for Certificate {
     fn write_to(&self, bytes: &mut Vec<u8>) {
         self.list.write_to(bytes);
     }
-    fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
+    fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
         let list = CeritificateList::read_from(reader)?;
         Ok(Self { list })
     }
@@ -400,7 +417,7 @@ impl TlsCodable for ServerKeyExchange {
         self.sig_algo.write_to(bytes);
         self.signature.write_to(bytes);
     }
-    fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
+    fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
         let p = DHParam::read_from(reader)?;
         let g = DHParam::read_from(reader)?;
         let server_pubkey = DHParam::read_from(reader)?;
@@ -443,7 +460,7 @@ impl TlsCodable for ClientKeyExchange {
         bytes.extend((self.enc_pre_master_secret.len() as u16).to_be_bytes());
         bytes.extend_from_slice(&self.enc_pre_master_secret);
     }
-    fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
+    fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
         let len = u16::read_from(reader)?;
         let secret = reader.consume(len.into())?;
         Ok(Self {
@@ -468,7 +485,7 @@ impl TlsCodable for Finished {
     fn write_to(&self, bytes: &mut Vec<u8>) {
         bytes.extend_from_slice(&self.verify_data);
     }
-    fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
+    fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
         let verify_data = reader.consume_rest().to_vec();
         Ok(Self { verify_data })
     }
@@ -493,7 +510,7 @@ impl TlsCodable for NewSessionTicket {
         self.lifetime_hint.write_to(bytes);
         self.ticket.write_to(bytes);
     }
-    fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
+    fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
         let lifetime_hint = u32::read_from(reader)?;
         let ticket = SessionTicket::read_from(reader)?;
         Ok(Self {
@@ -588,7 +605,7 @@ impl TlsCodable for TlsHandshake {
         writer.finalize_length_prefix();
     }
 
-    fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
+    fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
         let handshake_type = TlsHandshakeType::read_from(reader)?;
         let len = u24::read_from(reader)?;
         let mut subreader = reader.consume(len.into()).map(Reader::new)?;
@@ -621,7 +638,7 @@ impl TlsCodable for TlsHandshake {
 }
 
 impl TryFrom<TlsHandshake> for TlsPlaintext {
-    type Error = CodingError;
+    type Error = DecodingError;
 
     fn try_from(value: TlsHandshake) -> Result<Self, Self::Error> {
         TlsPlaintext::new(TlsContentType::Handshake, value.get_encoding())
@@ -656,7 +673,7 @@ pub struct TlsPlaintext {
 }
 
 impl TlsPlaintext {
-    pub fn new(content_type: TlsContentType, fragment: Vec<u8>) -> Result<Self, CodingError> {
+    pub fn new(content_type: TlsContentType, fragment: Vec<u8>) -> Result<Self, DecodingError> {
         Ok(Self {
             content_type,
             version: ProtocolVersion { major: 3, minor: 3 },
@@ -671,12 +688,12 @@ impl TlsValidateable for TlsPlaintext {
             debug!("Received unrecognised content type: {}", x);
             return Err(TlsAlert::fatal(TlsAlertDesc::UnexpectedMessage));
         }
-        Ok(())  
-    } 
+        Ok(())
+    }
 }
 
 impl TryFrom<TlsMessage> for TlsPlaintext {
-    type Error = CodingError;
+    type Error = DecodingError;
 
     fn try_from(value: TlsMessage) -> Result<Self, Self::Error> {
         match value {
@@ -709,7 +726,7 @@ pub struct TlsCiphertext {
 }
 
 impl TlsCodable for TlsCiphertext {
-    fn read_from(reader: &mut Reader) -> Result<Self, CodingError> {
+    fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
         let content_type = TlsContentType::read_from(reader)?;
         let version = ProtocolVersion::read_from(reader)?;
         let fragment = CiphertextFragment::read_from(reader)?;

@@ -1,6 +1,9 @@
 use std::{net::TcpListener, thread::sleep, time::Duration};
 
-use vihar_tls::{client::TlsConfigBuilder, server::TlsServer, UnrecognisedServerNamePolicy, ValidationPolicy};
+use vihar_tls::{
+    RenegotiationPolicy, UnrecognisedServerNamePolicy, ValidationPolicy, client::TlsConfigBuilder,
+    server::TlsServer,
+};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
@@ -14,12 +17,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .with_certificate_pem("testing/rsacert.pem", "testing/rsakey.pem")
             .with_validation_policy(ValidationPolicy {
                 unrecognised_server_name: UnrecognisedServerNamePolicy::Ignore,
+                renegotiation: RenegotiationPolicy::Secure,
             })
             .build(),
         tcp_stream,
     );
 
     server.write(b"from server")?;
+    server.serve()?;
     sleep(Duration::from_secs(10));
     Ok(())
 }

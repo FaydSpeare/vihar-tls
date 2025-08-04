@@ -46,8 +46,8 @@ impl TlsConfigBuilder {
             ),
             extensions: Some(
                 vec![
-                    RenegotiationInfoExt::Initial.into(),
-                    ExtendedMasterSecretExt::new().into(),
+                    RenegotiationInfoExt::IndicateSupport.into(),
+                    ExtendedMasterSecretExt::indicate_support().into(),
                     ALPNExt::new(vec!["http/1.1".to_string()]).unwrap().into(),
                 ]
                 .into(),
@@ -134,5 +134,11 @@ impl<T: Read + Write> TlsClient<T> {
         }
         self.connection.write(buf)?;
         Ok(buf.len())
+    }
+
+    pub fn renegotiate(&mut self) -> TlsResult<()> {
+        self.connection
+            .complete_handshake(TlsEntity::Client, &self.config)?;
+        Ok(())
     }
 }
