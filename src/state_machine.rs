@@ -96,9 +96,6 @@ impl TlsHandshakeStateMachine {
     }
 }
 
-// RequestCertificate optionally sent aftee ServerKeyExchange if present otherwise after ServerCeritificate
-//
-
 #[enum_dispatch]
 #[derive(Debug)]
 pub enum TlsState {
@@ -117,7 +114,8 @@ pub enum TlsState {
     AwaitServerChangeCipher(AwaitServerChangeCipher),
     AwaitServerFinished(AwaitServerFinished),
     Established(EstablishedState),
-    Closed(ClosedState),
+
+    ClientAttemptedRenegotiation(ClientAttemptedRenegotiationState),
 }
 
 impl TlsState {
@@ -235,7 +233,9 @@ impl HandleRecord for AwaitClientHello {
                 selected_cipher_suite,
                 supported_extensions: SupportedExtensions {
                     session_ticket: false,
-                    extended_master_secret: client_hello.extensions.includes_extended_master_secret(),
+                    extended_master_secret: client_hello
+                        .extensions
+                        .includes_extended_master_secret(),
                     secure_renegotiation: client_hello.extensions.includes_secure_renegotiation(),
                 },
             }
@@ -429,7 +429,10 @@ impl HandleRecord for AwaitClientKeyExchange {
         )?;
 
         let ciphersuite = CipherSuite::from(self.selected_cipher_suite);
-        info!("Using extended master secret: {}", self.supported_extensions.extended_master_secret);
+        info!(
+            "Using extended master secret: {}",
+            self.supported_extensions.extended_master_secret
+        );
         let master_secret = calculate_master_secret(
             &self.handshakes,
             &self.client_random,
@@ -997,8 +1000,8 @@ impl HandleRecord for AwaitClientFinished {
         };
 
         info!("Received ClientFinished");
-        let verify_data = self.params.client_verify_data(&self.handshakes);
-        assert_eq!(verify_data, finished.verify_data);
+        let client_verify_data = self.params.client_verify_data(&self.handshakes);
+        assert_eq!(client_verify_data, finished.verify_data);
         handshake.write_to(&mut self.handshakes);
 
         let keys = self.params.derive_keys();
@@ -1009,8 +1012,8 @@ impl HandleRecord for AwaitClientFinished {
             keys.server_write_iv,
         ));
 
-        let verify_data = self.params.server_verify_data(&self.handshakes);
-        let server_finished: TlsHandshake = Finished::new(verify_data.clone()).into();
+        let server_verify_data = self.params.server_verify_data(&self.handshakes);
+        let server_finished: TlsHandshake = Finished::new(server_verify_data.clone()).into();
 
         info!("Sent ChangeCipherSpec");
         info!("Sent ServerFinished");
@@ -1019,7 +1022,8 @@ impl HandleRecord for AwaitClientFinished {
             EstablishedState {
                 session_id: SessionId::new(&[])?,
                 supported_extensions: self.supported_extensions,
-                client_verify_data: verify_data, // TODO: fix or at least rename?
+                client_verify_data,
+                server_verify_data,
             }
             .into(),
             vec![
@@ -1055,8 +1059,8 @@ impl HandleRecord for AwaitServerFinished {
         };
 
         info!("Received ServerFinished");
-        let verify_data = self.params.server_verify_data(&self.handshakes);
-        assert_eq!(verify_data, finished.verify_data);
+        let server_verify_data = self.params.server_verify_data(&self.handshakes);
+        assert_eq!(server_verify_data, finished.verify_data);
         handshake.write_to(&mut self.handshakes);
 
         if !self.is_session_resumption {
@@ -1075,6 +1079,7 @@ impl HandleRecord for AwaitServerFinished {
                     session_id: self.session_id,
                     supported_extensions: self.supported_extensions,
                     client_verify_data: self.client_verify_data.unwrap(),
+                    server_verify_data,
                 }
                 .into(),
                 vec![],
@@ -1089,8 +1094,8 @@ impl HandleRecord for AwaitServerFinished {
             keys.client_write_iv,
         ));
 
-        let verify_data = self.params.client_verify_data(&self.handshakes);
-        let client_finished = Finished::new(verify_data.clone());
+        let client_verify_data = self.params.client_verify_data(&self.handshakes);
+        let client_finished = Finished::new(client_verify_data.clone());
 
         info!("Sent ChangeCipherSpec");
         info!("Sent ClientFinished");
@@ -1099,7 +1104,8 @@ impl HandleRecord for AwaitServerFinished {
             EstablishedState {
                 session_id: self.session_id,
                 supported_extensions: self.supported_extensions,
-                client_verify_data: verify_data,
+                client_verify_data,
+                server_verify_data,
             }
             .into(),
             vec![
@@ -1115,6 +1121,8 @@ pub struct EstablishedState {
     pub session_id: SessionId,
     #[allow(unused)]
     supported_extensions: SupportedExtensions,
+
+    pub server_verify_data: Vec<u8>,
     pub client_verify_data: Vec<u8>,
 }
 
@@ -1125,33 +1133,48 @@ impl HandleRecord for EstablishedState {
         msg: &TlsMessage,
     ) -> TlsResult<(TlsState, Vec<TlsAction>)> {
         let TlsMessage::Handshake(handshake) = msg else {
-            return close(TlsAlertDesc::UnexpectedMessage);
+            return alert_unexpected_message(self.into());
         };
 
         let TlsHandshake::ClientHello(_) = handshake else {
-            panic!("invalid transition");
+            return alert_unexpected_message(self.into());
         };
 
+        // Server behaviour
         match ctx.config.validation_policy.renegotiation {
             RenegotiationPolicy::None => {
-                return warn(self.into(), TlsAlertDesc::NoRenegotiation);
+                // COULD send warning here instead
+                // COULD ignore here instead
+                return fatal(self.into(), TlsAlertDesc::NoRenegotiation);
             }
-            RenegotiationPolicy::Legacy => AwaitClientHello {}.handle(ctx, msg),
+            RenegotiationPolicy::Legacy => {
+                // ABORT if TLS_EMPTY_RENEGOTIATION_INFO_SCSV present
+                // ABORT if renegotiation_info extension present
+                // OTHERWISE initiate handshake
+            }
             RenegotiationPolicy::Secure => {
-                if self.supported_extensions.secure_renegotiation {
-                    return AwaitClientHello {}.handle(ctx, msg);
+                if !self.supported_extensions.secure_renegotiation {
+                    return fatal(self.into(), TlsAlertDesc::NoRenegotiation);
                 }
-                return warn(self.into(), TlsAlertDesc::NoRenegotiation);
+
+                // ABORT if TLS_EMPTY_RENEGOTIATION_INFO_SCSV present
+                // ABORT if renegotiation_info extension not present
+                // ABORT if client_verify_data doesn't match
+
+                // INCLUDE client_verify_data ++ server_verify_data
+                // Initiate handshake
             }
         }
+
+        unimplemented!()
     }
 }
+fn alert_unexpected_message(state: TlsState) -> TlsResult<(TlsState, Vec<TlsAction>)> {
+    Ok((state, vec![TlsAction::SendAlert(TlsAlert::fatal(TlsAlertDesc::UnexpectedMessage))]))
+}
 
-fn close(desc: TlsAlertDesc) -> TlsResult<(TlsState, Vec<TlsAction>)> {
-    Ok((
-        ClosedState {}.into(),
-        vec![TlsAction::SendAlert(TlsAlert::fatal(desc))],
-    ))
+fn fatal(state: TlsState, desc: TlsAlertDesc) -> TlsResult<(TlsState, Vec<TlsAction>)> {
+    Ok((state, vec![TlsAction::SendAlert(TlsAlert::fatal(desc))]))
 }
 
 fn warn(state: TlsState, desc: TlsAlertDesc) -> TlsResult<(TlsState, Vec<TlsAction>)> {
@@ -1159,15 +1182,17 @@ fn warn(state: TlsState, desc: TlsAlertDesc) -> TlsResult<(TlsState, Vec<TlsActi
 }
 
 #[derive(Debug)]
-pub struct ClosedState {}
+pub struct ClientAttemptedRenegotiationState {}
 
-impl HandleRecord for ClosedState {
+impl HandleRecord for ClientAttemptedRenegotiationState {
     fn handle(
         self,
         _ctx: &mut TlsContext,
         _msg: &TlsMessage,
     ) -> TlsResult<(TlsState, Vec<TlsAction>)> {
-        error!("Closed");
-        Ok((self.into(), vec![]))
+        // Maybe get server hello
+        // Maybe get alert
+        // Maybe get nothing...
+        unimplemented!()
     }
 }

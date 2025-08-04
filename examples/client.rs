@@ -1,8 +1,6 @@
 use std::{net::TcpStream, thread::sleep, time::Duration};
 
-use vihar_tls::{
-    client::{TlsClient, TlsConfigBuilder},
-};
+use vihar_tls::client::{TlsClient, TlsConfigBuilder};
 
 fn get_addr_from_env() -> String {
     let mut args = std::env::args();
@@ -30,8 +28,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     client.write(b"first data")?;
-    client.renegotiate()?;
-    client.write(b"second data")?;
     sleep(Duration::from_secs(10));
     Ok(())
 }

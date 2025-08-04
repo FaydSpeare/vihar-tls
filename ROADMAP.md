@@ -1,6 +1,10 @@
 ## TODO
 
 
+- Save verify_data for client and server for secure renegotiation
+
+- Support ServerKeyExchange from server-side
+
 - Delete Session from store when rejected
 - Check server certificate chain against local root certificates?
 - Record layer fragmentation on outgoing messages
