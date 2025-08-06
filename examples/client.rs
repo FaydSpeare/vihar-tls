@@ -21,7 +21,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tcp_stream = TcpStream::connect(addr)?;
     let mut client = TlsClient::new(
         TlsConfigBuilder::new()
-            .with_server_name("google.com")
+            //.with_server_name("google.com")
             .with_session_ticket_store("sdb")
             .build(),
         tcp_stream,
@@ -29,7 +29,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     client.write(b"1st data")?;
     sleep(Duration::from_secs(2));
-    client.renegotiate()?;
-    sleep(Duration::from_secs(10));
+    // client.renegotiate()?;
+    // sleep(Duration::from_secs(10));
     Ok(())
 }

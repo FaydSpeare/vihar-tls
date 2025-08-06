@@ -1,5 +1,4 @@
 use rsa::{RsaPublicKey, pkcs8::DecodePublicKey};
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use enum_dispatch::enum_dispatch;
@@ -10,13 +9,16 @@ use crate::alert::TlsAlertDesc;
 use crate::ciphersuite::{CipherSuiteId, PrfAlgorithm};
 use crate::client::TlsConfig;
 use crate::errors::TlsError;
-use crate::extensions::{HashAlgo, RenegotiationInfoExt, ServerNameExt, SessionTicketExt, SigAlgo};
+use crate::extensions::{
+    ExtendedMasterSecretExt, HashAlgo, RenegotiationInfoExt, ServerNameExt, SessionTicketExt,
+    SigAlgo,
+};
 use crate::messages::{Certificate, ClientHello, ServerHello, SessionId};
 use crate::signature::{
     decrypt_rsa_master_secret, dsa_verify, get_dhe_pre_master_secret, get_rsa_pre_master_secret,
     public_key_from_cert, rsa_verify,
 };
-use crate::storage::SessionTicketInfo;
+use crate::storage::SessionInfo;
 use crate::{
     TlsResult,
     alert::TlsAlert,
@@ -27,15 +29,8 @@ use crate::{
 };
 
 #[derive(Debug, Clone)]
-pub struct SessionInfo {
-    cipher_suite: CipherSuiteId,
-    master_secret: [u8; 48],
-}
-
-#[derive(Debug, Clone)]
 pub struct TlsContext {
     pub side: TlsEntity,
-    pub sessions: HashMap<SessionId, SessionInfo>,
     pub config: Arc<TlsConfig>,
 }
 
@@ -66,9 +61,9 @@ pub enum TlsEntity {
 
 #[derive(Debug)]
 pub struct SessionIdResumption {
-    session_id: SessionId,
-    master_secret: [u8; 48],
-    cipher_suite: CipherSuiteId,
+    pub session_id: Vec<u8>,
+    pub master_secret: [u8; 48],
+    pub cipher_suite: CipherSuiteId,
 }
 
 #[derive(Debug)]
@@ -91,7 +86,9 @@ pub enum TlsEvent<'a> {
         cipher_suites: Vec<CipherSuiteId>,
         session_resumption: SessionResumption,
         server_name: Option<String>,
-        request_session_ticket: bool,
+        support_session_ticket: bool,
+        support_extended_master_secret: bool,
+        support_secure_renegotiation: bool,
     },
     IncomingMessage(&'a TlsMessage),
     SessionValidation,
@@ -103,7 +100,8 @@ pub enum TlsAction {
     ChangeCipherSpec(TlsEntity, ConnState),
     SendHandshakeMsg(TlsHandshake),
     ValidateSession,
-    StoreSessionTicketInfo(Vec<u8>, SessionTicketInfo),
+    StoreSessionTicketInfo(Vec<u8>, SessionInfo),
+    StoreSessionIdInfo(Vec<u8>, SessionInfo),
     CloseConnection(TlsAlertDesc),
 }
 
@@ -128,14 +126,13 @@ impl TlsStateMachine {
                 previous_verify_data: None,
             }
             .into(),
-            TlsEntity::Server => AwaitClientHello { previous_verify_data: None }.into(),
+            TlsEntity::Server => AwaitClientHello {
+                previous_verify_data: None,
+            }
+            .into(),
         };
         Self {
-            ctx: TlsContext {
-                side,
-                sessions: HashMap::new(),
-                config,
-            },
+            ctx: TlsContext { side, config },
             state: Some(state),
         }
     }
@@ -208,7 +205,9 @@ impl HandleRecord for AwaitClientInitiateState {
             cipher_suites,
             session_resumption,
             server_name,
-            request_session_ticket,
+            support_session_ticket,
+            support_extended_master_secret,
+            support_secure_renegotiation,
         } = event
         else {
             panic!("Expected ClientInitiate event!");
@@ -216,18 +215,24 @@ impl HandleRecord for AwaitClientInitiateState {
 
         let mut extensions = vec![];
 
-        match &self.previous_verify_data {
-            None => extensions.push(RenegotiationInfoExt::indicate_support().into()),
-            Some(data) => extensions.push(
-                RenegotiationInfoExt::renegotiation(&data.client)
-                    .unwrap()
-                    .into(),
-            ),
+        if support_extended_master_secret {
+            extensions.push(ExtendedMasterSecretExt::indicate_support().into());
+        }
+
+        if support_secure_renegotiation {
+            match &self.previous_verify_data {
+                None => extensions.push(RenegotiationInfoExt::indicate_support().into()),
+                Some(data) => extensions.push(
+                    RenegotiationInfoExt::renegotiation(&data.client)
+                        .unwrap()
+                        .into(),
+                ),
+            }
         }
 
         if let SessionResumption::SessionTicket(info) = &session_resumption {
             extensions.push(SessionTicketExt::resume(info.session_ticket.clone()).into())
-        } else if request_session_ticket {
+        } else if support_session_ticket {
             extensions.push(SessionTicketExt::new().into())
         }
 
@@ -240,8 +245,12 @@ impl HandleRecord for AwaitClientInitiateState {
             _ => None,
         };
 
-        let client_hello =
-            ClientHello::new(cipher_suites.as_ref(), extensions, session_id).unwrap();
+        let client_hello = ClientHello::new(
+            cipher_suites.as_ref(),
+            extensions,
+            session_id.map(|x| SessionId::new(&x).unwrap()),
+        )
+        .unwrap();
 
         info!("Sent ClientHello");
 
@@ -389,7 +398,7 @@ impl HandleRecord for AwaitServerHello {
         // If the server echoed back the session-id sent by the client we're
         // now doing an abbreviated handshake.
         if let SessionResumption::SessionId(info) = &self.session_resumption {
-            if info.session_id == server_hello.session_id {
+            if info.session_id == server_hello.session_id.to_vec() {
                 let params = SecurityParams::new(
                     self.client_random,
                     server_hello.random.as_bytes(),
@@ -841,7 +850,7 @@ impl HandleRecord for AwaitNewSessionTicket {
 
         let action = TlsAction::StoreSessionTicketInfo(
             new_session_ticket.ticket.to_vec(),
-            SessionTicketInfo::new(self.params.master_secret, self.params.cipher_suite_id),
+            SessionInfo::new(self.params.master_secret, self.params.cipher_suite_id),
         );
 
         return Ok((
@@ -1095,7 +1104,7 @@ pub struct AwaitServerFinished {
 }
 
 impl HandleRecord for AwaitServerFinished {
-    fn handle(mut self, ctx: &mut TlsContext, event: TlsEvent) -> HandleResult {
+    fn handle(mut self, _: &mut TlsContext, event: TlsEvent) -> HandleResult {
         let (handshake, server_finished) = require_handshake_msg!(event, TlsHandshake::Finished);
         info!("Received ServerFinished");
 
@@ -1106,13 +1115,16 @@ impl HandleRecord for AwaitServerFinished {
         if !self.is_session_resumption {
             info!("Handshake complete! (full)");
 
-            ctx.sessions.insert(
-                self.session_id.clone(),
-                SessionInfo {
-                    master_secret: self.params.master_secret,
-                    cipher_suite: self.params.cipher_suite_id,
-                },
-            );
+            let mut actions = vec![];
+            if !self.session_id.is_empty() {
+                actions.push(TlsAction::StoreSessionIdInfo(
+                    self.session_id.to_vec(),
+                    SessionInfo {
+                        master_secret: self.params.master_secret,
+                        cipher_suite: self.params.cipher_suite_id,
+                    },
+                ));
+            }
 
             return Ok((
                 EstablishedState {
@@ -1122,7 +1134,7 @@ impl HandleRecord for AwaitServerFinished {
                     server_verify_data,
                 }
                 .into(),
-                vec![],
+                actions,
             ));
         }
 
@@ -1248,7 +1260,7 @@ fn close_connection(desc: TlsAlertDesc) -> HandleResult {
 pub struct ClientAttemptedRenegotiationState {}
 
 impl HandleRecord for ClientAttemptedRenegotiationState {
-    fn handle(self, _ctx: &mut TlsContext, event: TlsEvent) -> HandleResult {
+    fn handle(self, _ctx: &mut TlsContext, _event: TlsEvent) -> HandleResult {
         // Maybe get server hello
         // Maybe get alert
         // Maybe get nothing...

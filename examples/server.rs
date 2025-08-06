@@ -32,7 +32,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .with_certificate_pem("testing/rsacert.pem", "testing/rsakey.pem")
             .with_validation_policy(ValidationPolicy {
                 unrecognised_server_name: UnrecognisedServerNamePolicy::Ignore,
-                renegotiation: RenegotiationPolicy::Secure,
+                renegotiation: RenegotiationPolicy::None,
             })
             .build(),
         tcp_stream,

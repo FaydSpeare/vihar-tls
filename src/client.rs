@@ -10,9 +10,8 @@ use crate::{
     TlsResult, ValidationPolicy,
     ciphersuite::CipherSuiteId,
     connection::TlsConnection,
-    extensions::{ALPNExt, ExtendedMasterSecretExt, Extension, RenegotiationInfoExt},
     state_machine::TlsEntity,
-    storage::{SessionTicketStorage, SledSessionTicketStore},
+    storage::{SessionStorage, SledSessionStore},
 };
 
 #[derive(Debug, Clone)]
@@ -23,8 +22,7 @@ pub struct CertificateAndPrivateKey {
 
 pub struct TlsConfigBuilder {
     pub cipher_suites: Option<Box<[CipherSuiteId]>>,
-    pub extensions: Option<Box<[Extension]>>,
-    pub session_ticket_store: Option<Box<dyn SessionTicketStorage>>,
+    pub session_ticket_store: Option<Box<dyn SessionStorage>>,
     pub certificate: Option<CertificateAndPrivateKey>,
     pub server_name: Option<String>,
     pub validation_policy: Option<ValidationPolicy>,
@@ -35,21 +33,12 @@ impl TlsConfigBuilder {
         Self {
             cipher_suites: Some(
                 vec![
-                    // CipherSuiteId::DheRsaAes128CbcSha,
                     CipherSuiteId::RsaAes128CbcSha,
                     CipherSuiteId::RsaAes256CbcSha,
                     CipherSuiteId::RsaAes256CbcSha,
                     CipherSuiteId::RsaAes128CbcSha256,
                     CipherSuiteId::RsaAes128GcmSha256,
                     CipherSuiteId::RsaAes256GcmSha384,
-                ]
-                .into(),
-            ),
-            extensions: Some(
-                vec![
-                    RenegotiationInfoExt::IndicateSupport.into(),
-                    ExtendedMasterSecretExt::indicate_support().into(),
-                    ALPNExt::new(vec!["http/1.1".to_string()]).unwrap().into(),
                 ]
                 .into(),
             ),
@@ -63,7 +52,6 @@ impl TlsConfigBuilder {
     pub fn build(self) -> TlsConfig {
         TlsConfig {
             cipher_suites: self.cipher_suites.unwrap(),
-            extensions: self.extensions.unwrap(),
             session_ticket_store: self.session_ticket_store,
             certificate: self.certificate,
             server_name: self.server_name,
@@ -72,7 +60,7 @@ impl TlsConfigBuilder {
     }
 
     pub fn with_session_ticket_store(mut self, path: &str) -> Self {
-        self.session_ticket_store = Some(Box::new(SledSessionTicketStore::open(path).unwrap()));
+        self.session_ticket_store = Some(Box::new(SledSessionStore::open(path).unwrap()));
         self
     }
 
@@ -107,8 +95,7 @@ impl TlsConfigBuilder {
 #[derive(Debug)]
 pub struct TlsConfig {
     pub cipher_suites: Box<[CipherSuiteId]>,
-    pub extensions: Box<[Extension]>,
-    pub session_ticket_store: Option<Box<dyn SessionTicketStorage>>,
+    pub session_ticket_store: Option<Box<dyn SessionStorage>>,
     pub certificate: Option<CertificateAndPrivateKey>,
     pub server_name: Option<String>,
     pub validation_policy: ValidationPolicy,

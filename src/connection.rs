@@ -10,11 +10,11 @@ use crate::errors::{DecodingError, TlsError};
 use crate::messages::{TlsCiphertext, TlsCompressed, TlsMessage, TlsPlaintext};
 use crate::record::RecordLayer;
 use crate::state_machine::{
-    ConnStates, SessionResumption, SessionTicketResumption, TlsAction, TlsEntity, TlsEvent,
-    TlsStateMachine,
+    ConnStates, SessionIdResumption, SessionResumption, SessionTicketResumption, TlsAction,
+    TlsEntity, TlsEvent, TlsStateMachine,
 };
 use crate::{TlsResult, utils};
-use log::{debug, trace, info};
+use log::{debug, info, trace};
 use std::io::{Read, Write};
 use std::sync::Arc;
 use std::time::Instant;
@@ -420,8 +420,15 @@ impl<T: Read + Write> TlsConnection<T> {
                         }
                         TlsAction::ValidateSession => unimplemented!(),
                         TlsAction::StoreSessionTicketInfo(ticket, info) => {
+                            trace!("Storing session ticket");
                             if let Some(store) = &self.config.session_ticket_store {
-                                store.put(ticket, info)?
+                                store.insert_session_ticket(&ticket, info)?
+                            }
+                        }
+                        TlsAction::StoreSessionIdInfo(id, info) => {
+                            trace!("Storing session id");
+                            if let Some(store) = &self.config.session_ticket_store {
+                                store.insert_session_id(&id, info)?
                             }
                         }
                     }
@@ -498,7 +505,7 @@ impl<T: Read + Write> TlsConnection<T> {
         if side == TlsEntity::Client {
             let session_resumption = match &config.session_ticket_store {
                 None => SessionResumption::None,
-                Some(store) => match store.get_one()? {
+                Some(store) => match store.get_any_session_ticket()? {
                     Some((session_ticket, info)) => {
                         debug!(
                             "Using session ticket: {}",
@@ -511,7 +518,18 @@ impl<T: Read + Write> TlsConnection<T> {
                             cipher_suite: info.cipher_suite,
                         })
                     }
-                    None => SessionResumption::None,
+                    None => match store.get_any_session_id()? {
+                        Some((session_id, info)) => {
+                            debug!("Using session id: {}", utils::bytes_to_hex(&session_id));
+
+                            SessionResumption::SessionId(SessionIdResumption {
+                                session_id,
+                                master_secret: info.master_secret,
+                                cipher_suite: info.cipher_suite,
+                            })
+                        }
+                        None => SessionResumption::None,
+                    },
                 },
             };
 
@@ -519,7 +537,9 @@ impl<T: Read + Write> TlsConnection<T> {
                 cipher_suites: config.cipher_suites.to_vec(),
                 session_resumption,
                 server_name: config.server_name.clone(),
-                request_session_ticket: true,
+                support_session_ticket: true,
+                support_extended_master_secret: true,
+                support_secure_renegotiation: true,
             };
             self.process_message(initiate)?;
         }
