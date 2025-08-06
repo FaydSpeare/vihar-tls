@@ -41,10 +41,10 @@ tls_codable_enum! {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TlsAlert {
-    level: TlsAlertLevel,
-    description: TlsAlertDesc,
+    pub level: TlsAlertLevel,
+    pub description: TlsAlertDesc,
 }
 
 impl TlsAlert {

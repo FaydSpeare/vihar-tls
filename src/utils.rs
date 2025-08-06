@@ -18,6 +18,12 @@ pub fn get_random_bytes(len: usize) -> Vec<u8> {
     (0..len).map(|_| rng.r#gen::<u8>()).collect()
 }
 
+pub fn bytes_to_hex(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect::<String>()
+}
 
 #[allow(unused)]
 pub fn hex_to_bytes(hex: &str) -> Vec<u8> {

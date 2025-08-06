@@ -7,14 +7,12 @@ use crate::client::TlsConfig;
 use crate::encoding::Reconstrainable;
 use crate::encoding::TlsCodable;
 use crate::errors::{DecodingError, TlsError};
-use crate::extensions::{
-    ALPNExt, ExtendedMasterSecretExt, RenegotiationInfoExt, ServerNameExt, SessionTicketExt,
-};
-use crate::messages::{
-    ClientHello, SessionId, TlsCiphertext, TlsCompressed, TlsHandshake, TlsMessage, TlsPlaintext,
-};
+use crate::messages::{TlsCiphertext, TlsCompressed, TlsMessage, TlsPlaintext};
 use crate::record::RecordLayer;
-use crate::state_machine::{ConnStates, TlsAction, TlsEntity, TlsHandshakeStateMachine, TlsState};
+use crate::state_machine::{
+    ConnStates, SessionResumption, SessionTicketResumption, TlsAction, TlsEntity, TlsEvent,
+    TlsStateMachine,
+};
 use crate::{TlsResult, utils};
 use log::{debug, trace, warn};
 use std::io::{Read, Write};
@@ -372,7 +370,7 @@ impl ConnState {
 
 pub struct TlsConnection<T: Read + Write> {
     stream: T,
-    pub handshake_state_machine: TlsHandshakeStateMachine,
+    pub handshake_state_machine: TlsStateMachine,
     conn_states: ConnStates,
     record_layer: RecordLayer,
     config: Arc<TlsConfig>,
@@ -389,7 +387,7 @@ impl<T: Read + Write> TlsConnection<T> {
         Self {
             side,
             stream,
-            handshake_state_machine: TlsHandshakeStateMachine::new(side, config.clone()),
+            handshake_state_machine: TlsStateMachine::new(side, config.clone()),
             config,
             conn_states: ConnStates::new(),
             record_layer: RecordLayer::new(),
@@ -397,8 +395,8 @@ impl<T: Read + Write> TlsConnection<T> {
         }
     }
 
-    fn process_message(&mut self, msg: &TlsMessage) -> TlsResult<()> {
-        match self.handshake_state_machine.handle(msg) {
+    fn process_message(&mut self, event: TlsEvent) -> TlsResult<()> {
+        match self.handshake_state_machine.handle(event) {
             Ok(actions) => {
                 for action in actions {
                     match action {
@@ -416,21 +414,22 @@ impl<T: Read + Write> TlsConnection<T> {
                         TlsAction::SendAlert(alert) => {
                             self.send_alert(alert)?;
                         }
+                        TlsAction::CloseConnection(alert) => {
+                            self.is_closed = true;
+                            return Err(format!("Connection closed due to: {:?}", alert).into());
+                        }
+                        TlsAction::ValidateSession => unimplemented!(),
+                        TlsAction::StoreSessionTicketInfo(ticket, info) => {
+                            if let Some(store) = &self.config.session_ticket_store {
+                                store.put(ticket, info)?
+                            }
+                        }
                     }
                 }
-            },
-            Err(e) => {
             }
+            Err(_) => unreachable!(),
         }
         Ok(())
-    }
-
-    pub fn process_alert(&mut self, alert: &TlsAlert) -> TlsResult<()> {
-        warn!("Received alert: {:?}", alert);
-        if alert.is_fatal() {
-            self.is_closed = true;
-        }
-        return Err("Received alert during handshake".into());
     }
 
     pub fn next_message(&mut self) -> TlsResult<TlsMessage> {
@@ -440,11 +439,7 @@ impl<T: Read + Write> TlsConnection<T> {
                 .try_parse_message(&mut self.conn_states.read, &self.config.validation_policy)
             {
                 Ok(msg) => {
-                    if let TlsMessage::Alert(alert) = &msg {
-                        self.process_alert(alert)?;
-                    } else {
-                        self.process_message(&msg)?;
-                    }
+                    self.process_message(TlsEvent::IncomingMessage(&msg))?;
                     return Ok(msg);
                 }
                 Err(e) => match e {
@@ -503,33 +498,32 @@ impl<T: Read + Write> TlsConnection<T> {
 
         let start_time = Instant::now();
         if side == TlsEntity::Client {
-            let mut extensions = config.extensions.to_vec();
-            if let Some(store) = &config.session_ticket_store {
-                match store.get_one()? {
-                    Some(ticket) => {
+            let session_resumption = match &config.session_ticket_store {
+                None => SessionResumption::None,
+                Some(store) => match store.get_one()? {
+                    Some((session_ticket, info)) => {
                         debug!(
-                            "Using SessionTicket: {:?}",
-                            ticket
-                                .iter()
-                                .map(|b| format!("{:02x}", b))
-                                .collect::<String>()
+                            "Using session ticket: {}",
+                            utils::bytes_to_hex(&session_ticket)
                         );
-                        extensions.push(SessionTicketExt::resume(ticket).into())
+
+                        SessionResumption::SessionTicket(SessionTicketResumption {
+                            session_ticket,
+                            master_secret: info.master_secret,
+                            cipher_suite: info.cipher_suite,
+                        })
                     }
-                    None => extensions.push(SessionTicketExt::new().into()),
-                }
-            }
+                    None => SessionResumption::None,
+                },
+            };
 
-            if let Some(server_name) = &config.server_name {
-                extensions.push(ServerNameExt::new(&server_name).into());
-            }
-
-            let client_hello = TlsMessage::Handshake(TlsHandshake::ClientHello(ClientHello::new(
-                &config.cipher_suites,
-                extensions,
-                None,
-            )?));
-            self.process_message(&client_hello)?;
+            let initiate = TlsEvent::ClientInitiate {
+                cipher_suites: config.cipher_suites.to_vec(),
+                session_resumption,
+                server_name: config.server_name.clone(),
+                request_session_ticket: true,
+            };
+            self.process_message(initiate)?;
         }
 
         while !self.handshake_state_machine.is_established() {

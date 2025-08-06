@@ -37,7 +37,7 @@ impl SessionTicketInfo {
 }
 
 pub trait SessionTicketStorage: Debug {
-    fn get_one(&self) -> TlsResult<Option<SessionTicket>>;
+    fn get_one(&self) -> TlsResult<Option<(SessionTicket, SessionTicketInfo)>>;
     fn get(&self, ticket: &SessionTicket) -> TlsResult<Option<SessionTicketInfo>>;
     fn put(&self, ticket: SessionTicket, info: SessionTicketInfo) -> TlsResult<()>;
 }
@@ -56,8 +56,11 @@ impl SledSessionTicketStore {
 }
 
 impl SessionTicketStorage for SledSessionTicketStore {
-    fn get_one(&self) -> TlsResult<Option<SessionTicket>> {
-        Ok(self.db.last()?.map(|(k, _)| k.to_vec()))
+    fn get_one(&self) -> TlsResult<Option<(SessionTicket, SessionTicketInfo)>> {
+        Ok(self
+            .db
+            .last()?
+            .map(|(k, v)| (k.to_vec(), SessionTicketInfo::decode(v.to_vec()))))
     }
 
     fn get(&self, ticket: &SessionTicket) -> TlsResult<Option<SessionTicketInfo>> {

@@ -1,18 +1,35 @@
-// macro_rules! require_handshake {
-//     ($msg:expr, $handshake:path) => {
-//         match $msg {
-//             crate::messages::TlsMessage::Handshake(handshake @ $handshake(inner)) => {
-//                 Ok::<_, Box<dyn std::error::Error>>((handshake, inner))
-//             }
-//             _ => {
-//                 return Ok((
-//                     ClosedState {}.into(),
-//                     vec![TlsAction::SendAlert(TlsAlert::fatal(desc))],
-//                 ))
-//             }
-//         }
-//     };
-// }
+macro_rules! require_handshake_msg {
+    ($msg:expr, $handshake:path) => {
+        match $msg {
+            crate::state_machine::TlsEvent::IncomingMessage(
+                crate::messages::TlsMessage::Handshake(handshake @ $handshake(inner)),
+            ) => (handshake, inner),
+            _ => {
+                return Ok((
+                    ClosedState {}.into(),
+                    vec![TlsAction::SendAlert(TlsAlert::fatal(
+                        TlsAlertDesc::UnexpectedMessage,
+                    ))],
+                ))
+            }
+        }
+    };
+    ($msg:expr, $handshake:path, *) => {
+        match $msg {
+            crate::state_machine::TlsEvent::IncomingMessage(
+                crate::messages::TlsMessage::Handshake(handshake @ $handshake),
+            ) => handshake,
+            _ => {
+                return Ok((
+                    ClosedState {}.into(),
+                    vec![TlsAction::SendAlert(TlsAlert::fatal(
+                        TlsAlertDesc::UnexpectedMessage,
+                    ))],
+                ))
+            }
+        }
+    };
+}
 
 macro_rules! tls_codable_enum {
     (

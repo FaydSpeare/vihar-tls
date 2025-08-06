@@ -22,14 +22,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut client = TlsClient::new(
         TlsConfigBuilder::new()
             .with_server_name("google.com")
-            //.with_session_ticket_store("sdb")
+            .with_session_ticket_store("sdb")
             .build(),
         tcp_stream,
     );
 
     client.write(b"1st data")?;
-    sleep(Duration::from_secs(10));
-    client.write(b"2nd data")?;
     sleep(Duration::from_secs(10));
     Ok(())
 }
