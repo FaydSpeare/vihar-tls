@@ -672,6 +672,24 @@ impl TlsMessage {
     pub fn new_appdata(bytes: Vec<u8>) -> Self {
         Self::ApplicationData(bytes)
     }
+
+    pub fn encode(&self) -> Vec<u8> {
+        match self {
+            Self::ApplicationData(bytes) => bytes.to_vec(),
+            Self::Alert(alert) => alert.get_encoding(),
+            Self::Handshake(handshake) => handshake.get_encoding(),
+            Self::ChangeCipherSpec => vec![1],
+        }
+    }
+
+    pub fn content_type(&self) -> TlsContentType {
+        match self {
+            Self::ApplicationData(_) => TlsContentType::ApplicationData,
+            Self::Alert(_) => TlsContentType::Alert,
+            Self::Handshake(_) => TlsContentType::Handshake,
+            Self::ChangeCipherSpec => TlsContentType::ChangeCipherSpec,
+        }
+    }
 }
 
 u16_vec_len_with_max!(PlaintextFragmentLen, 16_384);

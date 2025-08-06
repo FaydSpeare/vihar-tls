@@ -7,7 +7,7 @@ use crate::client::TlsConfig;
 use crate::encoding::Reconstrainable;
 use crate::encoding::TlsCodable;
 use crate::errors::{DecodingError, TlsError};
-use crate::messages::{TlsCiphertext, TlsCompressed, TlsMessage, TlsPlaintext};
+use crate::messages::{TlsCiphertext, TlsCompressed, TlsContentType, TlsMessage, TlsPlaintext};
 use crate::record::RecordLayer;
 use crate::state_machine::{
     ConnStates, SessionIdResumption, SessionResumption, SessionTicketResumption, TlsAction,
@@ -350,13 +350,10 @@ pub enum ConnState {
 }
 
 impl ConnState {
-    pub fn encrypt<T: TryInto<TlsPlaintext, Error = DecodingError>>(
-        &mut self,
-        plaintext: T,
-    ) -> Result<TlsCiphertext, DecodingError> {
+    pub fn encrypt(&mut self, plaintext: TlsPlaintext) -> Result<TlsCiphertext, DecodingError> {
         match self {
-            Self::Initial(state) => Ok(state.encrypt(plaintext.try_into()?)),
-            Self::Secure(state) => state.encrypt(plaintext.try_into()?),
+            Self::Initial(state) => Ok(state.encrypt(plaintext)),
+            Self::Secure(state) => state.encrypt(plaintext),
         }
     }
 
@@ -481,8 +478,14 @@ impl<T: Read + Write> TlsConnection<T> {
     fn send_msg<M: Into<TlsMessage>>(&mut self, msg: M) -> TlsResult<()> {
         self.check_connection_not_closed()?;
 
-        let ciphertext = self.conn_states.write.encrypt(msg.into())?;
-        self.send_bytes(&ciphertext.get_encoding())?;
+        let msg: TlsMessage = msg.into();
+        let content_type = msg.content_type();
+        for bytes in Fragmenter::new(msg.encode(), 16384).into_iter() {
+            let plaintext = TlsPlaintext::new(content_type, bytes.to_vec())?;
+            let ciphertext = self.conn_states.write.encrypt(plaintext)?;
+            self.send_bytes(&ciphertext.get_encoding())?;
+        }
+
         Ok(())
     }
 
@@ -556,10 +559,9 @@ impl<T: Read + Write> TlsConnection<T> {
     pub fn write(&mut self, bytes: &[u8]) -> TlsResult<()> {
         self.check_connection_not_closed()?;
 
-        let ciphertext = self
-            .conn_states
-            .write
-            .encrypt(TlsMessage::new_appdata(bytes.to_vec()))?;
+        let msg = TlsMessage::new_appdata(bytes.to_vec());
+        let plaintext = TlsPlaintext::new(TlsContentType::ApplicationData, msg.encode())?;
+        let ciphertext = self.conn_states.write.encrypt(plaintext)?;
         self.send_bytes(&ciphertext.get_encoding())?;
         println!("Sent AppData: {:?}", String::from_utf8_lossy(bytes));
         Ok(())
@@ -580,5 +582,34 @@ impl<T: Read + Write> TlsConnection<T> {
                 }
             }
         }
+    }
+}
+
+pub struct Fragmenter {
+    bytes: Vec<u8>,
+    max_fragment_size: usize,
+}
+
+impl Fragmenter {
+    pub fn new(bytes: Vec<u8>, max_fragment_size: usize) -> Self {
+        println!("fragmenting {}", bytes.len());
+        Self {
+            bytes,
+            max_fragment_size,
+        }
+    }
+}
+
+impl Iterator for Fragmenter {
+    type Item = Vec<u8>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.bytes.is_empty() {
+            return None;
+        }
+
+        let take = self.max_fragment_size.min(self.bytes.len());
+        let chunk: Vec<u8> = self.bytes.drain(..take).collect();
+        Some(chunk)
     }
 }
