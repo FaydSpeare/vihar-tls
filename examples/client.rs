@@ -22,7 +22,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut client = TlsClient::new(
         TlsConfigBuilder::new()
             //.with_server_name("google.com")
-            .with_session_ticket_store("sdb")
+            .with_session_store("sdb")
             .build(),
         tcp_stream,
     );

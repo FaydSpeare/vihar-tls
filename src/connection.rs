@@ -421,13 +421,13 @@ impl<T: Read + Write> TlsConnection<T> {
                         TlsAction::ValidateSession => unimplemented!(),
                         TlsAction::StoreSessionTicketInfo(ticket, info) => {
                             trace!("Storing session ticket");
-                            if let Some(store) = &self.config.session_ticket_store {
+                            if let Some(store) = &self.config.session_store {
                                 store.insert_session_ticket(&ticket, info)?
                             }
                         }
                         TlsAction::StoreSessionIdInfo(id, info) => {
                             trace!("Storing session id");
-                            if let Some(store) = &self.config.session_ticket_store {
+                            if let Some(store) = &self.config.session_store {
                                 store.insert_session_id(&id, info)?
                             }
                         }
@@ -503,7 +503,7 @@ impl<T: Read + Write> TlsConnection<T> {
 
         let start_time = Instant::now();
         if side == TlsEntity::Client {
-            let session_resumption = match &config.session_ticket_store {
+            let session_resumption = match &config.session_store {
                 None => SessionResumption::None,
                 Some(store) => match store.get_any_session_ticket()? {
                     Some((session_ticket, info)) => {

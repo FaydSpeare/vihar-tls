@@ -28,7 +28,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut server = TlsServer::new(
         TlsConfigBuilder::new()
-            .with_session_ticket_store("server-sdb")
+            .with_session_store("server-sdb")
             .with_certificate_pem("testing/rsacert.pem", "testing/rsakey.pem")
             .with_validation_policy(ValidationPolicy {
                 unrecognised_server_name: UnrecognisedServerNamePolicy::Ignore,

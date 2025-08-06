@@ -22,7 +22,7 @@ pub struct CertificateAndPrivateKey {
 
 pub struct TlsConfigBuilder {
     pub cipher_suites: Option<Box<[CipherSuiteId]>>,
-    pub session_ticket_store: Option<Box<dyn SessionStorage>>,
+    pub session_store: Option<Box<dyn SessionStorage>>,
     pub certificate: Option<CertificateAndPrivateKey>,
     pub server_name: Option<String>,
     pub validation_policy: Option<ValidationPolicy>,
@@ -42,7 +42,7 @@ impl TlsConfigBuilder {
                 ]
                 .into(),
             ),
-            session_ticket_store: None,
+            session_store: None,
             certificate: None,
             server_name: None,
             validation_policy: None,
@@ -52,15 +52,15 @@ impl TlsConfigBuilder {
     pub fn build(self) -> TlsConfig {
         TlsConfig {
             cipher_suites: self.cipher_suites.unwrap(),
-            session_ticket_store: self.session_ticket_store,
+            session_store: self.session_store,
             certificate: self.certificate,
             server_name: self.server_name,
             validation_policy: self.validation_policy.unwrap_or_default(),
         }
     }
 
-    pub fn with_session_ticket_store(mut self, path: &str) -> Self {
-        self.session_ticket_store = Some(Box::new(SledSessionStore::open(path).unwrap()));
+    pub fn with_session_store(mut self, path: &str) -> Self {
+        self.session_store = Some(Box::new(SledSessionStore::open(path).unwrap()));
         self
     }
 
@@ -95,7 +95,7 @@ impl TlsConfigBuilder {
 #[derive(Debug)]
 pub struct TlsConfig {
     pub cipher_suites: Box<[CipherSuiteId]>,
-    pub session_ticket_store: Option<Box<dyn SessionStorage>>,
+    pub session_store: Option<Box<dyn SessionStorage>>,
     pub certificate: Option<CertificateAndPrivateKey>,
     pub server_name: Option<String>,
     pub validation_policy: ValidationPolicy,
