@@ -33,13 +33,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .with_validation_policy(ValidationPolicy {
                 unrecognised_server_name: UnrecognisedServerNamePolicy::Ignore,
                 renegotiation: RenegotiationPolicy::Secure,
-
             })
             .build(),
         tcp_stream,
     );
 
-    server.write(b"from server")?;
     server.serve()?;
     sleep(Duration::from_secs(10));
     Ok(())

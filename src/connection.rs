@@ -14,7 +14,7 @@ use crate::state_machine::{
     TlsStateMachine,
 };
 use crate::{TlsResult, utils};
-use log::{debug, trace, warn};
+use log::{debug, trace, info};
 use std::io::{Read, Write};
 use std::sync::Arc;
 use std::time::Instant;
@@ -480,9 +480,7 @@ impl<T: Read + Write> TlsConnection<T> {
     }
 
     fn send_alert(&mut self, alert: TlsAlert) -> TlsResult<()> {
-        if alert.is_fatal() {
-            self.is_closed = true;
-        }
+        info!("Sent alert: {:?}", alert);
         self.send_msg(TlsMessage::Alert(alert))?;
         Ok(())
     }

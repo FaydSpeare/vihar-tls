@@ -193,6 +193,20 @@ impl Extensions {
             }),
         }
     }
+
+    pub fn get_renegotiation_info(&self) -> Option<Vec<u8>> {
+        match &self.0 {
+            None => None,
+            Some(extensions) => extensions.iter().find_map(|ext| {
+                if let Extension::RenegotiationInfo(RenegotiationInfoExt::Renegotiation(info)) = ext
+                {
+                    Some(info.to_vec())
+                } else {
+                    None
+                }
+            }),
+        }
+    }
 }
 
 impl TlsCodable for Extensions {

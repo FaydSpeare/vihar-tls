@@ -196,10 +196,15 @@ impl ServerHello {
         cipher_suite: CipherSuiteId,
         with_renegotiation_info: bool,
         with_extended_master_secret: bool,
+        renegotiation_info: Option<Vec<u8>>,
     ) -> Self {
         let mut extensions = vec![];
         if with_renegotiation_info {
-            extensions.push(RenegotiationInfoExt::IndicateSupport.into());
+            if let Some(info) = renegotiation_info {
+                extensions.push(RenegotiationInfoExt::renegotiation(&info).unwrap().into());
+            } else {
+                extensions.push(RenegotiationInfoExt::IndicateSupport.into());
+            }
         }
         if with_extended_master_secret {
             extensions.push(ExtendedMasterSecretExt::indicate_support().into());

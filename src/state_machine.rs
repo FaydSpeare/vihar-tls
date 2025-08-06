@@ -5,11 +5,12 @@ use std::sync::Arc;
 use enum_dispatch::enum_dispatch;
 use log::{debug, info};
 
+use crate::RenegotiationPolicy;
 use crate::alert::TlsAlertDesc;
 use crate::ciphersuite::{CipherSuiteId, PrfAlgorithm};
 use crate::client::TlsConfig;
 use crate::errors::TlsError;
-use crate::extensions::{HashAlgo, ServerNameExt, SessionTicketExt, SigAlgo};
+use crate::extensions::{HashAlgo, RenegotiationInfoExt, ServerNameExt, SessionTicketExt, SigAlgo};
 use crate::messages::{Certificate, ClientHello, ServerHello, SessionId};
 use crate::signature::{
     decrypt_rsa_master_secret, dsa_verify, get_dhe_pre_master_secret, get_rsa_pre_master_secret,
@@ -123,8 +124,11 @@ impl TlsStateMachine {
 
     pub fn new(side: TlsEntity, config: Arc<TlsConfig>) -> Self {
         let state: TlsState = match side {
-            TlsEntity::Client => AwaitClientInitiateState {}.into(),
-            TlsEntity::Server => AwaitClientHello {}.into(),
+            TlsEntity::Client => AwaitClientInitiateState {
+                previous_verify_data: None,
+            }
+            .into(),
+            TlsEntity::Server => AwaitClientHello { previous_verify_data: None }.into(),
         };
         Self {
             ctx: TlsContext {
@@ -186,7 +190,15 @@ pub trait HandleRecord {
 }
 
 #[derive(Debug)]
-pub struct AwaitClientInitiateState;
+struct PreviousVerifyData {
+    client: Vec<u8>,
+    server: Vec<u8>,
+}
+
+#[derive(Debug)]
+pub struct AwaitClientInitiateState {
+    previous_verify_data: Option<PreviousVerifyData>,
+}
 
 impl HandleRecord for AwaitClientInitiateState {
     fn handle(self, ctx: &mut TlsContext, event: TlsEvent) -> HandleResult {
@@ -203,6 +215,15 @@ impl HandleRecord for AwaitClientInitiateState {
         };
 
         let mut extensions = vec![];
+
+        match &self.previous_verify_data {
+            None => extensions.push(RenegotiationInfoExt::indicate_support().into()),
+            Some(data) => extensions.push(
+                RenegotiationInfoExt::renegotiation(&data.client)
+                    .unwrap()
+                    .into(),
+            ),
+        }
 
         if let SessionResumption::SessionTicket(info) = &session_resumption {
             extensions.push(SessionTicketExt::resume(info.session_ticket.clone()).into())
@@ -231,6 +252,7 @@ impl HandleRecord for AwaitClientInitiateState {
                 handshakes: handshake.get_encoding(),
                 client_random,
                 session_resumption,
+                previous_verify_data: self.previous_verify_data,
             }
             .into(),
             vec![TlsAction::SendHandshakeMsg(handshake)],
@@ -239,7 +261,9 @@ impl HandleRecord for AwaitClientInitiateState {
 }
 
 #[derive(Debug)]
-pub struct AwaitClientHello {}
+pub struct AwaitClientHello {
+    previous_verify_data: Option<PreviousVerifyData>,
+}
 
 impl HandleRecord for AwaitClientHello {
     fn handle(self, ctx: &mut TlsContext, event: TlsEvent) -> HandleResult {
@@ -263,11 +287,18 @@ impl HandleRecord for AwaitClientHello {
             CipherSuite::from(selected_cipher_suite).params().name
         );
 
+        // If this is a secure renegotiation we need to send the right renegotation_info
+        let renegotiation_info = self
+            .previous_verify_data
+            .map(|data| [data.client, data.server].concat());
+
         let server_hello = ServerHello::new(
             selected_cipher_suite,
             client_hello.extensions.includes_secure_renegotiation(),
             client_hello.extensions.includes_extended_master_secret(),
+            renegotiation_info,
         );
+
         let server_random = server_hello.random.as_bytes();
         let server_hello: TlsHandshake = server_hello.into();
         server_hello.write_to(&mut handshakes);
@@ -327,6 +358,7 @@ pub struct AwaitServerHello {
     handshakes: Vec<u8>,
     client_random: [u8; 32],
     session_resumption: SessionResumption,
+    previous_verify_data: Option<PreviousVerifyData>,
 }
 
 impl HandleRecord for AwaitServerHello {
@@ -335,6 +367,18 @@ impl HandleRecord for AwaitServerHello {
 
         info!("Received ServerHello");
         handshake.write_to(&mut self.handshakes);
+
+        // For secure renegotiations we need to verify the renegotiation_info
+        if let Some(previous_verify_data) = self.previous_verify_data {
+            let Some(renegotiation_info) = server_hello.extensions.get_renegotiation_info() else {
+                return close_connection(TlsAlertDesc::HandshakeFailure);
+            };
+
+            let expected = [previous_verify_data.client, previous_verify_data.server].concat();
+            if !(renegotiation_info == expected) {
+                return close_connection(TlsAlertDesc::HandshakeFailure);
+            }
+        }
 
         let supported_extensions = SupportedExtensions {
             secure_renegotiation: server_hello.supports_secure_renegotiation(),
@@ -1117,45 +1161,66 @@ pub struct EstablishedState {
     pub session_id: SessionId,
     #[allow(unused)]
     supported_extensions: SupportedExtensions,
-
     pub server_verify_data: Vec<u8>,
     pub client_verify_data: Vec<u8>,
 }
 
 impl HandleRecord for EstablishedState {
-    fn handle(self, _: &mut TlsContext, event: TlsEvent) -> HandleResult {
+    fn handle(self, ctx: &mut TlsContext, event: TlsEvent) -> HandleResult {
         if let TlsEvent::IncomingMessage(TlsMessage::ApplicationData(_)) = event {
             return Ok((self.into(), vec![]));
         }
 
-        return close_with_unexpected_message();
+        if ctx.side == TlsEntity::Client {
+            // TODO:
+            // The server may choose to ignore a renegotiation or simply
+            // send a warning alert in which case it will remain in the established
+            // state. The client needs to transition back to the established state
+            // if it sees the server isn't willing to renegotiate, but doesn't want
+            // to close the connection either.
+            return AwaitClientInitiateState {
+                previous_verify_data: Some(PreviousVerifyData {
+                    client: self.client_verify_data,
+                    server: self.server_verify_data,
+                }),
+            }
+            .handle(ctx, event);
+        }
 
-        // Server behaviour
-        // match ctx.config.validation_policy.renegotiation {
-        //     RenegotiationPolicy::None => {
-        //         // COULD send warning here instead
-        //         // COULD ignore here instead
-        //         return fatal(self.into(), TlsAlertDesc::NoRenegotiation);
-        //     }
-        //     RenegotiationPolicy::Legacy => {
-        //         // ABORT if TLS_EMPTY_RENEGOTIATION_INFO_SCSV present
-        //         // ABORT if renegotiation_info extension present
-        //         // OTHERWISE initiate handshake
-        //     }
-        //     RenegotiationPolicy::Secure => {
-        //         if !self.supported_extensions.secure_renegotiation {
-        //             return fatal(self.into(), TlsAlertDesc::NoRenegotiation);
-        //         }
+        let (_, client_hello) = require_handshake_msg!(event, TlsHandshake::ClientHello);
 
-        //         // ABORT if TLS_EMPTY_RENEGOTIATION_INFO_SCSV present
-        //         // ABORT if renegotiation_info extension not present
-        //         // ABORT if client_verify_data doesn't match
+        // TODO:
+        // Add options to simply ignore client renegotiation or simply send a warning.
+        match ctx.config.validation_policy.renegotiation {
+            RenegotiationPolicy::None => {
+                return close_connection(TlsAlertDesc::NoRenegotiation);
+            }
+            RenegotiationPolicy::Legacy => {
+                if client_hello.extensions.includes_secure_renegotiation() {
+                    return close_connection(TlsAlertDesc::HandshakeFailure);
+                }
+                return AwaitClientHello {
+                    previous_verify_data: None,
+                }
+                .handle(ctx, event);
+            }
+            RenegotiationPolicy::Secure => {
+                if let Some(info) = client_hello.extensions.get_renegotiation_info() {
+                    if info != self.client_verify_data {
+                        return close_connection(TlsAlertDesc::NoRenegotiation);
+                    }
 
-        //         // INCLUDE client_verify_data ++ server_verify_data
-        //         // Initiate handshake
-        //     }
-        // }
-        unimplemented!()
+                    return AwaitClientHello {
+                        previous_verify_data: Some(PreviousVerifyData {
+                            client: self.client_verify_data,
+                            server: self.server_verify_data,
+                        }),
+                    }
+                    .handle(ctx, event);
+                }
+                return close_connection(TlsAlertDesc::NoRenegotiation);
+            }
+        }
     }
 }
 
@@ -1196,6 +1261,7 @@ pub struct ClosedState {}
 
 impl HandleRecord for ClosedState {
     fn handle(self, _ctx: &mut TlsContext, event: TlsEvent) -> HandleResult {
+        println!("{:?}", event);
         // Maybe get server hello
         // Maybe get alert
         // Maybe get nothing...

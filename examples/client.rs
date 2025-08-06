@@ -28,6 +28,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     client.write(b"1st data")?;
+    sleep(Duration::from_secs(2));
+    client.renegotiate()?;
     sleep(Duration::from_secs(10));
     Ok(())
 }
