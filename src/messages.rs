@@ -1,3 +1,5 @@
+use std::cmp::Ordering;
+
 use log::debug;
 
 use crate::alert::{TlsAlert, TlsAlertDesc};
@@ -10,12 +12,37 @@ use crate::extensions::{
     ExtendedMasterSecretExt, Extension, Extensions, HashAlgo, MaxFragmentLenExt,
     RenegotiationInfoExt, SigAlgo, SignatureAlgorithmsExt,
 };
-use crate::{MaxFragmentLength, TlsValidateable, TlsPolicy, utils};
+use crate::{MaxFragmentLength, TlsPolicy, TlsValidateable, utils};
 
 #[derive(Debug, Clone, Copy)]
 pub struct ProtocolVersion {
     pub major: u8,
     pub minor: u8,
+}
+
+impl ProtocolVersion {
+    pub fn is_tls12(&self) -> bool {
+        self.minor == 3 && self.major == 3
+    }
+
+    pub fn tls12() -> Self {
+        Self { major: 3, minor: 3 }
+    }
+}
+
+impl PartialEq for ProtocolVersion {
+    fn eq(&self, other: &Self) -> bool {
+        self.major == other.major && self.minor == other.minor
+    }
+}
+
+impl PartialOrd for ProtocolVersion {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        match self.major.cmp(&other.major) {
+            Ordering::Equal => Some(self.minor.cmp(&other.minor)),
+            ord => Some(ord),
+        }
+    }
 }
 
 impl TlsCodable for ProtocolVersion {
@@ -113,7 +140,7 @@ type CompressionMethods = LengthPrefixedVec<u8, CompressionMethodId, NonEmpty>;
 
 #[derive(Debug, Clone)]
 pub struct ClientHello {
-    pub client_version: ProtocolVersion,
+    pub version: ProtocolVersion,
     pub random: Random,
     pub session_id: SessionId,
     pub cipher_suites: CipherSuites,
@@ -136,7 +163,7 @@ impl ClientHello {
         );
         // println!("Client Extensions {:?}", extensions);
         Ok(ClientHello {
-            client_version: ProtocolVersion { major: 3, minor: 3 },
+            version: ProtocolVersion { major: 3, minor: 3 },
             random: Random {
                 unix_time: utils::get_unix_time(),
                 random_bytes: utils::get_random_bytes(28).try_into().unwrap(),
@@ -157,7 +184,7 @@ impl From<ClientHello> for TlsHandshake {
 
 impl TlsCodable for ClientHello {
     fn write_to(&self, bytes: &mut Vec<u8>) {
-        self.client_version.write_to(bytes);
+        self.version.write_to(bytes);
         self.random.write_to(bytes);
         self.session_id.write_to(bytes);
         self.cipher_suites.write_to(bytes);
@@ -174,7 +201,7 @@ impl TlsCodable for ClientHello {
         let extensions = Extensions::read_from(reader)?;
         // println!("Client Extensions: {:#?}", extensions);
         Ok(Self {
-            client_version,
+            version: client_version,
             random,
             session_id,
             cipher_suites,
@@ -187,7 +214,7 @@ impl TlsCodable for ClientHello {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ServerHello {
-    pub server_version: ProtocolVersion,
+    pub version: ProtocolVersion,
     pub random: Random,
     pub session_id: SessionId,
     pub cipher_suite: CipherSuiteId,
@@ -221,7 +248,7 @@ impl ServerHello {
         }
 
         Self {
-            server_version: ProtocolVersion { major: 3, minor: 3 },
+            version: ProtocolVersion { major: 3, minor: 3 },
             random: Random {
                 unix_time: utils::get_unix_time(),
                 random_bytes: utils::get_random_bytes(28).try_into().unwrap(),
@@ -254,7 +281,7 @@ impl From<ServerHello> for TlsHandshake {
 
 impl TlsCodable for ServerHello {
     fn write_to(&self, bytes: &mut Vec<u8>) {
-        self.server_version.write_to(bytes);
+        self.version.write_to(bytes);
         self.random.write_to(bytes);
         self.session_id.write_to(bytes);
         self.cipher_suite.write_to(bytes);
@@ -270,7 +297,7 @@ impl TlsCodable for ServerHello {
         let extensions = Extensions::read_from(reader)?;
         println!("Server Extensions: {:#?}", extensions.extension_type_set());
         Ok(Self {
-            server_version,
+            version: server_version,
             random,
             session_id,
             cipher_suite,

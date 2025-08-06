@@ -13,7 +13,7 @@ use crate::extensions::{
     ExtendedMasterSecretExt, ExtensionType, HashAlgo, MaxFragmentLenExt, MaxFragmentLength,
     RenegotiationInfoExt, ServerNameExt, SessionTicketExt, SigAlgo,
 };
-use crate::messages::{Certificate, ClientHello, ServerHello, SessionId};
+use crate::messages::{Certificate, ClientHello, ProtocolVersion, ServerHello, SessionId};
 use crate::signature::{
     decrypt_rsa_master_secret, dsa_verify, get_dhe_pre_master_secret, get_rsa_pre_master_secret,
     public_key_from_cert, rsa_verify,
@@ -309,8 +309,14 @@ pub struct AwaitClientHello {
 impl HandleRecord for AwaitClientHello {
     fn handle(self, ctx: &mut TlsContext, event: TlsEvent) -> HandleResult {
         let (handshake, client_hello) = require_handshake_msg!(event, TlsHandshake::ClientHello);
-
         info!("Received ClientHello");
+
+        // We're not willing to go below TLS1.2. For TLS1.3 we'll give the client
+        // the option to decide whether to continue when we respond with TLS1.2.
+        if client_hello.version < ProtocolVersion::tls12() {
+            return close_connection(TlsAlertDesc::ProtocolVersion);
+        }
+
         let mut handshakes = handshake.get_encoding();
 
         let suites: Vec<_> = client_hello
@@ -416,6 +422,11 @@ impl HandleRecord for AwaitServerHello {
         let (handshake, server_hello) = require_handshake_msg!(event, TlsHandshake::ServerHello);
 
         info!("Received ServerHello");
+
+        if !server_hello.version.is_tls12() {
+            return close_connection(TlsAlertDesc::ProtocolVersion);
+        }
+
         handshake.write_to(&mut self.handshakes);
 
         // For secure renegotiations we need to verify the renegotiation_info
