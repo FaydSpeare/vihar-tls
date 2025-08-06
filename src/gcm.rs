@@ -160,7 +160,7 @@ pub fn decrypt_aes_gcm<C: BlockEncrypt + KeyInit>(
     iv: &[u8],
     ciphertext: &[u8],
     aad: &[u8],
-) -> Vec<u8> {
+) -> Result<Vec<u8>, String> {
     let (ciphertext, tag) = ciphertext.split_at(ciphertext.len() - 16);
     let h = u128::from_be_bytes(encrypt_aes_block::<C>(key, &0u128.to_be_bytes()));
     let counter_start = if iv.len() == 12 {
@@ -176,11 +176,13 @@ pub fn decrypt_aes_gcm<C: BlockEncrypt + KeyInit>(
     let keystream = generate_keystream::<C>(key, counter_start + 1, ciphertext.len());
 
     let plaintext = utils::xor_bytes(&ciphertext, &keystream);
-    let auth_tag = utils::xor_bytes(
+    let calculated_tag = utils::xor_bytes(
         &encrypt_aes_block::<C>(key, &counter_start.to_be_bytes()),
         &g_hash(h, aad, &ciphertext),
     );
 
-    assert_eq!(tag, auth_tag);
-    plaintext
+    if tag != calculated_tag {
+        return Err("invalid tag".into());
+    }
+    Ok(plaintext)
 }

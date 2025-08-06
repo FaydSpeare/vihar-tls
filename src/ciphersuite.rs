@@ -123,8 +123,14 @@ impl EncAlgorithm {
         }
     }
 
-    pub fn decrypt(&self, ciphertext: &[u8], key: &[u8], iv: &[u8], aad: Option<&[u8]>) -> Vec<u8> {
-        match self {
+    pub fn decrypt(
+        &self,
+        ciphertext: &[u8],
+        key: &[u8],
+        iv: &[u8],
+        aad: Option<&[u8]>,
+    ) -> Result<Vec<u8>, String> {
+        Ok(match self {
             Self::Aes128Cbc => decrypt_aes_cbc::<Aes128>(ciphertext, key, iv),
             Self::Aes256Cbc => decrypt_aes_cbc::<Aes256>(ciphertext, key, iv),
             Self::Aes128Gcm => decrypt_aes_gcm::<Aes128>(
@@ -132,14 +138,14 @@ impl EncAlgorithm {
                 iv,
                 ciphertext,
                 aad.expect("GCM missing additional data"),
-            ),
+            )?,
             Self::Aes256Gcm => decrypt_aes_gcm::<Aes256>(
                 key,
                 iv,
                 ciphertext,
                 aad.expect("GCM missing additional data"),
-            ),
-        }
+            )?,
+        })
     }
 
     pub fn encrypt(&self, plaintext: &[u8], key: &[u8], iv: &[u8], aad: Option<&[u8]>) -> Vec<u8> {

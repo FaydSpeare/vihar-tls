@@ -166,7 +166,8 @@ impl SecureConnState {
         let decrypted = self
             .params
             .enc_algorithm
-            .decrypt(ciphertext, &self.enc_key, iv, None);
+            .decrypt(ciphertext, &self.enc_key, iv, None)
+            .unwrap();
 
         let len = decrypted.len();
         let padding_len = decrypted[len - 1];
@@ -200,7 +201,6 @@ impl SecureConnState {
         })
     }
 
-    // TODO: send bad_record_mac if decryption fails?
     fn decrypt_aead_cipher(&self, ciphertext: TlsCiphertext) -> Result<TlsCompressed, TlsError> {
         let content_type = ciphertext.content_type;
         let version = ciphertext.version;
@@ -216,9 +216,14 @@ impl SecureConnState {
         // Remeber the -16 to remove the tag length
         aad.extend(((ciphertext.len() - 16) as u16).to_be_bytes());
         let fragment =
-            self.params
+            match self
+                .params
                 .enc_algorithm
-                .decrypt(ciphertext, &self.enc_key, &iv, Some(&aad));
+                .decrypt(ciphertext, &self.enc_key, &iv, Some(&aad))
+            {
+                Ok(fragment) => fragment,
+                Err(_) => return Err(TlsAlert::fatal(TlsAlertDesc::BadRecordMac).into()),
+            };
 
         Ok(TlsCompressed {
             content_type,
@@ -541,7 +546,7 @@ impl<T: Read + Write> TlsConnection<T> {
                         None => {
                             debug!("No sessions to resume");
                             SessionResumption::None
-                        },
+                        }
                     },
                 },
             };
