@@ -1,17 +1,17 @@
 use rsa::{RsaPublicKey, pkcs8::DecodePublicKey};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use enum_dispatch::enum_dispatch;
-use log::{debug, info};
+use log::{debug, info, trace};
 
 use crate::alert::TlsAlertDesc;
 use crate::ciphersuite::{CipherSuiteId, PrfAlgorithm};
 use crate::client::{PrioritisedCipherSuite, TlsConfig};
 use crate::errors::TlsError;
 use crate::extensions::{
-    ExtendedMasterSecretExt, HashAlgo, MaxFragmentLenExt, MaxFragmentLength, RenegotiationInfoExt,
-    ServerNameExt, SessionTicketExt, SigAlgo,
+    ExtendedMasterSecretExt, ExtensionType, HashAlgo, MaxFragmentLenExt, MaxFragmentLength,
+    RenegotiationInfoExt, ServerNameExt, SessionTicketExt, SigAlgo,
 };
 use crate::messages::{Certificate, ClientHello, ServerHello, SessionId};
 use crate::signature::{
@@ -272,6 +272,7 @@ impl HandleRecord for AwaitClientInitiateState {
         info!("Sent ClientHello");
 
         let client_random = client_hello.random.as_bytes();
+        let client_extension_set = client_hello.extensions.extension_type_set();
         let handshake = TlsHandshake::ClientHello(client_hello);
         return Ok((
             AwaitServerHello {
@@ -280,6 +281,7 @@ impl HandleRecord for AwaitClientInitiateState {
                 session_resumption,
                 previous_verify_data: self.previous_verify_data,
                 proposed_max_fragment_len: max_fragment_len,
+                client_extension_set,
             }
             .into(),
             vec![TlsAction::SendHandshakeMsg(handshake)],
@@ -406,6 +408,7 @@ pub struct AwaitServerHello {
     session_resumption: SessionResumption,
     previous_verify_data: Option<PreviousVerifyData>,
     proposed_max_fragment_len: Option<MaxFragmentLength>,
+    client_extension_set: HashSet<ExtensionType>,
 }
 
 impl HandleRecord for AwaitServerHello {
@@ -425,6 +428,19 @@ impl HandleRecord for AwaitServerHello {
             if !(renegotiation_info == expected) {
                 return close_connection(TlsAlertDesc::HandshakeFailure);
             }
+        }
+
+        // Check that ServerHello only includes a subset of the extensions sent in ClientHello
+        let server_extension_set = server_hello.extensions.extension_type_set();
+        let server_only_extensions: HashSet<_> = server_extension_set
+            .difference(&self.client_extension_set)
+            .collect();
+        if !server_only_extensions.is_empty() {
+            trace!(
+                "Server included extensions not sent by the Client: {:?}",
+                server_only_extensions
+            );
+            return close_connection(TlsAlertDesc::UnsupportedExtension);
         }
 
         let supported_extensions = SupportedExtensions {

@@ -2,7 +2,7 @@ use log::{trace, warn};
 use std::{collections::HashSet, fmt::Debug};
 
 use crate::{
-    TlsValidateable, UnrecognisedServerNamePolicy, TlsPolicy,
+    TlsPolicy, TlsValidateable, UnrecognisedServerNamePolicy,
     alert::{TlsAlert, TlsAlertDesc},
     encoding::{
         LengthPrefixWriter, LengthPrefixedVec, MaybeEmpty, NonEmpty, Reader, Reconstrainable,
@@ -166,6 +166,16 @@ impl Extensions {
             }
         }
         Ok(())
+    }
+
+    pub fn extension_type_set(&self) -> HashSet<ExtensionType> {
+        let mut set = HashSet::new();
+        if let Some(extensions) = &self.0 {
+            for ext in extensions.iter() {
+                set.insert(ext.extension_type());
+            }
+        }
+        set
     }
 
     pub fn includes_secure_renegotiation(&self) -> bool {
