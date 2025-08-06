@@ -30,6 +30,9 @@ pub enum TlsError {
 
     #[error("TlsAlert: {0:?}")]
     Alert(TlsAlert),
+
+    #[error("Connection has been closed")]
+    ConnectionClosed,
 }
 
 impl From<TlsAlert> for TlsError {

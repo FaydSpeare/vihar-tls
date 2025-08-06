@@ -35,12 +35,13 @@ impl TlsConfigBuilder {
         Self {
             cipher_suites: Some(
                 vec![
+                    // CipherSuiteId::DheRsaAes128CbcSha,
                     CipherSuiteId::RsaAes128CbcSha,
                     CipherSuiteId::RsaAes256CbcSha,
                     CipherSuiteId::RsaAes256CbcSha,
                     CipherSuiteId::RsaAes128CbcSha256,
-                    // CipherSuiteId::RsaAes128GcmSha256,
-                    // CipherSuiteId::RsaAes256GcmSha384,
+                    CipherSuiteId::RsaAes128GcmSha256,
+                    CipherSuiteId::RsaAes256GcmSha384,
                 ]
                 .into(),
             ),

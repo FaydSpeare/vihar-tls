@@ -1,3 +1,19 @@
+// macro_rules! require_handshake {
+//     ($msg:expr, $handshake:path) => {
+//         match $msg {
+//             crate::messages::TlsMessage::Handshake(handshake @ $handshake(inner)) => {
+//                 Ok::<_, Box<dyn std::error::Error>>((handshake, inner))
+//             }
+//             _ => {
+//                 return Ok((
+//                     ClosedState {}.into(),
+//                     vec![TlsAction::SendAlert(TlsAlert::fatal(desc))],
+//                 ))
+//             }
+//         }
+//     };
+// }
+
 macro_rules! tls_codable_enum {
     (
         #[repr($uint:ty)]
@@ -67,7 +83,7 @@ macro_rules! u16_vec_len_with_max {
                 self.0.write_to(bytes)
             }
 
-            // TODO check if value is < MAX 
+            // TODO check if value is < MAX
             fn read_from(reader: &mut Reader) -> Result<Self, crate::errors::DecodingError> {
                 Ok(Self(u16::read_from(reader)?))
             }

@@ -637,6 +637,12 @@ impl TlsCodable for TlsHandshake {
     }
 }
 
+impl From<TlsHandshake> for TlsMessage {
+    fn from(value: TlsHandshake) -> Self {
+        TlsMessage::Handshake(value)
+    }
+}
+
 impl TryFrom<TlsHandshake> for TlsPlaintext {
     type Error = DecodingError;
 

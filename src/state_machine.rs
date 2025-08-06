@@ -9,6 +9,7 @@ use crate::RenegotiationPolicy;
 use crate::alert::TlsAlertDesc;
 use crate::ciphersuite::{CipherSuiteId, PrfAlgorithm};
 use crate::client::TlsConfig;
+use crate::errors::TlsError;
 use crate::extensions::{HashAlgo, SigAlgo};
 use crate::messages::{Certificate, ServerHello, SessionId};
 use crate::signature::{
@@ -71,7 +72,7 @@ pub enum TlsAction {
 }
 
 impl TlsHandshakeStateMachine {
-    pub fn transition(&mut self, msg: &TlsMessage) -> TlsResult<Vec<TlsAction>> {
+    pub fn handle(&mut self, msg: &TlsMessage) -> TlsResult<Vec<TlsAction>> {
         let (new_state, action) = self.state.take().unwrap().handle(&mut self.ctx, msg)?;
         self.state = Some(new_state);
         Ok(action)
@@ -116,6 +117,7 @@ pub enum TlsState {
     Established(EstablishedState),
 
     ClientAttemptedRenegotiation(ClientAttemptedRenegotiationState),
+    Closed(ClosedState),
 }
 
 impl TlsState {
@@ -127,24 +129,18 @@ impl TlsState {
     }
 }
 
+type HandleResult = Result<(TlsState, Vec<TlsAction>), TlsError>;
+
 #[enum_dispatch(TlsState)]
 pub trait HandleRecord {
-    fn handle(
-        self,
-        ctx: &mut TlsContext,
-        msg: &TlsMessage,
-    ) -> TlsResult<(TlsState, Vec<TlsAction>)>;
+    fn handle(self, ctx: &mut TlsContext, msg: &TlsMessage) -> HandleResult;
 }
 
 #[derive(Debug)]
 pub struct AwaitClientHello {}
 
 impl HandleRecord for AwaitClientHello {
-    fn handle(
-        self,
-        ctx: &mut TlsContext,
-        msg: &TlsMessage,
-    ) -> TlsResult<(TlsState, Vec<TlsAction>)> {
+    fn handle(self, ctx: &mut TlsContext, msg: &TlsMessage) -> HandleResult {
         let TlsMessage::Handshake(handshake) = msg else {
             panic!("invalid transition");
         };
@@ -167,15 +163,16 @@ impl HandleRecord for AwaitClientHello {
                             session_id: client_hello.session_id.clone(),
                         }
                     }),
-                    session_ticket_resumption: client_hello
-                        .extensions
-                        .get_session_ticket()
-                        .and_then(|ticket| {
-                            ctx.config
-                                .session_ticket_store
-                                .as_ref()
-                                .and_then(|store| store.get(&ticket).unwrap())
-                        }),
+                    session_ticket_resumption: None
+                    // session_ticket_resumption: client_hello
+                    //     .extensions
+                    //     .get_session_ticket()
+                    //     .and_then(|ticket| {
+                    //         ctx.config
+                    //             .session_ticket_store
+                    //             .as_ref()
+                    //             .and_then(|store| store.get(&ticket).unwrap())
+                    //     }),
                 }
                 .into(),
                 vec![TlsAction::SendHandshakeMsg(handshake.clone())],
@@ -274,11 +271,7 @@ pub struct AwaitServerHello {
 }
 
 impl HandleRecord for AwaitServerHello {
-    fn handle(
-        mut self,
-        _ctx: &mut TlsContext,
-        msg: &TlsMessage,
-    ) -> TlsResult<(TlsState, Vec<TlsAction>)> {
+    fn handle(mut self, _ctx: &mut TlsContext, msg: &TlsMessage) -> HandleResult {
         let TlsMessage::Handshake(handshake) = msg else {
             panic!("invalid transition");
         };
@@ -403,11 +396,7 @@ pub struct AwaitClientKeyExchange {
 }
 
 impl HandleRecord for AwaitClientKeyExchange {
-    fn handle(
-        mut self,
-        ctx: &mut TlsContext,
-        msg: &TlsMessage,
-    ) -> TlsResult<(TlsState, Vec<TlsAction>)> {
+    fn handle(mut self, ctx: &mut TlsContext, msg: &TlsMessage) -> HandleResult {
         let TlsMessage::Handshake(handshake) = msg else {
             panic!("invalid transition");
         };
@@ -419,14 +408,16 @@ impl HandleRecord for AwaitClientKeyExchange {
         info!("Received ClientKeyExchange");
         handshake.write_to(&mut self.handshakes);
 
-        let pre_master_secret = decrypt_rsa_master_secret(
+        let Ok(pre_master_secret) = decrypt_rsa_master_secret(
             &ctx.config
                 .certificate
                 .as_ref()
                 .expect("Server private key not configured")
                 .private_key,
             &kx.enc_pre_master_secret,
-        )?;
+        ) else {
+            return close_connection(TlsAlertDesc::DecryptError);
+        };
 
         let ciphersuite = CipherSuite::from(self.selected_cipher_suite);
         info!(
@@ -472,11 +463,7 @@ pub struct AwaitServerCertificate {
 }
 
 impl HandleRecord for AwaitServerCertificate {
-    fn handle(
-        mut self,
-        _ctx: &mut TlsContext,
-        msg: &TlsMessage,
-    ) -> TlsResult<(TlsState, Vec<TlsAction>)> {
+    fn handle(mut self, _ctx: &mut TlsContext, msg: &TlsMessage) -> HandleResult {
         let TlsMessage::Handshake(handshake) = msg else {
             panic!("invalid transition");
         };
@@ -486,7 +473,6 @@ impl HandleRecord for AwaitServerCertificate {
         };
 
         handshake.write_to(&mut self.handshakes);
-        let server_public_key = public_key_from_cert(&certs.list[0])?;
 
         let cipher_suite = CipherSuite::from(self.selected_cipher_suite_id);
         match cipher_suite.params().key_exchange_algorithm {
@@ -499,7 +485,7 @@ impl HandleRecord for AwaitServerCertificate {
                         server_random: self.server_random,
                         selected_cipher_suite_id: self.selected_cipher_suite_id,
                         supported_extensions: self.supported_extensions,
-                        server_public_key,
+                        server_certificate_der: certs.list[0].to_vec(),
                     }
                     .into(),
                     vec![],
@@ -516,7 +502,7 @@ impl HandleRecord for AwaitServerCertificate {
                 server_random: self.server_random,
                 selected_cipher_suite_id: self.selected_cipher_suite_id,
                 supported_extensions: self.supported_extensions,
-                server_public_key,
+                server_certificate_der: certs.list[0].to_vec(),
                 secrets: None,
             }
             .into(),
@@ -533,15 +519,11 @@ pub struct AwaitServerKeyExchange {
     server_random: [u8; 32],
     selected_cipher_suite_id: CipherSuiteId,
     supported_extensions: SupportedExtensions,
-    server_public_key: Vec<u8>,
+    server_certificate_der: Vec<u8>,
 }
 
 impl HandleRecord for AwaitServerKeyExchange {
-    fn handle(
-        mut self,
-        _ctx: &mut TlsContext,
-        msg: &TlsMessage,
-    ) -> TlsResult<(TlsState, Vec<TlsAction>)> {
+    fn handle(mut self, _ctx: &mut TlsContext, msg: &TlsMessage) -> HandleResult {
         let TlsMessage::Handshake(handshake) = msg else {
             panic!("invalid transition");
         };
@@ -551,10 +533,18 @@ impl HandleRecord for AwaitServerKeyExchange {
         };
         info!("Received ServerKeyExchange");
 
+        let Ok(server_public_key_der) = public_key_from_cert(&self.server_certificate_der) else {
+            return close_connection(TlsAlertDesc::IllegalParameter);
+        };
+
         let verified = match kx.sig_algo {
             SigAlgo::Rsa => {
-                let rsa_public_key = RsaPublicKey::from_public_key_der(&self.server_public_key)?;
-                rsa_verify(
+                let Ok(rsa_public_key) = RsaPublicKey::from_public_key_der(&server_public_key_der)
+                else {
+                    return close_connection(TlsAlertDesc::IllegalParameter);
+                };
+
+                let Ok(verified) = rsa_verify(
                     &rsa_public_key,
                     &[
                         self.client_random.as_ref(),
@@ -563,12 +553,16 @@ impl HandleRecord for AwaitServerKeyExchange {
                     ]
                     .concat(),
                     &kx.signature,
-                )?
+                ) else {
+                    return close_connection(TlsAlertDesc::IllegalParameter);
+                };
+
+                verified
             }
             SigAlgo::Dsa => {
                 assert_eq!(kx.hash_algo, HashAlgo::Sha256);
-                dsa_verify(
-                    &self.server_public_key,
+                let Ok(verified) = dsa_verify(
+                    &server_public_key_der,
                     &[
                         self.client_random.as_ref(),
                         self.server_random.as_ref(),
@@ -576,7 +570,11 @@ impl HandleRecord for AwaitServerKeyExchange {
                     ]
                     .concat(),
                     &kx.signature,
-                )?
+                ) else {
+                    return close_connection(TlsAlertDesc::IllegalParameter);
+                };
+
+                verified
             }
             _ => unimplemented!(),
         };
@@ -591,7 +589,7 @@ impl HandleRecord for AwaitServerKeyExchange {
                 server_random: self.server_random,
                 selected_cipher_suite_id: self.selected_cipher_suite_id,
                 supported_extensions: self.supported_extensions,
-                server_public_key: self.server_public_key,
+                server_certificate_der: self.server_certificate_der,
                 secrets: Some(DheParams {
                     p: kx.p.to_vec(),
                     g: kx.g.to_vec(),
@@ -619,16 +617,12 @@ pub struct AwaitServerHelloDone {
     server_random: [u8; 32],
     selected_cipher_suite_id: CipherSuiteId,
     supported_extensions: SupportedExtensions,
-    server_public_key: Vec<u8>,
+    server_certificate_der: Vec<u8>,
     secrets: Option<DheParams>,
 }
 
 impl HandleRecord for AwaitServerHelloDone {
-    fn handle(
-        mut self,
-        _ctx: &mut TlsContext,
-        msg: &TlsMessage,
-    ) -> TlsResult<(TlsState, Vec<TlsAction>)> {
+    fn handle(mut self, _ctx: &mut TlsContext, msg: &TlsMessage) -> HandleResult {
         let TlsMessage::Handshake(handshake) = msg else {
             panic!("invalid transition");
         };
@@ -641,19 +635,33 @@ impl HandleRecord for AwaitServerHelloDone {
         handshake.write_to(&mut self.handshakes);
 
         let ciphersuite = CipherSuite::from(self.selected_cipher_suite_id);
-        let (pre_master_secret, key_exchange_data) =
-            match ciphersuite.params().key_exchange_algorithm {
-                KeyExchangeAlgorithm::Rsa => {
-                    let rsa_public_key =
-                        RsaPublicKey::from_public_key_der(&self.server_public_key)?;
-                    get_rsa_pre_master_secret(&rsa_public_key)?
-                }
-                KeyExchangeAlgorithm::DheRsa | KeyExchangeAlgorithm::DheDss => {
-                    let DheParams { p, g, public_key } = self.secrets.as_ref().unwrap();
-                    get_dhe_pre_master_secret(p, g, public_key)
-                }
-                KeyExchangeAlgorithm::EcdheRsa => unimplemented!(),
-            };
+        let (pre_master_secret, key_exchange_data) = match ciphersuite
+            .params()
+            .key_exchange_algorithm
+        {
+            KeyExchangeAlgorithm::Rsa => {
+                let Ok(server_public_key_der) = public_key_from_cert(&self.server_certificate_der)
+                else {
+                    return close_connection(TlsAlertDesc::IllegalParameter);
+                };
+
+                let Ok(rsa_public_key) = RsaPublicKey::from_public_key_der(&server_public_key_der)
+                else {
+                    return close_connection(TlsAlertDesc::IllegalParameter);
+                };
+
+                let Ok((secret, enc_secret)) = get_rsa_pre_master_secret(&rsa_public_key) else {
+                    return close_connection(TlsAlertDesc::DecryptError);
+                };
+
+                (secret, enc_secret)
+            }
+            KeyExchangeAlgorithm::DheRsa | KeyExchangeAlgorithm::DheDss => {
+                let DheParams { p, g, public_key } = self.secrets.as_ref().unwrap();
+                get_dhe_pre_master_secret(p, g, public_key)
+            }
+            KeyExchangeAlgorithm::EcdheRsa => unimplemented!(),
+        };
 
         let client_kx = ClientKeyExchange::new(&key_exchange_data);
         TlsHandshake::ClientKeyExchange(client_kx.clone()).write_to(&mut self.handshakes);
@@ -754,11 +762,7 @@ pub struct AwaitNewSessionTicket {
 }
 
 impl HandleRecord for AwaitNewSessionTicket {
-    fn handle(
-        mut self,
-        ctx: &mut TlsContext,
-        msg: &TlsMessage,
-    ) -> TlsResult<(TlsState, Vec<TlsAction>)> {
+    fn handle(mut self, ctx: &mut TlsContext, msg: &TlsMessage) -> HandleResult {
         let TlsMessage::Handshake(handshake) = msg else {
             panic!("invalid transition");
         };
@@ -771,10 +775,10 @@ impl HandleRecord for AwaitNewSessionTicket {
         handshake.write_to(&mut self.handshakes);
 
         if let Some(store) = &ctx.config.session_ticket_store {
-            store.put(
-                ticket.ticket.to_vec(),
-                SessionTicketInfo::new(self.params.master_secret, self.params.cipher_suite_id),
-            )?;
+            // store.put(
+            //     ticket.ticket.to_vec(),
+            //     SessionTicketInfo::new(self.params.master_secret, self.params.cipher_suite_id),
+            // )?;
         }
 
         return Ok((
@@ -804,11 +808,7 @@ pub struct AwaitNewSessionTicketOrCertificate {
 }
 
 impl HandleRecord for AwaitNewSessionTicketOrCertificate {
-    fn handle(
-        self,
-        ctx: &mut TlsContext,
-        msg: &TlsMessage,
-    ) -> TlsResult<(TlsState, Vec<TlsAction>)> {
+    fn handle(self, ctx: &mut TlsContext, msg: &TlsMessage) -> HandleResult {
         if let TlsMessage::Handshake(TlsHandshake::NewSessionTicket(_)) = msg {
             let params = SecurityParams::new(
                 self.client_random,
@@ -853,11 +853,7 @@ pub struct AwaitServerChangeCipherOrCertificate {
 }
 
 impl HandleRecord for AwaitServerChangeCipherOrCertificate {
-    fn handle(
-        self,
-        ctx: &mut TlsContext,
-        msg: &TlsMessage,
-    ) -> TlsResult<(TlsState, Vec<TlsAction>)> {
+    fn handle(self, ctx: &mut TlsContext, msg: &TlsMessage) -> HandleResult {
         if let TlsMessage::ChangeCipherSpec = msg {
             let params = SecurityParams::new(
                 self.client_random,
@@ -898,11 +894,7 @@ pub struct AwaitClientChangeCipher {
 }
 
 impl HandleRecord for AwaitClientChangeCipher {
-    fn handle(
-        self,
-        _ctx: &mut TlsContext,
-        msg: &TlsMessage,
-    ) -> TlsResult<(TlsState, Vec<TlsAction>)> {
+    fn handle(self, _ctx: &mut TlsContext, msg: &TlsMessage) -> HandleResult {
         let TlsMessage::ChangeCipherSpec = msg else {
             panic!("invalid transition");
         };
@@ -945,11 +937,7 @@ pub struct AwaitServerChangeCipher {
 }
 
 impl HandleRecord for AwaitServerChangeCipher {
-    fn handle(
-        self,
-        _ctx: &mut TlsContext,
-        msg: &TlsMessage,
-    ) -> TlsResult<(TlsState, Vec<TlsAction>)> {
+    fn handle(self, _ctx: &mut TlsContext, msg: &TlsMessage) -> HandleResult {
         let TlsMessage::ChangeCipherSpec = msg else {
             panic!("invalid transition");
         };
@@ -986,11 +974,7 @@ pub struct AwaitClientFinished {
 }
 
 impl HandleRecord for AwaitClientFinished {
-    fn handle(
-        mut self,
-        _ctx: &mut TlsContext,
-        msg: &TlsMessage,
-    ) -> TlsResult<(TlsState, Vec<TlsAction>)> {
+    fn handle(mut self, _ctx: &mut TlsContext, msg: &TlsMessage) -> HandleResult {
         let TlsMessage::Handshake(handshake) = msg else {
             panic!("invalid transition");
         };
@@ -1020,7 +1004,7 @@ impl HandleRecord for AwaitClientFinished {
         info!("Handshake complete! (full)");
         Ok((
             EstablishedState {
-                session_id: SessionId::new(&[])?,
+                session_id: SessionId::new(&[]).unwrap(),
                 supported_extensions: self.supported_extensions,
                 client_verify_data,
                 server_verify_data,
@@ -1045,22 +1029,18 @@ pub struct AwaitServerFinished {
 }
 
 impl HandleRecord for AwaitServerFinished {
-    fn handle(
-        mut self,
-        ctx: &mut TlsContext,
-        msg: &TlsMessage,
-    ) -> TlsResult<(TlsState, Vec<TlsAction>)> {
+    fn handle(mut self, ctx: &mut TlsContext, msg: &TlsMessage) -> HandleResult {
         let TlsMessage::Handshake(handshake) = msg else {
             panic!("invalid transition");
         };
 
-        let TlsHandshake::Finished(finished) = handshake else {
+        let TlsHandshake::Finished(server_finished) = handshake else {
             panic!("invalid transition");
         };
-
         info!("Received ServerFinished");
+
         let server_verify_data = self.params.server_verify_data(&self.handshakes);
-        assert_eq!(server_verify_data, finished.verify_data);
+        assert_eq!(server_verify_data, server_finished.verify_data);
         handshake.write_to(&mut self.handshakes);
 
         if !self.is_session_resumption {
@@ -1127,57 +1107,57 @@ pub struct EstablishedState {
 }
 
 impl HandleRecord for EstablishedState {
-    fn handle(
-        self,
-        ctx: &mut TlsContext,
-        msg: &TlsMessage,
-    ) -> TlsResult<(TlsState, Vec<TlsAction>)> {
-        let TlsMessage::Handshake(handshake) = msg else {
-            return alert_unexpected_message(self.into());
-        };
-
-        let TlsHandshake::ClientHello(_) = handshake else {
+    fn handle(self, ctx: &mut TlsContext, msg: &TlsMessage) -> HandleResult {
+        let TlsMessage::Handshake(TlsHandshake::ClientHello(_)) = msg else {
             return alert_unexpected_message(self.into());
         };
 
         // Server behaviour
-        match ctx.config.validation_policy.renegotiation {
-            RenegotiationPolicy::None => {
-                // COULD send warning here instead
-                // COULD ignore here instead
-                return fatal(self.into(), TlsAlertDesc::NoRenegotiation);
-            }
-            RenegotiationPolicy::Legacy => {
-                // ABORT if TLS_EMPTY_RENEGOTIATION_INFO_SCSV present
-                // ABORT if renegotiation_info extension present
-                // OTHERWISE initiate handshake
-            }
-            RenegotiationPolicy::Secure => {
-                if !self.supported_extensions.secure_renegotiation {
-                    return fatal(self.into(), TlsAlertDesc::NoRenegotiation);
-                }
+        // match ctx.config.validation_policy.renegotiation {
+        //     RenegotiationPolicy::None => {
+        //         // COULD send warning here instead
+        //         // COULD ignore here instead
+        //         return fatal(self.into(), TlsAlertDesc::NoRenegotiation);
+        //     }
+        //     RenegotiationPolicy::Legacy => {
+        //         // ABORT if TLS_EMPTY_RENEGOTIATION_INFO_SCSV present
+        //         // ABORT if renegotiation_info extension present
+        //         // OTHERWISE initiate handshake
+        //     }
+        //     RenegotiationPolicy::Secure => {
+        //         if !self.supported_extensions.secure_renegotiation {
+        //             return fatal(self.into(), TlsAlertDesc::NoRenegotiation);
+        //         }
 
-                // ABORT if TLS_EMPTY_RENEGOTIATION_INFO_SCSV present
-                // ABORT if renegotiation_info extension not present
-                // ABORT if client_verify_data doesn't match
+        //         // ABORT if TLS_EMPTY_RENEGOTIATION_INFO_SCSV present
+        //         // ABORT if renegotiation_info extension not present
+        //         // ABORT if client_verify_data doesn't match
 
-                // INCLUDE client_verify_data ++ server_verify_data
-                // Initiate handshake
-            }
-        }
+        //         // INCLUDE client_verify_data ++ server_verify_data
+        //         // Initiate handshake
+        //     }
+        // }
 
         unimplemented!()
     }
 }
-fn alert_unexpected_message(state: TlsState) -> TlsResult<(TlsState, Vec<TlsAction>)> {
-    Ok((state, vec![TlsAction::SendAlert(TlsAlert::fatal(TlsAlertDesc::UnexpectedMessage))]))
+fn alert_unexpected_message(state: TlsState) -> HandleResult {
+    Ok((
+        state,
+        vec![TlsAction::SendAlert(TlsAlert::fatal(
+            TlsAlertDesc::UnexpectedMessage,
+        ))],
+    ))
 }
 
-fn fatal(state: TlsState, desc: TlsAlertDesc) -> TlsResult<(TlsState, Vec<TlsAction>)> {
-    Ok((state, vec![TlsAction::SendAlert(TlsAlert::fatal(desc))]))
+fn close_connection(desc: TlsAlertDesc) -> HandleResult {
+    Ok((
+        ClosedState {}.into(),
+        vec![TlsAction::SendAlert(TlsAlert::fatal(desc))],
+    ))
 }
 
-fn warn(state: TlsState, desc: TlsAlertDesc) -> TlsResult<(TlsState, Vec<TlsAction>)> {
+fn warn(state: TlsState, desc: TlsAlertDesc) -> HandleResult {
     Ok((state, vec![TlsAction::SendAlert(TlsAlert::warning(desc))]))
 }
 
@@ -1185,11 +1165,19 @@ fn warn(state: TlsState, desc: TlsAlertDesc) -> TlsResult<(TlsState, Vec<TlsActi
 pub struct ClientAttemptedRenegotiationState {}
 
 impl HandleRecord for ClientAttemptedRenegotiationState {
-    fn handle(
-        self,
-        _ctx: &mut TlsContext,
-        _msg: &TlsMessage,
-    ) -> TlsResult<(TlsState, Vec<TlsAction>)> {
+    fn handle(self, _ctx: &mut TlsContext, _msg: &TlsMessage) -> HandleResult {
+        // Maybe get server hello
+        // Maybe get alert
+        // Maybe get nothing...
+        unimplemented!()
+    }
+}
+
+#[derive(Debug)]
+pub struct ClosedState {}
+
+impl HandleRecord for ClosedState {
+    fn handle(self, _ctx: &mut TlsContext, _msg: &TlsMessage) -> HandleResult {
         // Maybe get server hello
         // Maybe get alert
         // Maybe get nothing...

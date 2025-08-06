@@ -27,7 +27,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         tcp_stream,
     );
 
-    client.write(b"first data")?;
+    client.write(b"1st data")?;
+    sleep(Duration::from_secs(10));
+    client.write(b"2nd data")?;
     sleep(Duration::from_secs(10));
     Ok(())
 }

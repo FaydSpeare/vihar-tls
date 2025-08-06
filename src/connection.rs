@@ -16,7 +16,7 @@ use crate::messages::{
 use crate::record::RecordLayer;
 use crate::state_machine::{ConnStates, TlsAction, TlsEntity, TlsHandshakeStateMachine, TlsState};
 use crate::{TlsResult, utils};
-use log::{debug, trace};
+use log::{debug, trace, warn};
 use std::io::{Read, Write};
 use std::sync::Arc;
 use std::time::Instant;
@@ -377,6 +377,7 @@ pub struct TlsConnection<T: Read + Write> {
     record_layer: RecordLayer,
     config: Arc<TlsConfig>,
     side: TlsEntity,
+    is_closed: bool,
 }
 
 impl<T: Read + Write> TlsConnection<T> {
@@ -392,34 +393,44 @@ impl<T: Read + Write> TlsConnection<T> {
             config,
             conn_states: ConnStates::new(),
             record_layer: RecordLayer::new(),
+            is_closed: false,
         }
     }
 
     fn process_message(&mut self, msg: &TlsMessage) -> TlsResult<()> {
-        for action in self.handshake_state_machine.transition(msg)? {
-            match action {
-                TlsAction::ChangeCipherSpec(side, spec) => {
-                    if side == self.side {
-                        let ciphertext = self
-                            .conn_states
-                            .write
-                            .encrypt(TlsMessage::ChangeCipherSpec)?;
-                        self.send_bytes(&ciphertext.get_encoding())?;
-                        self.conn_states.write = spec;
-                    } else {
-                        self.conn_states.read = spec;
+        match self.handshake_state_machine.handle(msg) {
+            Ok(actions) => {
+                for action in actions {
+                    match action {
+                        TlsAction::ChangeCipherSpec(side, spec) => {
+                            if side == self.side {
+                                self.send_msg(TlsMessage::ChangeCipherSpec)?;
+                                self.conn_states.write = spec;
+                            } else {
+                                self.conn_states.read = spec;
+                            }
+                        }
+                        TlsAction::SendHandshakeMsg(handshake) => {
+                            self.send_msg(handshake)?;
+                        }
+                        TlsAction::SendAlert(alert) => {
+                            self.send_alert(alert)?;
+                        }
                     }
                 }
-                TlsAction::SendHandshakeMsg(handshake) => {
-                    let ciphertext = self.conn_states.write.encrypt(handshake)?;
-                    self.send_bytes(&ciphertext.get_encoding())?;
-                }
-                TlsAction::SendAlert(alert) => {
-                    self.send_alert(alert)?;
-                }
+            },
+            Err(e) => {
             }
         }
         Ok(())
+    }
+
+    pub fn process_alert(&mut self, alert: &TlsAlert) -> TlsResult<()> {
+        warn!("Received alert: {:?}", alert);
+        if alert.is_fatal() {
+            self.is_closed = true;
+        }
+        return Err("Received alert during handshake".into());
     }
 
     pub fn next_message(&mut self) -> TlsResult<TlsMessage> {
@@ -429,26 +440,23 @@ impl<T: Read + Write> TlsConnection<T> {
                 .try_parse_message(&mut self.conn_states.read, &self.config.validation_policy)
             {
                 Ok(msg) => {
-                    match &msg {
-                        TlsMessage::Handshake(_) | TlsMessage::ChangeCipherSpec => {
-                            self.process_message(&msg)?
-                        }
-                        TlsMessage::Alert(alert) => {
-                            println!("Received alert: {:?}", alert);
-                            return Err("Received alert during handshake".into());
-                        }
-                        _ => {}
+                    if let TlsMessage::Alert(alert) = &msg {
+                        self.process_alert(alert)?;
+                    } else {
+                        self.process_message(&msg)?;
                     }
                     return Ok(msg);
                 }
                 Err(e) => match e {
                     TlsError::Alert(alert) => self.send_alert(alert)?,
-                    TlsError::Decoding(e) => {
+                    TlsError::Decoding(e @ DecodingError::RanOutOfData) => {
                         trace!("Record parsing failed: {e}");
-                        if let DecodingError::InvalidEncoding(_) = e {
-                            self.send_alert(TlsAlert::fatal(TlsAlertDesc::DecodeError))?;
-                        }
                     }
+                    TlsError::Decoding(DecodingError::InvalidEncoding(e)) => {
+                        trace!("Record parsing failed: {e}");
+                        self.send_alert(TlsAlert::fatal(TlsAlertDesc::DecodeError))?;
+                    }
+                    _ => {}
                 },
             };
 
@@ -468,15 +476,32 @@ impl<T: Read + Write> TlsConnection<T> {
         Ok(())
     }
 
-    fn send_alert(&mut self, alert: TlsAlert) -> TlsResult<()> {
-        let ciphertext = self.conn_states.write.encrypt(TlsMessage::Alert(alert))?;
+    fn send_msg<M: Into<TlsMessage>>(&mut self, msg: M) -> TlsResult<()> {
+        self.check_connection_not_closed()?;
+
+        let ciphertext = self.conn_states.write.encrypt(msg.into())?;
         self.send_bytes(&ciphertext.get_encoding())?;
         Ok(())
     }
 
-    pub fn complete_handshake(&mut self, side: TlsEntity, config: &TlsConfig) -> TlsResult<()> {
-        let start_time = Instant::now();
+    fn send_alert(&mut self, alert: TlsAlert) -> TlsResult<()> {
+        if alert.is_fatal() {
+            self.is_closed = true;
+        }
+        self.send_msg(TlsMessage::Alert(alert))?;
+        Ok(())
+    }
 
+    fn check_connection_not_closed(&self) -> Result<(), TlsError> {
+        (!self.is_closed)
+            .then_some(())
+            .ok_or(TlsError::ConnectionClosed)
+    }
+
+    pub fn complete_handshake(&mut self, side: TlsEntity, config: &TlsConfig) -> TlsResult<()> {
+        self.check_connection_not_closed()?;
+
+        let start_time = Instant::now();
         if side == TlsEntity::Client {
             let mut extensions = config.extensions.to_vec();
             if let Some(store) = &config.session_ticket_store {
@@ -516,8 +541,9 @@ impl<T: Read + Write> TlsConnection<T> {
         Ok(())
     }
 
-    #[allow(dead_code)]
     pub fn write(&mut self, bytes: &[u8]) -> TlsResult<()> {
+        self.check_connection_not_closed()?;
+
         let ciphertext = self
             .conn_states
             .write
@@ -527,8 +553,9 @@ impl<T: Read + Write> TlsConnection<T> {
         Ok(())
     }
 
-    #[allow(dead_code)]
     pub fn read(&mut self) -> TlsResult<Vec<u8>> {
+        self.check_connection_not_closed()?;
+
         loop {
             let msg = self.next_message()?;
             match msg {
@@ -541,12 +568,5 @@ impl<T: Read + Write> TlsConnection<T> {
                 }
             }
         }
-    }
-
-    pub fn notify_close(&mut self) -> TlsResult<()> {
-        let alert = TlsAlert::warning(TlsAlertDesc::CloseNotify);
-        let ciphertext = self.conn_states.write.encrypt(alert)?;
-        self.send_bytes(&ciphertext.get_encoding())?;
-        Ok(())
     }
 }
