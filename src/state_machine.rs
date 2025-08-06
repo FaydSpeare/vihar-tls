@@ -761,7 +761,11 @@ impl HandleRecord for AwaitServerKeyExchange {
             }
             _ => unimplemented!(),
         };
-        assert!(verified, "Invalid ServerKeyExchange signature");
+
+        if !verified {
+            return close_connection(TlsAlertDesc::DecryptError);
+        }
+
         handshake.write_to(&mut self.handshakes);
 
         Ok((
@@ -1185,11 +1189,14 @@ pub struct AwaitClientFinished {
 
 impl HandleRecord for AwaitClientFinished {
     fn handle(mut self, _ctx: &mut TlsContext, event: TlsEvent) -> HandleResult {
-        let (handshake, finished) = require_handshake_msg!(event, TlsHandshake::Finished);
+        let (handshake, client_finished) = require_handshake_msg!(event, TlsHandshake::Finished);
 
         info!("Received ClientFinished");
         let client_verify_data = self.params.client_verify_data(&self.handshakes);
-        assert_eq!(client_verify_data, finished.verify_data);
+        if client_verify_data != client_finished.verify_data {
+            return close_connection(TlsAlertDesc::DecryptError);
+        }
+
         handshake.write_to(&mut self.handshakes);
 
         let keys = self.params.derive_keys();
@@ -1239,7 +1246,9 @@ impl HandleRecord for AwaitServerFinished {
         info!("Received ServerFinished");
 
         let server_verify_data = self.params.server_verify_data(&self.handshakes);
-        assert_eq!(server_verify_data, server_finished.verify_data);
+        if server_verify_data != server_finished.verify_data {
+            return close_connection(TlsAlertDesc::DecryptError);
+        }
         handshake.write_to(&mut self.handshakes);
 
         if !self.is_session_resumption {
