@@ -534,7 +534,7 @@ impl<T: Read + Write> TlsConnection<T> {
             };
 
             let initiate = TlsEvent::ClientInitiate {
-                cipher_suites: config.cipher_suites.to_vec(),
+                cipher_suites: config.cipher_suites.iter().map(|x| x.id).collect(),
                 session_resumption,
                 server_name: config.server_name.clone(),
                 support_session_ticket: true,

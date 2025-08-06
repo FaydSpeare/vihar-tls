@@ -1,7 +1,7 @@
 use alert::{TlsAlert, TlsAlertLevel};
 
 #[macro_use]
-mod macros;
+pub mod macros;
 
 mod alert;
 mod encoding;

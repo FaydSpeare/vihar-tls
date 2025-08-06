@@ -1,13 +1,16 @@
 ## TODO
 
-
 - Support ServerKeyExchange from server-side
 
-- Delete Session from store when rejected
-- Check server certificate chain against local root certificates?
-- Record layer fragmentation on outgoing messages
-- Allow configurable cipher suites with user-specified priority
+- Delete session from store when rejected
+- delete session when fatal alert
 - Implement server session ticket issuance 
+
+- Record layer fragmentation on outgoing messages
+- Max fragmentation extension
+
+- Check server certificate chain against local root certificates?
+
 - Support RC4, 3DES, how could you test?
 - Fixed DH
 - Allow DSA cert
@@ -20,6 +23,6 @@
     - Supported groups extension
     - EC point format extension
 
-- Max fragmentation extension
-
 - RFC5246 D3 - setting for min and max key sizes
+
+- Need to finished reading before starting renegotiation

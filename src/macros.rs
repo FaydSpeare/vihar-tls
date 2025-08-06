@@ -1,3 +1,13 @@
+#[macro_export]
+macro_rules! pcs {
+    ($priority:expr, $id:path) => {
+        $crate::client::PrioritisedCipherSuite {
+            id: $id,
+            priority: $priority,
+        }
+    };
+}
+
 macro_rules! require_handshake_msg {
     ($msg:expr, $handshake:path) => {
         match $msg {

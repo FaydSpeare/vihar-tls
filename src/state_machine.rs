@@ -1,4 +1,5 @@
 use rsa::{RsaPublicKey, pkcs8::DecodePublicKey};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use enum_dispatch::enum_dispatch;
@@ -7,7 +8,7 @@ use log::{debug, info};
 use crate::RenegotiationPolicy;
 use crate::alert::TlsAlertDesc;
 use crate::ciphersuite::{CipherSuiteId, PrfAlgorithm};
-use crate::client::TlsConfig;
+use crate::client::{PrioritisedCipherSuite, TlsConfig};
 use crate::errors::TlsError;
 use crate::extensions::{
     ExtendedMasterSecretExt, HashAlgo, RenegotiationInfoExt, ServerNameExt, SessionTicketExt,
@@ -269,6 +270,18 @@ impl HandleRecord for AwaitClientInitiateState {
     }
 }
 
+fn choose_cipher_suite(
+    prioritised: &[PrioritisedCipherSuite],
+    offered: &[CipherSuiteId],
+) -> CipherSuiteId {
+    let mut map: HashMap<CipherSuiteId, u32> = HashMap::new();
+    for pcs in prioritised {
+        map.insert(pcs.id, pcs.priority);
+    }
+    let item = offered.iter().max_by_key(|id| map.get(id).unwrap_or(&0u32));
+    *item.unwrap()
+}
+
 #[derive(Debug)]
 pub struct AwaitClientHello {
     previous_verify_data: Option<PreviousVerifyData>,
@@ -289,8 +302,9 @@ impl HandleRecord for AwaitClientHello {
             .collect();
         debug!("CipherSuites: {:#?}", suites);
 
-        // TODO: send handshake_failure alert if no good
-        let selected_cipher_suite = *client_hello.cipher_suites.last().unwrap();
+        let selected_cipher_suite =
+            choose_cipher_suite(&ctx.config.cipher_suites, &client_hello.cipher_suites);
+
         debug!(
             "Selected CipherSuite {}",
             CipherSuite::from(selected_cipher_suite).params().name

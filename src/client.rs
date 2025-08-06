@@ -15,13 +15,19 @@ use crate::{
 };
 
 #[derive(Debug, Clone)]
+pub struct PrioritisedCipherSuite {
+    pub id: CipherSuiteId,
+    pub priority: u32,
+}
+
+#[derive(Debug, Clone)]
 pub struct CertificateAndPrivateKey {
     pub certificate_der: Vec<u8>,
     pub private_key: RsaPrivateKey,
 }
 
 pub struct TlsConfigBuilder {
-    pub cipher_suites: Option<Box<[CipherSuiteId]>>,
+    pub cipher_suites: Option<Box<[PrioritisedCipherSuite]>>,
     pub session_store: Option<Box<dyn SessionStorage>>,
     pub certificate: Option<CertificateAndPrivateKey>,
     pub server_name: Option<String>,
@@ -31,17 +37,7 @@ pub struct TlsConfigBuilder {
 impl TlsConfigBuilder {
     pub fn new() -> Self {
         Self {
-            cipher_suites: Some(
-                vec![
-                    CipherSuiteId::RsaAes128CbcSha,
-                    CipherSuiteId::RsaAes256CbcSha,
-                    CipherSuiteId::RsaAes256CbcSha,
-                    CipherSuiteId::RsaAes128CbcSha256,
-                    CipherSuiteId::RsaAes128GcmSha256,
-                    CipherSuiteId::RsaAes256GcmSha384,
-                ]
-                .into(),
-            ),
+            cipher_suites: None,
             session_store: None,
             certificate: None,
             server_name: None,
@@ -50,13 +46,26 @@ impl TlsConfigBuilder {
     }
 
     pub fn build(self) -> TlsConfig {
+        use crate::ciphersuite::CipherSuiteId::*;
         TlsConfig {
-            cipher_suites: self.cipher_suites.unwrap(),
+            cipher_suites: self.cipher_suites.unwrap_or(Box::new([
+                pcs!(4, RsaAes128GcmSha256),
+                pcs!(3, RsaAes256GcmSha384),
+                pcs!(2, RsaAes128CbcSha),
+                pcs!(1, RsaAes128CbcSha256),
+                pcs!(1, RsaAes256CbcSha),
+                pcs!(1, RsaAes256CbcSha256),
+            ])),
             session_store: self.session_store,
             certificate: self.certificate,
             server_name: self.server_name,
             validation_policy: self.validation_policy.unwrap_or_default(),
         }
+    }
+
+    pub fn with_cipher_suites(mut self, suites: Box<[PrioritisedCipherSuite]>) -> Self {
+        self.cipher_suites = Some(suites);
+        self
     }
 
     pub fn with_session_store(mut self, path: &str) -> Self {
@@ -94,7 +103,7 @@ impl TlsConfigBuilder {
 
 #[derive(Debug)]
 pub struct TlsConfig {
-    pub cipher_suites: Box<[CipherSuiteId]>,
+    pub cipher_suites: Box<[PrioritisedCipherSuite]>,
     pub session_store: Option<Box<dyn SessionStorage>>,
     pub certificate: Option<CertificateAndPrivateKey>,
     pub server_name: Option<String>,
