@@ -2,7 +2,11 @@ use std::fmt::Debug;
 
 use sled::Tree;
 
-use crate::{TlsResult, ciphersuite::CipherSuiteId};
+use crate::{
+    MaxFragmentLength, TlsResult,
+    ciphersuite::CipherSuiteId,
+    encoding::{Reader, TlsCodable},
+};
 
 type SessionTicket = Vec<u8>;
 type SessionId = Vec<u8>;
@@ -11,13 +15,19 @@ type SessionId = Vec<u8>;
 pub struct SessionInfo {
     pub master_secret: [u8; 48],
     pub cipher_suite: CipherSuiteId,
+    pub max_fragment_len: Option<MaxFragmentLength>,
 }
 
 impl SessionInfo {
-    pub fn new(master_secret: [u8; 48], cipher_suite: CipherSuiteId) -> Self {
+    pub fn new(
+        master_secret: [u8; 48],
+        cipher_suite: CipherSuiteId,
+        max_fragment_len: Option<MaxFragmentLength>,
+    ) -> Self {
         Self {
             master_secret,
             cipher_suite,
+            max_fragment_len,
         }
     }
 }
@@ -25,17 +35,21 @@ impl SessionInfo {
 impl SessionInfo {
     fn encode(&self) -> Vec<u8> {
         let mut bytes = vec![];
-        bytes.extend_from_slice(&self.master_secret);
-        bytes.extend_from_slice(&u16::from(self.cipher_suite).to_be_bytes());
+        self.master_secret.write_to(&mut bytes);
+        self.cipher_suite.write_to(&mut bytes);
+        self.max_fragment_len.write_to(&mut bytes);
         bytes
     }
-    fn decode(bytes: Vec<u8>) -> Self {
-        let master_secret: [u8; 48] = bytes[..48].try_into().unwrap();
-        let cipher_suite = CipherSuiteId::from(u16::from_be_bytes(bytes[48..].try_into().unwrap()));
-        Self {
+    fn decode(mut bytes: Vec<u8>) -> TlsResult<Self> {
+        let mut reader = Reader::new(bytes.as_mut());
+        let master_secret: [u8; 48] = reader.consume(48)?.try_into().unwrap();
+        let cipher_suite = CipherSuiteId::read_from(&mut reader)?;
+        let max_fragment_len = Option::<MaxFragmentLength>::read_from(&mut reader)?;
+        Ok(Self {
             master_secret,
             cipher_suite,
-        }
+            max_fragment_len,
+        })
     }
 }
 
@@ -74,14 +88,18 @@ impl SledSessionStore {
     }
 
     fn find_any(db: Tree) -> TlsResult<Option<(Vec<u8>, SessionInfo)>> {
-        Ok(db
-            .last()?
-            .map(|(k, v)| (k.to_vec(), SessionInfo::decode(v.to_vec()))))
+        if let Some((k, v)) = db.last()? {
+            let session_info = SessionInfo::decode(v.to_vec())?;
+            return Ok(Some((k.to_vec(), session_info)));
+        }
+        Ok(None)
     }
 
     fn find_one(db: Tree, key: &[u8]) -> TlsResult<Option<SessionInfo>> {
-        let value = db.get(key)?;
-        Ok(value.map(|x| SessionInfo::decode(x.to_vec())))
+        if let Some(x) = db.get(key)? {
+            return Ok(Some(SessionInfo::decode(x.to_vec())?));
+        }
+        Ok(None)
     }
 
     fn insert_one(db: Tree, key: &[u8], info: SessionInfo) -> TlsResult<()> {

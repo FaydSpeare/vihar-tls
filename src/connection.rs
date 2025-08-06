@@ -4,7 +4,6 @@ use crate::ciphersuite::{
     MacAlgorithm, PrfAlgorithm,
 };
 use crate::client::TlsConfig;
-use crate::encoding::Reconstrainable;
 use crate::encoding::TlsCodable;
 use crate::errors::{DecodingError, TlsError};
 use crate::messages::{TlsCiphertext, TlsCompressed, TlsContentType, TlsMessage, TlsPlaintext};
@@ -119,9 +118,7 @@ impl InitialConnState {
         TlsCiphertext {
             content_type: plaintext.content_type,
             version: plaintext.version,
-            fragment: plaintext.fragment.reconstrain().expect(
-                "Plaintext fragment length should always be less than ciphertext fragment length",
-            ),
+            fragment: plaintext.fragment,
         }
     }
 
@@ -130,7 +127,7 @@ impl InitialConnState {
         Ok(TlsPlaintext {
             content_type: ciphertext.content_type,
             version: ciphertext.version,
-            fragment: ciphertext.fragment.reconstrain().unwrap(),
+            fragment: ciphertext.fragment,
         })
     }
 }
@@ -267,7 +264,7 @@ impl SecureConnState {
         Ok(TlsCiphertext {
             content_type: compressed.content_type,
             version: compressed.version,
-            fragment: fragment.try_into()?,
+            fragment,
         })
     }
 
@@ -295,7 +292,7 @@ impl SecureConnState {
         Ok(TlsCiphertext {
             content_type: compressed.content_type,
             version: compressed.version,
-            fragment: fragment.try_into()?,
+            fragment,
         })
     }
 
@@ -304,9 +301,7 @@ impl SecureConnState {
             CompressionAlgorithm::Null => TlsCompressed {
                 content_type: plaintext.content_type,
                 version: plaintext.version,
-                fragment: plaintext.fragment.reconstrain().expect(
-                    "Plaintext fragment length should always be less than compressed fragment length",
-                ),
+                fragment: plaintext.fragment,
             },
         }
     }
@@ -316,7 +311,7 @@ impl SecureConnState {
             CompressionAlgorithm::Null => Ok(TlsPlaintext {
                 content_type: compressed.content_type,
                 version: compressed.version,
-                fragment: compressed.fragment.reconstrain().unwrap(),
+                fragment: compressed.fragment,
             }),
         }
     }
@@ -373,6 +368,7 @@ pub struct TlsConnection<T: Read + Write> {
     config: Arc<TlsConfig>,
     side: TlsEntity,
     is_closed: bool,
+    max_fragment_len: usize,
 }
 
 impl<T: Read + Write> TlsConnection<T> {
@@ -389,6 +385,7 @@ impl<T: Read + Write> TlsConnection<T> {
             conn_states: ConnStates::new(),
             record_layer: RecordLayer::new(),
             is_closed: false,
+            max_fragment_len: 16_384,
         }
     }
 
@@ -428,6 +425,13 @@ impl<T: Read + Write> TlsConnection<T> {
                                 store.insert_session_id(&id, info)?
                             }
                         }
+                        TlsAction::UpdateMaxFragmentLen(max_fragment_len) => {
+                            trace!(
+                                "Updating max_fragment_length to {}",
+                                max_fragment_len.length()
+                            );
+                            self.max_fragment_len = max_fragment_len.length();
+                        }
                     }
                 }
             }
@@ -438,10 +442,11 @@ impl<T: Read + Write> TlsConnection<T> {
 
     pub fn next_message(&mut self) -> TlsResult<TlsMessage> {
         loop {
-            match self
-                .record_layer
-                .try_parse_message(&mut self.conn_states.read, &self.config.validation_policy)
-            {
+            match self.record_layer.try_parse_message(
+                &mut self.conn_states.read,
+                &self.config.policy,
+                self.max_fragment_len,
+            ) {
                 Ok(msg) => {
                     self.process_message(TlsEvent::IncomingMessage(&msg))?;
                     return Ok(msg);
@@ -480,7 +485,7 @@ impl<T: Read + Write> TlsConnection<T> {
 
         let msg: TlsMessage = msg.into();
         let content_type = msg.content_type();
-        for bytes in Fragmenter::new(msg.encode(), 16384).into_iter() {
+        for bytes in Fragmenter::new(msg.encode(), self.max_fragment_len).into_iter() {
             let plaintext = TlsPlaintext::new(content_type, bytes.to_vec())?;
             let ciphertext = self.conn_states.write.encrypt(plaintext)?;
             self.send_bytes(&ciphertext.get_encoding())?;
@@ -519,6 +524,7 @@ impl<T: Read + Write> TlsConnection<T> {
                             session_ticket,
                             master_secret: info.master_secret,
                             cipher_suite: info.cipher_suite,
+                            max_fragment_len: info.max_fragment_len,
                         })
                     }
                     None => match store.get_any_session_id()? {
@@ -529,9 +535,13 @@ impl<T: Read + Write> TlsConnection<T> {
                                 session_id,
                                 master_secret: info.master_secret,
                                 cipher_suite: info.cipher_suite,
+                                max_fragment_len: info.max_fragment_len,
                             })
                         }
-                        None => SessionResumption::None,
+                        None => {
+                            debug!("No sessions to resume");
+                            SessionResumption::None
+                        },
                     },
                 },
             };
@@ -543,6 +553,7 @@ impl<T: Read + Write> TlsConnection<T> {
                 support_session_ticket: true,
                 support_extended_master_secret: true,
                 support_secure_renegotiation: true,
+                max_fragment_len: self.config.max_fragment_length,
             };
             self.process_message(initiate)?;
         }
@@ -592,7 +603,6 @@ pub struct Fragmenter {
 
 impl Fragmenter {
     pub fn new(bytes: Vec<u8>, max_fragment_size: usize) -> Self {
-        println!("fragmenting {}", bytes.len());
         Self {
             bytes,
             max_fragment_size,

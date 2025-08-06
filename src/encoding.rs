@@ -300,27 +300,22 @@ impl<L: VecLen, T: TlsCodable, C: Cardinality> TryFrom<Vec<T>> for LengthPrefixe
 
     fn try_from(value: Vec<T>) -> Result<Self, Self::Error> {
         if value.len() < C::MIN_LEN {
-            return Err(InvalidEncodingError::LengthTooSmall(C::MIN_LEN, value.len()));
+            return Err(InvalidEncodingError::LengthTooSmall(
+                C::MIN_LEN,
+                value.len(),
+            ));
         }
         if value.len() > L::MAX_LEN {
-            return Err(InvalidEncodingError::LengthTooLarge(L::MAX_LEN, value.len()));
+            return Err(InvalidEncodingError::LengthTooLarge(
+                L::MAX_LEN,
+                value.len(),
+            ));
         }
         Ok(Self {
             items: value,
             _l: PhantomData,
             _c: PhantomData,
         })
-    }
-}
-
-impl<T: TlsCodable> TlsCodable for Option<T> {
-    fn write_to(&self, bytes: &mut Vec<u8>) {
-        if let Some(value) = self {
-            value.write_to(bytes)
-        }
-    }
-    fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
-        Ok((!reader.is_consumed()).then_some(T::read_from(reader)?))
     }
 }
 
@@ -372,6 +367,23 @@ impl<'a, L: VecLen> Deref for LengthPrefixWriter<'a, L> {
 impl<'a, L: VecLen> DerefMut for LengthPrefixWriter<'a, L> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.buf
+    }
+}
+
+impl<T: TlsCodable> TlsCodable for Option<T> {
+    fn write_to(&self, bytes: &mut Vec<u8>) {
+        if let Some(value) = self {
+            1u8.write_to(bytes);
+            value.write_to(bytes);
+        } else {
+            0u8.write_to(bytes);
+        }
+    }
+    fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
+        if u8::read_from(reader)? == 0 {
+            return Ok(None);
+        }
+        Ok(Some(T::read_from(reader)?))
     }
 }
 

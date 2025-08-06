@@ -3,14 +3,14 @@ use log::debug;
 use crate::alert::{TlsAlert, TlsAlertDesc};
 use crate::ciphersuite::CipherSuiteId;
 use crate::encoding::{
-    LengthPrefixWriter, LengthPrefixedVec, MaybeEmpty, NonEmpty, Reader, TlsCodable, VecLen, u24,
+    LengthPrefixWriter, LengthPrefixedVec, MaybeEmpty, NonEmpty, Reader, TlsCodable, u24,
 };
 use crate::errors::{DecodingError, InvalidEncodingError};
 use crate::extensions::{
-    ExtendedMasterSecretExt, Extension, Extensions, HashAlgo, RenegotiationInfoExt, SigAlgo,
-    SignatureAlgorithmsExt,
+    ExtendedMasterSecretExt, Extension, Extensions, HashAlgo, MaxFragmentLenExt,
+    RenegotiationInfoExt, SigAlgo, SignatureAlgorithmsExt,
 };
-use crate::{TlsValidateable, ValidationPolicy, utils};
+use crate::{MaxFragmentLength, TlsValidateable, TlsPolicy, utils};
 
 #[derive(Debug, Clone, Copy)]
 pub struct ProtocolVersion {
@@ -201,8 +201,13 @@ impl ServerHello {
         with_renegotiation_info: bool,
         with_extended_master_secret: bool,
         renegotiation_info: Option<Vec<u8>>,
+        max_fragment_len: Option<MaxFragmentLength>,
     ) -> Self {
         let mut extensions = vec![];
+        if let Some(len) = max_fragment_len {
+            extensions.push(MaxFragmentLenExt::new(len).into());
+        }
+
         if with_renegotiation_info {
             if let Some(info) = renegotiation_info {
                 extensions.push(RenegotiationInfoExt::renegotiation(&info).unwrap().into());
@@ -210,9 +215,11 @@ impl ServerHello {
                 extensions.push(RenegotiationInfoExt::IndicateSupport.into());
             }
         }
+
         if with_extended_master_secret {
             extensions.push(ExtendedMasterSecretExt::indicate_support().into());
         }
+
         Self {
             server_version: ProtocolVersion { major: 3, minor: 3 },
             random: Random {
@@ -261,7 +268,7 @@ impl TlsCodable for ServerHello {
         let cipher_suite = CipherSuiteId::read_from(reader)?;
         let compression_method = CompressionMethodId::read_from(reader)?;
         let extensions = Extensions::read_from(reader)?;
-        // println!("Server Extensions: {:#?}", extensions);
+        println!("Server Extensions: {:#?}", extensions);
         Ok(Self {
             server_version,
             random,
@@ -586,7 +593,7 @@ impl TlsHandshake {
         }
     }
 
-    pub fn validate(&self, policy: &ValidationPolicy) -> Result<(), TlsAlert> {
+    pub fn validate(&self, policy: &TlsPolicy) -> Result<(), TlsAlert> {
         match self {
             Self::ClientHello(hello) => hello.extensions.validate(policy)?,
             _ => {}
@@ -692,17 +699,11 @@ impl TlsMessage {
     }
 }
 
-u16_vec_len_with_max!(PlaintextFragmentLen, 16_384);
-u16_vec_len_with_max!(CompressedFragmentLen, 16_384 + 1024);
-u16_vec_len_with_max!(CiphertextFragmentLen, 16_384 + 2048);
-
-type PlaintextFragment = LengthPrefixedVec<PlaintextFragmentLen, u8, MaybeEmpty>;
-
 #[derive(Debug, Clone)]
 pub struct TlsPlaintext {
     pub content_type: TlsContentType,
     pub version: ProtocolVersion,
-    pub fragment: PlaintextFragment,
+    pub fragment: Vec<u8>,
 }
 
 impl TlsPlaintext {
@@ -710,13 +711,13 @@ impl TlsPlaintext {
         Ok(Self {
             content_type,
             version: ProtocolVersion { major: 3, minor: 3 },
-            fragment: fragment.try_into()?,
+            fragment,
         })
     }
 }
 
 impl TlsValidateable for TlsPlaintext {
-    fn validate(&self, _policy: &ValidationPolicy) -> Result<(), TlsAlert> {
+    fn validate(&self, _policy: &TlsPolicy) -> Result<(), TlsAlert> {
         if let TlsContentType::Unknown(x) = self.content_type {
             debug!("Received unrecognised content type: {}", x);
             return Err(TlsAlert::fatal(TlsAlertDesc::UnexpectedMessage));
@@ -741,38 +742,37 @@ impl TryFrom<TlsMessage> for TlsPlaintext {
         }
     }
 }
-type CompressedFragment = LengthPrefixedVec<CompressedFragmentLen, u8, MaybeEmpty>;
 
 #[derive(Debug, Clone)]
 pub struct TlsCompressed {
     pub content_type: TlsContentType,
     pub version: ProtocolVersion,
-    pub fragment: CompressedFragment,
+    pub fragment: Vec<u8>,
 }
-
-type CiphertextFragment = LengthPrefixedVec<CiphertextFragmentLen, u8, MaybeEmpty>;
 
 pub struct TlsCiphertext {
     pub content_type: TlsContentType,
     pub version: ProtocolVersion,
-    pub fragment: CiphertextFragment,
+    pub fragment: Vec<u8>,
 }
 
 impl TlsCodable for TlsCiphertext {
     fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
         let content_type = TlsContentType::read_from(reader)?;
         let version = ProtocolVersion::read_from(reader)?;
-        let fragment = CiphertextFragment::read_from(reader)?;
-        Ok(TlsCiphertext {
+        let fragment_len = u16::read_from(reader)? as usize;
+        let fragment = reader.consume(fragment_len)?;
+        Ok(Self {
             content_type,
             version,
-            fragment,
+            fragment: fragment.to_vec(),
         })
     }
 
     fn write_to(&self, bytes: &mut Vec<u8>) {
         self.content_type.write_to(bytes);
         self.version.write_to(bytes);
-        self.fragment.write_to(bytes);
+        (self.fragment.len() as u16).write_to(bytes);
+        bytes.extend_from_slice(&self.fragment);
     }
 }

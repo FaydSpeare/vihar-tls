@@ -1,5 +1,9 @@
 ## TODO
 
+- enforce server doesnt send any extensions the client didnt
+- enforce same cipher suite selected by server for session resumption
+- enforce ems is the same for resumption
+
 - Proper ClientKeyExchange handling
 
 - Support ServerKeyExchange from server-side

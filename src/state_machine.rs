@@ -5,14 +5,13 @@ use std::sync::Arc;
 use enum_dispatch::enum_dispatch;
 use log::{debug, info};
 
-use crate::RenegotiationPolicy;
 use crate::alert::TlsAlertDesc;
 use crate::ciphersuite::{CipherSuiteId, PrfAlgorithm};
 use crate::client::{PrioritisedCipherSuite, TlsConfig};
 use crate::errors::TlsError;
 use crate::extensions::{
-    ExtendedMasterSecretExt, HashAlgo, RenegotiationInfoExt, ServerNameExt, SessionTicketExt,
-    SigAlgo,
+    ExtendedMasterSecretExt, HashAlgo, MaxFragmentLenExt, MaxFragmentLength, RenegotiationInfoExt,
+    ServerNameExt, SessionTicketExt, SigAlgo,
 };
 use crate::messages::{Certificate, ClientHello, ServerHello, SessionId};
 use crate::signature::{
@@ -20,6 +19,7 @@ use crate::signature::{
     public_key_from_cert, rsa_verify,
 };
 use crate::storage::SessionInfo;
+use crate::{MaxFragmentLengthNegotiationPolicy, RenegotiationPolicy};
 use crate::{
     TlsResult,
     alert::TlsAlert,
@@ -65,6 +65,7 @@ pub struct SessionIdResumption {
     pub session_id: Vec<u8>,
     pub master_secret: [u8; 48],
     pub cipher_suite: CipherSuiteId,
+    pub max_fragment_len: Option<MaxFragmentLength>,
 }
 
 #[derive(Debug)]
@@ -72,6 +73,7 @@ pub struct SessionTicketResumption {
     pub session_ticket: Vec<u8>,
     pub master_secret: [u8; 48],
     pub cipher_suite: CipherSuiteId,
+    pub max_fragment_len: Option<MaxFragmentLength>,
 }
 
 #[derive(Debug)]
@@ -90,6 +92,7 @@ pub enum TlsEvent<'a> {
         support_session_ticket: bool,
         support_extended_master_secret: bool,
         support_secure_renegotiation: bool,
+        max_fragment_len: Option<MaxFragmentLength>,
     },
     IncomingMessage(&'a TlsMessage),
     SessionValidation,
@@ -104,6 +107,7 @@ pub enum TlsAction {
     StoreSessionTicketInfo(Vec<u8>, SessionInfo),
     StoreSessionIdInfo(Vec<u8>, SessionInfo),
     CloseConnection(TlsAlertDesc),
+    UpdateMaxFragmentLen(MaxFragmentLength),
 }
 
 impl TlsStateMachine {
@@ -209,12 +213,24 @@ impl HandleRecord for AwaitClientInitiateState {
             support_session_ticket,
             support_extended_master_secret,
             support_secure_renegotiation,
+            max_fragment_len,
         } = event
         else {
             panic!("Expected ClientInitiate event!");
         };
 
         let mut extensions = vec![];
+
+        // If this is a session resumption we need to send the same max_fragment_length
+        // as was previously agreed upon for the session.
+        let max_fragment_len_override = match session_resumption {
+            SessionResumption::None => max_fragment_len,
+            SessionResumption::SessionId(ref info) => info.max_fragment_len,
+            SessionResumption::SessionTicket(ref info) => info.max_fragment_len,
+        };
+        if let Some(len) = max_fragment_len_override {
+            extensions.push(MaxFragmentLenExt::new(len).into());
+        }
 
         if support_extended_master_secret {
             extensions.push(ExtendedMasterSecretExt::indicate_support().into());
@@ -263,6 +279,7 @@ impl HandleRecord for AwaitClientInitiateState {
                 client_random,
                 session_resumption,
                 previous_verify_data: self.previous_verify_data,
+                proposed_max_fragment_len: max_fragment_len,
             }
             .into(),
             vec![TlsAction::SendHandshakeMsg(handshake)],
@@ -310,6 +327,11 @@ impl HandleRecord for AwaitClientHello {
             CipherSuite::from(selected_cipher_suite).params().name
         );
 
+        let max_fragment_len = client_hello.extensions.get_max_fragment_len().filter(|_| {
+            ctx.config.policy.max_fragment_length_negotiation
+                == MaxFragmentLengthNegotiationPolicy::Support
+        });
+
         // If this is a secure renegotiation we need to send the right renegotation_info
         let renegotiation_info = self
             .previous_verify_data
@@ -320,6 +342,7 @@ impl HandleRecord for AwaitClientHello {
             client_hello.extensions.includes_secure_renegotiation(),
             client_hello.extensions.includes_extended_master_secret(),
             renegotiation_info,
+            max_fragment_len,
         );
 
         let server_random = server_hello.random.as_bytes();
@@ -382,6 +405,7 @@ pub struct AwaitServerHello {
     client_random: [u8; 32],
     session_resumption: SessionResumption,
     previous_verify_data: Option<PreviousVerifyData>,
+    proposed_max_fragment_len: Option<MaxFragmentLength>,
 }
 
 impl HandleRecord for AwaitServerHello {
@@ -409,7 +433,26 @@ impl HandleRecord for AwaitServerHello {
             session_ticket: server_hello.supports_session_ticket(),
         };
 
-        // If the server echoed back the session-id sent by the client we're
+        let mut actions = vec![];
+        // Regardless of whether this is a session_resumption or not, we know whether the
+        // max_fragment_length needs to be updated for the next message based on whether
+        // the server_hello mirrored the client_hello's max_fragment_length.
+        let max_fragment_length = match self.proposed_max_fragment_len {
+            None => None,
+            Some(client_len) => match server_hello.extensions.get_max_fragment_len() {
+                None => None,
+                Some(server_len) => {
+                    if client_len != server_len {
+                        return close_connection(TlsAlertDesc::IllegalParameter);
+                    }
+
+                    actions.push(TlsAction::UpdateMaxFragmentLen(client_len));
+                    Some(client_len)
+                }
+            },
+        };
+
+        // If the server echoed back the session_id sent by the client we're
         // now doing an abbreviated handshake.
         if let SessionResumption::SessionId(info) = &self.session_resumption {
             if info.session_id == server_hello.session_id.to_vec() {
@@ -419,6 +462,12 @@ impl HandleRecord for AwaitServerHello {
                     info.master_secret,
                     info.cipher_suite,
                 );
+
+                // The server must correctly remember the session's max_fragment_length
+                if server_hello.extensions.get_max_fragment_len() != info.max_fragment_len {
+                    return close_connection(TlsAlertDesc::IllegalParameter);
+                }
+
                 return Ok((
                     AwaitServerChangeCipher {
                         session_id: server_hello.session_id.clone(),
@@ -427,14 +476,15 @@ impl HandleRecord for AwaitServerHello {
                         params,
                         client_verify_data: None,
                         is_session_resumption: true,
+                        max_fragment_length: info.max_fragment_len,
                     }
                     .into(),
-                    vec![],
+                    actions,
                 ));
             }
         }
 
-        // Attempting session resumption with session-ticket
+        // Attempting session resumption with session ticket
         if let SessionResumption::SessionTicket(info) = self.session_resumption {
             // Server will issue a new ticket, but did it accept the session ticket we sent?
             if server_hello.supports_session_ticket() {
@@ -455,9 +505,10 @@ impl HandleRecord for AwaitServerHello {
                         selected_cipher_suite_id: server_hello.cipher_suite,
                         supported_extensions,
                         session_ticket_resumption: info,
+                        max_fragment_length,
                     }
                     .into(),
-                    vec![],
+                    actions,
                 ));
             }
 
@@ -478,9 +529,10 @@ impl HandleRecord for AwaitServerHello {
                     supported_extensions,
                     handshakes: self.handshakes,
                     session_ticket_resumption: info,
+                    max_fragment_length,
                 }
                 .into(),
-                vec![],
+                actions,
             ));
         }
 
@@ -495,9 +547,10 @@ impl HandleRecord for AwaitServerHello {
                 server_random: server_hello.random.as_bytes(),
                 selected_cipher_suite_id: server_hello.cipher_suite,
                 supported_extensions,
+                max_fragment_length,
             }
             .into(),
-            vec![],
+            actions,
         ));
     }
 }
@@ -570,6 +623,7 @@ pub struct AwaitServerCertificate {
     server_random: [u8; 32],
     selected_cipher_suite_id: CipherSuiteId,
     supported_extensions: SupportedExtensions,
+    max_fragment_length: Option<MaxFragmentLength>,
 }
 
 impl HandleRecord for AwaitServerCertificate {
@@ -590,6 +644,7 @@ impl HandleRecord for AwaitServerCertificate {
                         selected_cipher_suite_id: self.selected_cipher_suite_id,
                         supported_extensions: self.supported_extensions,
                         server_certificate_der: certs.list[0].to_vec(),
+                        max_fragment_length: self.max_fragment_length,
                     }
                     .into(),
                     vec![],
@@ -608,6 +663,7 @@ impl HandleRecord for AwaitServerCertificate {
                 supported_extensions: self.supported_extensions,
                 server_certificate_der: certs.list[0].to_vec(),
                 secrets: None,
+                max_fragment_length: self.max_fragment_length,
             }
             .into(),
             vec![],
@@ -624,6 +680,7 @@ pub struct AwaitServerKeyExchange {
     selected_cipher_suite_id: CipherSuiteId,
     supported_extensions: SupportedExtensions,
     server_certificate_der: Vec<u8>,
+    max_fragment_length: Option<MaxFragmentLength>,
 }
 
 impl HandleRecord for AwaitServerKeyExchange {
@@ -694,6 +751,7 @@ impl HandleRecord for AwaitServerKeyExchange {
                     g: server_kx.g.to_vec(),
                     public_key: server_kx.server_pubkey.to_vec(),
                 }),
+                max_fragment_length: self.max_fragment_length,
             }
             .into(),
             vec![],
@@ -718,6 +776,7 @@ pub struct AwaitServerHelloDone {
     supported_extensions: SupportedExtensions,
     server_certificate_der: Vec<u8>,
     secrets: Option<DheParams>,
+    max_fragment_length: Option<MaxFragmentLength>,
 }
 
 impl HandleRecord for AwaitServerHelloDone {
@@ -803,6 +862,7 @@ impl HandleRecord for AwaitServerHelloDone {
                     client_verify_data: Some(verify_data),
                     params,
                     is_session_resumption: false,
+                    max_fragment_length: self.max_fragment_length,
                 }
                 .into(),
                 actions,
@@ -817,6 +877,7 @@ impl HandleRecord for AwaitServerHelloDone {
                 client_verify_data: Some(verify_data),
                 params,
                 is_session_resumption: false,
+                max_fragment_length: self.max_fragment_length,
             }
             .into(),
             actions,
@@ -852,6 +913,7 @@ pub struct AwaitNewSessionTicket {
     params: SecurityParams,
     is_session_resumption: bool,
     client_verify_data: Option<Vec<u8>>,
+    max_fragment_length: Option<MaxFragmentLength>,
 }
 
 impl HandleRecord for AwaitNewSessionTicket {
@@ -864,7 +926,11 @@ impl HandleRecord for AwaitNewSessionTicket {
 
         let action = TlsAction::StoreSessionTicketInfo(
             new_session_ticket.ticket.to_vec(),
-            SessionInfo::new(self.params.master_secret, self.params.cipher_suite_id),
+            SessionInfo::new(
+                self.params.master_secret,
+                self.params.cipher_suite_id,
+                self.max_fragment_length,
+            ),
         );
 
         return Ok((
@@ -875,6 +941,7 @@ impl HandleRecord for AwaitNewSessionTicket {
                 client_verify_data: self.client_verify_data,
                 params: self.params,
                 is_session_resumption: self.is_session_resumption,
+                max_fragment_length: self.max_fragment_length,
             }
             .into(),
             vec![action],
@@ -891,10 +958,12 @@ pub struct AwaitNewSessionTicketOrCertificate {
     selected_cipher_suite_id: CipherSuiteId,
     supported_extensions: SupportedExtensions,
     session_ticket_resumption: SessionTicketResumption,
+    max_fragment_length: Option<MaxFragmentLength>,
 }
 
 impl HandleRecord for AwaitNewSessionTicketOrCertificate {
     fn handle(self, ctx: &mut TlsContext, event: TlsEvent) -> HandleResult {
+        // Session resumption accepted
         if let TlsEvent::IncomingMessage(TlsMessage::Handshake(TlsHandshake::NewSessionTicket(_))) =
             event
         {
@@ -905,6 +974,12 @@ impl HandleRecord for AwaitNewSessionTicketOrCertificate {
                 self.session_ticket_resumption.cipher_suite,
             );
 
+            // The ClientHello and ServerHello resulted in a different max_fragment_length
+            // from what was decided for this session.
+            if self.session_ticket_resumption.max_fragment_len != self.max_fragment_length {
+                return close_connection(TlsAlertDesc::IllegalParameter);
+            }
+
             return AwaitNewSessionTicket {
                 session_id: self.session_id,
                 handshakes: self.handshakes,
@@ -912,6 +987,7 @@ impl HandleRecord for AwaitNewSessionTicketOrCertificate {
                 client_verify_data: None,
                 is_session_resumption: true,
                 params,
+                max_fragment_length: self.session_ticket_resumption.max_fragment_len,
             }
             .handle(ctx, event);
         } else if let TlsEvent::IncomingMessage(TlsMessage::Handshake(
@@ -925,6 +1001,7 @@ impl HandleRecord for AwaitNewSessionTicketOrCertificate {
                 server_random: self.server_random,
                 selected_cipher_suite_id: self.selected_cipher_suite_id,
                 supported_extensions: self.supported_extensions,
+                max_fragment_length: self.max_fragment_length,
             }
             .handle(ctx, event);
         }
@@ -942,6 +1019,7 @@ pub struct AwaitServerChangeCipherOrCertificate {
     selected_cipher_suite_id: CipherSuiteId,
     supported_extensions: SupportedExtensions,
     session_ticket_resumption: SessionTicketResumption,
+    max_fragment_length: Option<MaxFragmentLength>,
 }
 
 impl HandleRecord for AwaitServerChangeCipherOrCertificate {
@@ -954,6 +1032,12 @@ impl HandleRecord for AwaitServerChangeCipherOrCertificate {
                 self.session_ticket_resumption.cipher_suite,
             );
 
+            // The ClientHello and ServerHello resulted in a different max_fragment_length
+            // from what was decided for this session.
+            if self.session_ticket_resumption.max_fragment_len != self.max_fragment_length {
+                return close_connection(TlsAlertDesc::IllegalParameter);
+            }
+
             return AwaitServerChangeCipher {
                 session_id: self.session_id,
                 handshakes: self.handshakes,
@@ -961,6 +1045,7 @@ impl HandleRecord for AwaitServerChangeCipherOrCertificate {
                 params,
                 client_verify_data: None,
                 is_session_resumption: true,
+                max_fragment_length: self.max_fragment_length,
             }
             .handle(ctx, event);
         } else if let TlsEvent::IncomingMessage(TlsMessage::Handshake(
@@ -974,6 +1059,7 @@ impl HandleRecord for AwaitServerChangeCipherOrCertificate {
                 server_random: self.server_random,
                 selected_cipher_suite_id: self.selected_cipher_suite_id,
                 supported_extensions: self.supported_extensions,
+                max_fragment_length: self.max_fragment_length,
             }
             .handle(ctx, event);
         }
@@ -1029,6 +1115,7 @@ pub struct AwaitServerChangeCipher {
 
     // Params to change to
     params: SecurityParams,
+    max_fragment_length: Option<MaxFragmentLength>,
 }
 
 impl HandleRecord for AwaitServerChangeCipher {
@@ -1054,6 +1141,7 @@ impl HandleRecord for AwaitServerChangeCipher {
                 client_verify_data: self.client_verify_data,
                 params: self.params,
                 is_session_resumption: self.is_session_resumption,
+                max_fragment_length: self.max_fragment_length,
             }
             .into(),
             vec![TlsAction::ChangeCipherSpec(TlsEntity::Server, read)],
@@ -1115,6 +1203,7 @@ pub struct AwaitServerFinished {
     params: SecurityParams,
     client_verify_data: Option<Vec<u8>>,
     is_session_resumption: bool,
+    max_fragment_length: Option<MaxFragmentLength>,
 }
 
 impl HandleRecord for AwaitServerFinished {
@@ -1136,6 +1225,7 @@ impl HandleRecord for AwaitServerFinished {
                     SessionInfo {
                         master_secret: self.params.master_secret,
                         cipher_suite: self.params.cipher_suite_id,
+                        max_fragment_len: self.max_fragment_length,
                     },
                 ));
             }
@@ -1193,7 +1283,8 @@ pub struct EstablishedState {
 
 impl HandleRecord for EstablishedState {
     fn handle(self, ctx: &mut TlsContext, event: TlsEvent) -> HandleResult {
-        if let TlsEvent::IncomingMessage(TlsMessage::ApplicationData(_)) = event {
+        if let TlsEvent::IncomingMessage(TlsMessage::ApplicationData(data)) = event {
+            println!("{:?}", String::from_utf8_lossy(data));
             return Ok((self.into(), vec![]));
         }
 
@@ -1217,11 +1308,11 @@ impl HandleRecord for EstablishedState {
 
         // TODO:
         // Add options to simply ignore client renegotiation or simply send a warning.
-        match ctx.config.validation_policy.renegotiation {
+        match ctx.config.policy.renegotiation {
             RenegotiationPolicy::None => {
                 return close_connection(TlsAlertDesc::NoRenegotiation);
             }
-            RenegotiationPolicy::Legacy => {
+            RenegotiationPolicy::OnlyLegacy => {
                 if client_hello.extensions.includes_secure_renegotiation() {
                     return close_connection(TlsAlertDesc::HandshakeFailure);
                 }
@@ -1230,7 +1321,7 @@ impl HandleRecord for EstablishedState {
                 }
                 .handle(ctx, event);
             }
-            RenegotiationPolicy::Secure => {
+            RenegotiationPolicy::OnlySecure => {
                 if let Some(info) = client_hello.extensions.get_renegotiation_info() {
                     if info != self.client_verify_data {
                         return close_connection(TlsAlertDesc::NoRenegotiation);

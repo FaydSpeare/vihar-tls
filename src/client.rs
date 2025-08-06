@@ -7,9 +7,10 @@ use rsa::{RsaPrivateKey, pkcs8::DecodePrivateKey};
 use x509_parser::pem::parse_x509_pem;
 
 use crate::{
-    TlsResult, ValidationPolicy,
+    TlsPolicy, TlsResult,
     ciphersuite::CipherSuiteId,
     connection::TlsConnection,
+    extensions::MaxFragmentLength,
     state_machine::TlsEntity,
     storage::{SessionStorage, SledSessionStore},
 };
@@ -31,7 +32,8 @@ pub struct TlsConfigBuilder {
     pub session_store: Option<Box<dyn SessionStorage>>,
     pub certificate: Option<CertificateAndPrivateKey>,
     pub server_name: Option<String>,
-    pub validation_policy: Option<ValidationPolicy>,
+    pub policy: Option<TlsPolicy>,
+    pub max_fragment_length: Option<MaxFragmentLength>,
 }
 
 impl TlsConfigBuilder {
@@ -41,7 +43,8 @@ impl TlsConfigBuilder {
             session_store: None,
             certificate: None,
             server_name: None,
-            validation_policy: None,
+            policy: None,
+            max_fragment_length: None,
         }
     }
 
@@ -59,8 +62,14 @@ impl TlsConfigBuilder {
             session_store: self.session_store,
             certificate: self.certificate,
             server_name: self.server_name,
-            validation_policy: self.validation_policy.unwrap_or_default(),
+            policy: self.policy.unwrap_or_default(),
+            max_fragment_length: self.max_fragment_length,
         }
+    }
+
+    pub fn with_max_fragment_length(mut self, len: MaxFragmentLength) -> Self {
+        self.max_fragment_length = Some(len);
+        self
     }
 
     pub fn with_cipher_suites(mut self, suites: Box<[PrioritisedCipherSuite]>) -> Self {
@@ -78,8 +87,8 @@ impl TlsConfigBuilder {
         self
     }
 
-    pub fn with_validation_policy(mut self, policy: ValidationPolicy) -> Self {
-        self.validation_policy = Some(policy);
+    pub fn with_policy(mut self, policy: TlsPolicy) -> Self {
+        self.policy = Some(policy);
         self
     }
 
@@ -107,7 +116,8 @@ pub struct TlsConfig {
     pub session_store: Option<Box<dyn SessionStorage>>,
     pub certificate: Option<CertificateAndPrivateKey>,
     pub server_name: Option<String>,
-    pub validation_policy: ValidationPolicy,
+    pub policy: TlsPolicy,
+    pub max_fragment_length: Option<MaxFragmentLength>,
 }
 
 pub struct TlsClient<T: Read + Write> {

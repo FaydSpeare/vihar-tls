@@ -1,8 +1,9 @@
 use std::{net::TcpListener, thread::sleep, time::Duration};
 
 use vihar_tls::{
-    RenegotiationPolicy, UnrecognisedServerNamePolicy, ValidationPolicy,
-    ciphersuite::CipherSuiteId, client::TlsConfigBuilder, pcs, server::TlsServer,
+    MaxFragmentLengthNegotiationPolicy, RenegotiationPolicy, TlsPolicy,
+    UnrecognisedServerNamePolicy, ciphersuite::CipherSuiteId, client::TlsConfigBuilder, pcs,
+    server::TlsServer,
 };
 
 // Ctrl-i tab
@@ -37,9 +38,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )
             .with_session_store("server-sdb")
             .with_certificate_pem("testing/rsacert.pem", "testing/rsakey.pem")
-            .with_validation_policy(ValidationPolicy {
+            .with_policy(TlsPolicy {
                 unrecognised_server_name: UnrecognisedServerNamePolicy::Ignore,
                 renegotiation: RenegotiationPolicy::None,
+                max_fragment_length_negotiation: MaxFragmentLengthNegotiationPolicy::Reject,
             })
             .build(),
         tcp_stream,

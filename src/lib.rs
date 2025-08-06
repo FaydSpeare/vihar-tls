@@ -21,6 +21,8 @@ pub mod connection;
 pub mod server;
 pub mod storage;
 
+pub use extensions::MaxFragmentLength;
+
 pub type TlsResult<T> = Result<T, Box<dyn std::error::Error>>;
 
 #[derive(Debug, Clone)]
@@ -31,30 +33,39 @@ pub enum UnrecognisedServerNamePolicy {
 
 #[derive(Debug, Clone)]
 pub enum RenegotiationPolicy {
-    Legacy,
-    Secure,
+    OnlyLegacy,
+    OnlySecure,
     None,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum MaxFragmentLengthNegotiationPolicy {
+    Reject,
+    Support,
+}
+
 #[derive(Debug, Clone)]
-pub struct ValidationPolicy {
+pub struct TlsPolicy {
     // Google just sends a fatal decode_error rather than unrecognised_name
     pub unrecognised_server_name: UnrecognisedServerNamePolicy,
 
     pub renegotiation: RenegotiationPolicy,
+
+    pub max_fragment_length_negotiation: MaxFragmentLengthNegotiationPolicy,
 }
 
-impl Default for ValidationPolicy {
+impl Default for TlsPolicy {
     fn default() -> Self {
         Self {
             unrecognised_server_name: UnrecognisedServerNamePolicy::Alert(TlsAlertLevel::Fatal),
-            renegotiation: RenegotiationPolicy::Secure,
+            renegotiation: RenegotiationPolicy::OnlySecure,
+            max_fragment_length_negotiation: MaxFragmentLengthNegotiationPolicy::Support,
         }
     }
 }
 
 pub trait TlsValidateable {
-    fn validate(&self, policy: &ValidationPolicy) -> Result<(), TlsAlert>;
+    fn validate(&self, policy: &TlsPolicy) -> Result<(), TlsAlert>;
 }
 
 /*

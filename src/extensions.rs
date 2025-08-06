@@ -1,8 +1,8 @@
-use log::warn;
+use log::{trace, warn};
 use std::{collections::HashSet, fmt::Debug};
 
 use crate::{
-    UnrecognisedServerNamePolicy, ValidationPolicy,
+    TlsValidateable, UnrecognisedServerNamePolicy, TlsPolicy,
     alert::{TlsAlert, TlsAlertDesc},
     encoding::{
         LengthPrefixWriter, LengthPrefixedVec, MaybeEmpty, NonEmpty, Reader, Reconstrainable,
@@ -19,7 +19,8 @@ tls_codable_enum! {
         SessionTicket = 0x0023,
         ExtendedMasterSecret = 0x0017,
         ServerName = 0x0000,
-        ALPN = 0x0010
+        ALPN = 0x0010,
+        MaxFragmentLen = 0x0001,
     }
 }
 
@@ -31,6 +32,7 @@ pub enum Extension {
     ExtendedMasterSecret(ExtendedMasterSecretExt),
     ALPN(ALPNExt),
     ServerName(ServerNameExt),
+    MaxFragmentLen(MaxFragmentLenExt),
     Unknown(u16, Vec<u8>),
 }
 
@@ -43,6 +45,7 @@ impl Extension {
             Self::ExtendedMasterSecret(_) => ExtensionType::ExtendedMasterSecret,
             Self::ALPN(_) => ExtensionType::ALPN,
             Self::ServerName(_) => ExtensionType::ServerName,
+            Self::MaxFragmentLen(_) => ExtensionType::MaxFragmentLen,
             Self::Unknown(x, _) => ExtensionType::Unknown(*x),
         }
     }
@@ -59,6 +62,7 @@ impl TlsCodable for Extension {
             Self::ExtendedMasterSecret(ext) => ext.write_to(&mut writer),
             Self::ALPN(ext) => ext.write_to(&mut writer),
             Self::ServerName(ext) => ext.write_to(&mut writer),
+            Self::MaxFragmentLen(ext) => ext.write_to(&mut writer),
             Self::Unknown(_, ext_bytes) => {
                 writer.extend_from_slice(&ext_bytes);
             }
@@ -83,6 +87,7 @@ impl TlsCodable for Extension {
             }
             ExtensionType::ALPN => ALPNExt::read_from(&mut subreader)?.into(),
             ExtensionType::ServerName => ServerNameExt::read_from(&mut subreader)?.into(),
+            ExtensionType::MaxFragmentLen => MaxFragmentLenExt::read_from(&mut subreader)?.into(),
             ExtensionType::Unknown(x) => {
                 warn!("unknown extension: {}", x);
                 Self::Unknown(x, subreader.consume_rest().to_vec())
@@ -128,6 +133,12 @@ impl From<ServerNameExt> for Extension {
     }
 }
 
+impl From<MaxFragmentLenExt> for Extension {
+    fn from(value: MaxFragmentLenExt) -> Self {
+        Self::MaxFragmentLen(value)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Extensions(pub Option<LengthPrefixedVec<u16, Extension, NonEmpty>>);
 
@@ -143,10 +154,13 @@ impl Extensions {
         Self(None)
     }
 
-    pub fn validate(&self, policy: &ValidationPolicy) -> Result<(), TlsAlert> {
+    pub fn validate(&self, policy: &TlsPolicy) -> Result<(), TlsAlert> {
         if let Some(extensions) = &self.0 {
             for item in extensions.iter() {
                 if let Extension::ServerName(ext) = item {
+                    ext.validate(policy)?;
+                }
+                if let Extension::MaxFragmentLen(ext) = item {
                     ext.validate(policy)?;
                 }
             }
@@ -201,6 +215,19 @@ impl Extensions {
                 if let Extension::RenegotiationInfo(RenegotiationInfoExt::Renegotiation(info)) = ext
                 {
                     Some(info.to_vec())
+                } else {
+                    None
+                }
+            }),
+        }
+    }
+
+    pub fn get_max_fragment_len(&self) -> Option<MaxFragmentLength> {
+        match &self.0 {
+            None => None,
+            Some(extensions) => extensions.iter().find_map(|ext| {
+                if let Extension::MaxFragmentLen(MaxFragmentLenExt { value }) = ext {
+                    Some(*value)
                 } else {
                     None
                 }
@@ -495,7 +522,7 @@ impl ServerNameExt {
         }
     }
 
-    pub fn validate(&self, policy: &ValidationPolicy) -> Result<(), TlsAlert> {
+    pub fn validate(&self, policy: &TlsPolicy) -> Result<(), TlsAlert> {
         let mut seen = HashSet::new();
 
         // Duplicate server names are not allowed
@@ -549,5 +576,59 @@ impl TlsCodable for ServerNameExt {
 
     fn write_to(&self, bytes: &mut Vec<u8>) {
         self.list.write_to(bytes);
+    }
+}
+
+tls_codable_enum! {
+    #[repr(u8)]
+    pub enum MaxFragmentLength {
+        Len512 = 1,  // 2^9
+        Len1024 = 2, // 2^10
+        Len2048 = 3, // 2^11
+        Len4096 = 4, // 2^12
+    }
+}
+
+impl MaxFragmentLength {
+    pub const fn length(self) -> usize {
+        match self {
+            Self::Len512 => 512,
+            Self::Len1024 => 1024,
+            Self::Len2048 => 2048,
+            Self::Len4096 => 4096,
+            Self::Unknown(_) => panic!(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MaxFragmentLenExt {
+    value: MaxFragmentLength,
+}
+
+impl MaxFragmentLenExt {
+    pub fn new(value: MaxFragmentLength) -> Self {
+        Self { value }
+    }
+}
+
+impl TlsCodable for MaxFragmentLenExt {
+    fn write_to(&self, bytes: &mut Vec<u8>) {
+        self.value.write_to(bytes);
+    }
+    fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
+        Ok(Self {
+            value: MaxFragmentLength::read_from(reader)?,
+        })
+    }
+}
+
+impl TlsValidateable for MaxFragmentLenExt {
+    fn validate(&self, _: &TlsPolicy) -> Result<(), TlsAlert> {
+        if let MaxFragmentLength::Unknown(x) = self.value {
+            trace!("Invalid max_fragment_length value: {x}");
+            return Err(TlsAlert::fatal(TlsAlertDesc::IllegalParameter));
+        }
+        Ok(())
     }
 }

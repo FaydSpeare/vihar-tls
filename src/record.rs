@@ -1,13 +1,12 @@
-use log::trace;
-
 use crate::{
-    TlsValidateable, ValidationPolicy,
-    alert::TlsAlert,
+    TlsPolicy, TlsValidateable,
+    alert::{TlsAlert, TlsAlertDesc},
     connection::ConnState,
     encoding::{Reader, TlsCodable},
     errors::TlsError,
     messages::{TlsCiphertext, TlsContentType, TlsHandshake, TlsMessage},
 };
+use log::trace;
 
 pub struct RecordLayer {
     buffer: Vec<u8>,
@@ -31,14 +30,29 @@ impl RecordLayer {
     pub fn try_parse_message(
         &mut self,
         conn_state: &mut ConnState,
-        validation_policy: &ValidationPolicy,
+        policy: &TlsPolicy,
+        max_fragmentation_len: usize,
     ) -> Result<TlsMessage, TlsError> {
         loop {
             let mut reader = Reader::new(&self.buffer);
-            let ciphertext = TlsCiphertext::read_from(&mut reader)?;
-            let plaintext = conn_state.decrypt(ciphertext)?;
 
-            plaintext.validate(validation_policy)?;
+            let ciphertext = TlsCiphertext::read_from(&mut reader)?;
+            //println!("ciphertext len {}", ciphertext.fragment.len());
+            if ciphertext.fragment.len() > max_fragmentation_len + 2048 {
+                return Err(TlsError::Alert(TlsAlert::fatal(
+                    TlsAlertDesc::RecordOverflow,
+                )));
+            }
+
+            let plaintext = conn_state.decrypt(ciphertext)?;
+            //println!("plaintext len {}", plaintext.fragment.len());
+            if plaintext.fragment.len() > max_fragmentation_len {
+                return Err(TlsError::Alert(TlsAlert::fatal(
+                    TlsAlertDesc::RecordOverflow,
+                )));
+            }
+
+            plaintext.validate(policy)?;
 
             self.buffer.drain(..reader.bytes_consumed());
             match plaintext.content_type {
@@ -46,10 +60,10 @@ impl RecordLayer {
                     return Ok(TlsMessage::ChangeCipherSpec);
                 }
                 TlsContentType::ApplicationData => {
-                    return Ok(TlsMessage::ApplicationData(plaintext.fragment.into_vec()));
+                    return Ok(TlsMessage::ApplicationData(plaintext.fragment));
                 }
                 TlsContentType::Alert => {
-                    self.alert_buffer.extend(plaintext.fragment.into_vec());
+                    self.alert_buffer.extend(plaintext.fragment);
                     let mut reader = Reader::new(&self.alert_buffer);
                     match TlsAlert::read_from(&mut reader) {
                         Ok(alert) => {
@@ -60,12 +74,12 @@ impl RecordLayer {
                     }
                 }
                 TlsContentType::Handshake => {
-                    self.handshake_buffer.extend(plaintext.fragment.into_vec());
+                    self.handshake_buffer.extend(plaintext.fragment);
                     let mut reader = Reader::new(&self.handshake_buffer);
                     match TlsHandshake::read_from(&mut reader) {
                         Ok(handshake) => {
                             // Validation of handshake, which may return errors
-                            handshake.validate(&validation_policy)?;
+                            handshake.validate(&policy)?;
 
                             self.handshake_buffer.drain(..reader.bytes_consumed());
                             return Ok(TlsMessage::Handshake(handshake));
