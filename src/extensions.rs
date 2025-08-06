@@ -1,5 +1,8 @@
 use log::{trace, warn};
-use std::{collections::HashSet, fmt::Debug};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::Debug,
+};
 
 use crate::{
     TlsPolicy, TlsValidateable, UnrecognisedServerNamePolicy,
@@ -139,23 +142,50 @@ impl From<MaxFragmentLenExt> for Extension {
     }
 }
 
+type ExtensionList = LengthPrefixedVec<u16, Extension, NonEmpty>;
+
 #[derive(Debug, Clone)]
-pub struct Extensions(pub Option<LengthPrefixedVec<u16, Extension, NonEmpty>>);
+pub struct Extensions {
+    list: Option<ExtensionList>,
+    map: HashMap<ExtensionType, Extension>,
+    has_duplicate: bool,
+}
 
 impl Extensions {
     pub fn new(extensions: Vec<Extension>) -> Result<Self, DecodingError> {
         if extensions.len() == 0 {
             return Ok(Self::empty());
         }
-        Ok(Self(Some(extensions.try_into()?)))
+        let mut map = HashMap::new();
+        let extensions: ExtensionList = extensions.try_into()?;
+        let mut has_duplicate = false;
+
+        for extension in extensions.iter() {
+            let out = map.insert(extension.extension_type(), extension.clone());
+            has_duplicate |= out.is_some();
+        }
+
+        Ok(Self {
+            list: Some(extensions),
+            map,
+            has_duplicate,
+        })
     }
 
     pub fn empty() -> Self {
-        Self(None)
+        Self {
+            list: None,
+            map: HashMap::new(),
+            has_duplicate: false,
+        }
     }
 
     pub fn validate(&self, policy: &TlsPolicy) -> Result<(), TlsAlert> {
-        if let Some(extensions) = &self.0 {
+        if self.has_duplicate {
+            return Err(TlsAlert::fatal(TlsAlertDesc::IllegalParameter));
+        }
+
+        if let Some(extensions) = &self.list {
             for item in extensions.iter() {
                 if let Extension::ServerName(ext) = item {
                     ext.validate(policy)?;
@@ -169,92 +199,56 @@ impl Extensions {
     }
 
     pub fn extension_type_set(&self) -> HashSet<ExtensionType> {
-        let mut set = HashSet::new();
-        if let Some(extensions) = &self.0 {
-            for ext in extensions.iter() {
-                set.insert(ext.extension_type());
-            }
-        }
-        set
+        self.map.keys().copied().collect()
     }
 
     pub fn includes_secure_renegotiation(&self) -> bool {
-        match &self.0 {
-            None => false,
-            Some(extensions) => extensions
-                .iter()
-                .any(|x| matches!(x, Extension::RenegotiationInfo(_))),
-        }
+        self.map.get(&ExtensionType::RenegotiationInfo).is_some()
     }
 
     pub fn includes_extended_master_secret(&self) -> bool {
-        match &self.0 {
-            None => false,
-            Some(extensions) => extensions
-                .iter()
-                .any(|x| matches!(x, Extension::ExtendedMasterSecret(_))),
-        }
+        self.map.get(&ExtensionType::ExtendedMasterSecret).is_some()
     }
 
     pub fn includes_session_ticket(&self) -> bool {
-        match &self.0 {
-            None => false,
-            Some(extensions) => extensions
-                .iter()
-                .any(|x| matches!(x, Extension::SessionTicket(_))),
-        }
+        self.map.get(&ExtensionType::SessionTicket).is_some()
     }
 
     pub fn get_session_ticket(&self) -> Option<Vec<u8>> {
-        match &self.0 {
-            None => None,
-            Some(extensions) => extensions.iter().find_map(|ext| {
-                if let Extension::SessionTicket(SessionTicketExt::Resumption(ticket)) = ext {
-                    Some(ticket.to_vec())
-                } else {
-                    None
-                }
-            }),
+        match self.map.get(&ExtensionType::SessionTicket) {
+            Some(Extension::SessionTicket(SessionTicketExt::Resumption(ticket))) => {
+                Some(ticket.to_vec())
+            }
+            _ => None,
         }
     }
 
     pub fn get_renegotiation_info(&self) -> Option<Vec<u8>> {
-        match &self.0 {
-            None => None,
-            Some(extensions) => extensions.iter().find_map(|ext| {
-                if let Extension::RenegotiationInfo(RenegotiationInfoExt::Renegotiation(info)) = ext
-                {
-                    Some(info.to_vec())
-                } else {
-                    None
-                }
-            }),
+        match self.map.get(&ExtensionType::RenegotiationInfo) {
+            Some(Extension::RenegotiationInfo(RenegotiationInfoExt::Renegotiation(info))) => {
+                Some(info.to_vec())
+            }
+            _ => None,
         }
     }
 
     pub fn get_max_fragment_len(&self) -> Option<MaxFragmentLength> {
-        match &self.0 {
-            None => None,
-            Some(extensions) => extensions.iter().find_map(|ext| {
-                if let Extension::MaxFragmentLen(MaxFragmentLenExt { value }) = ext {
-                    Some(*value)
-                } else {
-                    None
-                }
-            }),
+        match self.map.get(&ExtensionType::MaxFragmentLen) {
+            Some(Extension::MaxFragmentLen(MaxFragmentLenExt { value })) => Some(*value),
+            _ => None,
         }
     }
 }
 
 impl TlsCodable for Extensions {
     fn write_to(&self, bytes: &mut Vec<u8>) {
-        if let Some(extensions) = &self.0 {
+        if let Some(extensions) = &self.list {
             extensions.write_to(bytes);
         }
     }
     fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
         if reader.is_consumed() {
-            return Ok(Self(None));
+            return Ok(Self::empty());
         }
 
         let extensions_len = u16::read_from(reader)?.into();
@@ -263,7 +257,7 @@ impl TlsCodable for Extensions {
         while !sub_reader.is_consumed() {
             extensions.push(Extension::read_from(&mut sub_reader)?);
         }
-        Ok(Self(Some(extensions.try_into()?)))
+        Ok(Self::new(extensions)?)
     }
 }
 

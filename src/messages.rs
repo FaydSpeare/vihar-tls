@@ -268,7 +268,7 @@ impl TlsCodable for ServerHello {
         let cipher_suite = CipherSuiteId::read_from(reader)?;
         let compression_method = CompressionMethodId::read_from(reader)?;
         let extensions = Extensions::read_from(reader)?;
-        println!("Server Extensions: {:#?}", extensions);
+        println!("Server Extensions: {:#?}", extensions.extension_type_set());
         Ok(Self {
             server_version,
             random,
