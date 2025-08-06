@@ -289,16 +289,29 @@ impl HandleRecord for AwaitClientInitiateState {
     }
 }
 
-fn choose_cipher_suite(
+fn select_cipher_suite(
     prioritised: &[PrioritisedCipherSuite],
     offered: &[CipherSuiteId],
-) -> CipherSuiteId {
+) -> Option<CipherSuiteId> {
     let mut map: HashMap<CipherSuiteId, u32> = HashMap::new();
     for pcs in prioritised {
         map.insert(pcs.id, pcs.priority);
     }
-    let item = offered.iter().max_by_key(|id| map.get(id).unwrap_or(&0u32));
-    *item.unwrap()
+
+    let acceptable: Vec<CipherSuiteId> = offered
+        .iter()
+        .filter(|x| map.contains_key(x))
+        .copied()
+        .collect();
+
+    if acceptable.is_empty() {
+        return None;
+    }
+
+    acceptable
+        .iter()
+        .max_by_key(|&id| map.get(id).unwrap_or(&0u32))
+        .copied()
 }
 
 #[derive(Debug)]
@@ -327,8 +340,11 @@ impl HandleRecord for AwaitClientHello {
             .collect();
         debug!("CipherSuites: {:#?}", suites);
 
-        let selected_cipher_suite =
-            choose_cipher_suite(&ctx.config.cipher_suites, &client_hello.cipher_suites);
+        let Some(selected_cipher_suite) =
+            select_cipher_suite(&ctx.config.cipher_suites, &client_hello.cipher_suites)
+        else {
+            return close_connection(TlsAlertDesc::HandshakeFailure);
+        };
 
         debug!(
             "Selected CipherSuite {}",

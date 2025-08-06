@@ -6,22 +6,6 @@ use vihar_tls::{
     server::TlsServer,
 };
 
-// Ctrl-i tab
-// ctrl-e insert char found below
-// ctrl-y inster char found above (but this is also accept, so it auto completes)
-// ctrl-h delete char
-// ctrl-w delete word
-// ctrl-o 1 normal mode command, then back to insert
-// ctrl-t tab current line
-// ctrl-d untab current line
-// ctrl-m insert new line
-// ctrl-a insert last text
-// ctrl-u delete to start of line
-// ctrl-x ctrl-f file name completion
-//
-// norm command
-// !!
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
     let listener = TcpListener::bind("localhost:4443")?;

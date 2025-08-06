@@ -2,7 +2,9 @@ use std::{net::TcpStream, thread::sleep, time::Duration};
 
 use vihar_tls::{
     MaxFragmentLength,
+    ciphersuite::CipherSuiteId,
     client::{TlsClient, TlsConfigBuilder},
+    pcs,
 };
 
 fn get_addr_from_env() -> String {
@@ -25,6 +27,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut client = TlsClient::new(
         TlsConfigBuilder::new()
             .with_max_fragment_length(MaxFragmentLength::Len1024)
+            .with_cipher_suites([pcs!(2, CipherSuiteId::RsaAes128GcmSha256)].into())
             //.with_server_name("google.com")
             .with_session_store("sdb")
             .build(),
