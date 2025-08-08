@@ -1,5 +1,13 @@
-use client::{AwaitClientInitiateState, AwaitNewSessionTicket, AwaitNewSessionTicketOrCertificate, AwaitServerCertificate, AwaitServerChangeCipher, AwaitServerChangeCipherOrCertificate, AwaitServerFinished, AwaitServerHello, AwaitServerHelloDone, AwaitServerKeyExchange, ClientAttemptedRenegotiationState};
-use server::{AwaitClientChangeCipher, AwaitClientFinished, AwaitClientHello, AwaitClientKeyExchange};
+use client::{
+    AwaitClientInitiateState, AwaitNewSessionTicket, AwaitNewSessionTicketOrCertificate,
+    AwaitServerCertificate, AwaitServerChangeCipher, AwaitServerChangeCipherOrCertificate,
+    AwaitServerFinished, AwaitServerHello, AwaitServerHelloDone, AwaitServerKeyExchange,
+    ClientAttemptedRenegotiationState, ExpectNewSessionTicketAbbr, ExpectServerChangeCipherAbbr,
+    ExpectServerFinishedAbbr,
+};
+use server::{
+    AwaitClientChangeCipher, AwaitClientFinished, AwaitClientHello, AwaitClientKeyExchange,
+};
 use std::sync::Arc;
 
 use enum_dispatch::enum_dispatch;
@@ -14,26 +22,12 @@ use crate::{MaxFragmentLength, RenegotiationPolicy};
 use crate::{
     TlsResult,
     alert::TlsAlert,
-    connection::{ConnState, InitialConnState},
+    connection::ConnState,
     messages::{TlsHandshake, TlsMessage},
 };
 
 mod client;
 mod server;
-
-pub struct ConnStates {
-    pub read: ConnState,
-    pub write: ConnState,
-}
-
-impl ConnStates {
-    pub fn new() -> Self {
-        Self {
-            read: ConnState::Initial(InitialConnState::default()),
-            write: ConnState::Initial(InitialConnState::default()),
-        }
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TlsEntity {
@@ -160,6 +154,10 @@ pub enum TlsState {
     AwaitServerChangeCipherOrCertificate,
     AwaitServerChangeCipher(AwaitServerChangeCipher),
     AwaitServerFinished(AwaitServerFinished),
+
+    ExpectNewSessionTicketAbbr,
+    ExpectServerChangeCipherAbbr,
+    ExpectServerFinishedAbbr,
 
     Established(EstablishedState),
     Closed(ClosedState),

@@ -9,7 +9,7 @@ use crate::errors::{DecodingError, TlsError};
 use crate::messages::{TlsCiphertext, TlsCompressed, TlsContentType, TlsMessage, TlsPlaintext};
 use crate::record::RecordLayer;
 use crate::state_machine::{
-    ConnStates, SessionIdResumption, SessionResumption, SessionTicketResumption, TlsAction,
+    SessionIdResumption, SessionResumption, SessionTicketResumption, TlsAction,
     TlsEntity, TlsEvent, TlsStateMachine,
 };
 use crate::{TlsResult, utils};
@@ -361,6 +361,20 @@ impl ConnState {
         match self {
             Self::Initial(state) => state.decrypt(ciphertext),
             Self::Secure(state) => state.decrypt(ciphertext),
+        }
+    }
+}
+
+pub struct ConnStates {
+    pub read: ConnState,
+    pub write: ConnState,
+}
+
+impl ConnStates {
+    pub fn new() -> Self {
+        Self {
+            read: ConnState::Initial(InitialConnState::default()),
+            write: ConnState::Initial(InitialConnState::default()),
         }
     }
 }

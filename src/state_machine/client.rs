@@ -212,13 +212,11 @@ impl HandleRecord for AwaitServerHello {
                 }
 
                 return Ok((
-                    AwaitServerChangeCipher {
+                    ExpectServerChangeCipherAbbr {
                         session_id: server_hello.session_id.clone(),
                         handshakes: self.handshakes,
                         supported_extensions,
                         params,
-                        client_verify_data: None,
-                        is_session_resumption: true,
                         max_fragment_length: info.max_fragment_len,
                     }
                     .into(),
@@ -546,7 +544,7 @@ impl HandleRecord for AwaitServerHelloDone {
                     session_id: self.session_id,
                     handshakes: self.handshakes,
                     supported_extensions: self.supported_extensions,
-                    client_verify_data: Some(verify_data),
+                    client_verify_data: verify_data,
                     params,
                     is_session_resumption: false,
                     max_fragment_length: self.max_fragment_length,
@@ -561,9 +559,8 @@ impl HandleRecord for AwaitServerHelloDone {
                 session_id: self.session_id,
                 handshakes: self.handshakes,
                 supported_extensions: self.supported_extensions,
-                client_verify_data: Some(verify_data),
+                client_verify_data: verify_data,
                 params,
-                is_session_resumption: false,
                 max_fragment_length: self.max_fragment_length,
             }
             .into(),
@@ -578,7 +575,7 @@ pub struct AwaitNewSessionTicket {
     supported_extensions: SupportedExtensions,
     params: SecurityParams,
     is_session_resumption: bool,
-    client_verify_data: Option<Vec<u8>>,
+    client_verify_data: Vec<u8>,
     max_fragment_length: Option<MaxFragmentLength>,
 }
 
@@ -606,7 +603,6 @@ impl HandleRecord for AwaitNewSessionTicket {
                 supported_extensions: self.supported_extensions,
                 client_verify_data: self.client_verify_data,
                 params: self.params,
-                is_session_resumption: self.is_session_resumption,
                 max_fragment_length: self.max_fragment_length,
             }
             .into(),
@@ -646,12 +642,10 @@ impl HandleRecord for AwaitNewSessionTicketOrCertificate {
                 return close_connection(TlsAlertDesc::IllegalParameter);
             }
 
-            return AwaitNewSessionTicket {
+            return ExpectNewSessionTicketAbbr {
                 session_id: self.session_id,
                 handshakes: self.handshakes,
                 supported_extensions: self.supported_extensions,
-                client_verify_data: None,
-                is_session_resumption: true,
                 params,
                 max_fragment_length: self.session_ticket_resumption.max_fragment_len,
             }
@@ -704,13 +698,11 @@ impl HandleRecord for AwaitServerChangeCipherOrCertificate {
                 return close_connection(TlsAlertDesc::IllegalParameter);
             }
 
-            return AwaitServerChangeCipher {
+            return ExpectServerChangeCipherAbbr {
                 session_id: self.session_id,
                 handshakes: self.handshakes,
                 supported_extensions: self.supported_extensions,
                 params,
-                client_verify_data: None,
-                is_session_resumption: true,
                 max_fragment_length: self.max_fragment_length,
             }
             .handle(ctx, event);
@@ -738,14 +730,7 @@ pub struct AwaitServerChangeCipher {
     session_id: SessionId,
     handshakes: Vec<u8>,
     supported_extensions: SupportedExtensions,
-
-    // For secure renegotiation, but not available when server changes cipher first
-    client_verify_data: Option<Vec<u8>>,
-
-    // Tells us whether ClientChangeCipher must follow
-    is_session_resumption: bool,
-
-    // Params to change to
+    client_verify_data: Vec<u8>,
     params: SecurityParams,
     max_fragment_length: Option<MaxFragmentLength>,
 }
@@ -772,7 +757,6 @@ impl HandleRecord for AwaitServerChangeCipher {
                 supported_extensions: self.supported_extensions,
                 client_verify_data: self.client_verify_data,
                 params: self.params,
-                is_session_resumption: self.is_session_resumption,
                 max_fragment_length: self.max_fragment_length,
             }
             .into(),
@@ -787,8 +771,7 @@ pub struct AwaitServerFinished {
     handshakes: Vec<u8>,
     supported_extensions: SupportedExtensions,
     params: SecurityParams,
-    client_verify_data: Option<Vec<u8>>,
-    is_session_resumption: bool,
+    client_verify_data: Vec<u8>,
     max_fragment_length: Option<MaxFragmentLength>,
 }
 
@@ -803,32 +786,130 @@ impl HandleRecord for AwaitServerFinished {
         }
         handshake.write_to(&mut self.handshakes);
 
-        if !self.is_session_resumption {
-            info!("Handshake complete! (full)");
+        info!("Handshake complete! (full)");
 
-            let mut actions = vec![];
-            if !self.session_id.is_empty() {
-                actions.push(TlsAction::StoreSessionIdInfo(
-                    self.session_id.to_vec(),
-                    SessionInfo {
-                        master_secret: self.params.master_secret,
-                        cipher_suite: self.params.cipher_suite_id,
-                        max_fragment_len: self.max_fragment_length,
-                    },
-                ));
-            }
-
-            return Ok((
-                EstablishedState {
-                    session_id: self.session_id,
-                    supported_extensions: self.supported_extensions,
-                    client_verify_data: self.client_verify_data.unwrap(),
-                    server_verify_data,
-                }
-                .into(),
-                actions,
+        let mut actions = vec![];
+        if !self.session_id.is_empty() {
+            actions.push(TlsAction::StoreSessionIdInfo(
+                self.session_id.to_vec(),
+                SessionInfo {
+                    master_secret: self.params.master_secret,
+                    cipher_suite: self.params.cipher_suite_id,
+                    max_fragment_len: self.max_fragment_length,
+                },
             ));
         }
+
+        return Ok((
+            EstablishedState {
+                session_id: self.session_id,
+                supported_extensions: self.supported_extensions,
+                client_verify_data: self.client_verify_data,
+                server_verify_data,
+            }
+            .into(),
+            actions,
+        ));
+    }
+}
+
+#[derive(Debug)]
+pub struct ExpectNewSessionTicketAbbr {
+    session_id: SessionId,
+    handshakes: Vec<u8>,
+    supported_extensions: SupportedExtensions,
+    params: SecurityParams,
+    max_fragment_length: Option<MaxFragmentLength>,
+}
+
+impl HandleRecord for ExpectNewSessionTicketAbbr {
+    fn handle(mut self, _: &mut TlsContext, event: TlsEvent) -> HandleResult {
+        let (handshake, new_session_ticket) =
+            require_handshake_msg!(event, TlsHandshake::NewSessionTicket);
+
+        info!("Received NewSessionTicket (abbr)");
+        handshake.write_to(&mut self.handshakes);
+
+        let action = TlsAction::StoreSessionTicketInfo(
+            new_session_ticket.ticket.to_vec(),
+            SessionInfo::new(
+                self.params.master_secret,
+                self.params.cipher_suite_id,
+                self.max_fragment_length,
+            ),
+        );
+
+        return Ok((
+            ExpectServerChangeCipherAbbr {
+                session_id: self.session_id,
+                handshakes: self.handshakes,
+                supported_extensions: self.supported_extensions,
+                params: self.params,
+                max_fragment_length: self.max_fragment_length,
+            }
+            .into(),
+            vec![action],
+        ));
+    }
+}
+
+#[derive(Debug)]
+pub struct ExpectServerChangeCipherAbbr {
+    session_id: SessionId,
+    handshakes: Vec<u8>,
+    supported_extensions: SupportedExtensions,
+    params: SecurityParams,
+    max_fragment_length: Option<MaxFragmentLength>,
+}
+
+impl HandleRecord for ExpectServerChangeCipherAbbr {
+    fn handle(self, _ctx: &mut TlsContext, event: TlsEvent) -> HandleResult {
+        let TlsEvent::IncomingMessage(TlsMessage::ChangeCipherSpec) = event else {
+            return close_with_unexpected_message();
+        };
+
+        info!("Received ChangeCipherSpec (abbr)");
+        let keys = self.params.derive_keys();
+        let read = ConnState::Secure(SecureConnState::new(
+            self.params.clone(),
+            keys.server_enc_key,
+            keys.server_mac_key,
+            keys.server_write_iv,
+        ));
+
+        Ok((
+            ExpectServerFinishedAbbr {
+                session_id: self.session_id,
+                handshakes: self.handshakes,
+                supported_extensions: self.supported_extensions,
+                params: self.params,
+                max_fragment_length: self.max_fragment_length,
+            }
+            .into(),
+            vec![TlsAction::ChangeCipherSpec(TlsEntity::Server, read)],
+        ))
+    }
+}
+
+#[derive(Debug)]
+pub struct ExpectServerFinishedAbbr {
+    session_id: SessionId,
+    handshakes: Vec<u8>,
+    supported_extensions: SupportedExtensions,
+    params: SecurityParams,
+    max_fragment_length: Option<MaxFragmentLength>,
+}
+
+impl HandleRecord for ExpectServerFinishedAbbr {
+    fn handle(mut self, _: &mut TlsContext, event: TlsEvent) -> HandleResult {
+        let (handshake, server_finished) = require_handshake_msg!(event, TlsHandshake::Finished);
+        info!("Received ServerFinished (abbr)");
+
+        let server_verify_data = self.params.server_verify_data(&self.handshakes);
+        if server_verify_data != server_finished.verify_data {
+            return close_connection(TlsAlertDesc::DecryptError);
+        }
+        handshake.write_to(&mut self.handshakes);
 
         let keys = self.params.derive_keys();
         let write = ConnState::Secure(SecureConnState::new(
@@ -843,7 +924,7 @@ impl HandleRecord for AwaitServerFinished {
 
         info!("Sent ChangeCipherSpec");
         info!("Sent ClientFinished");
-        info!("Handshake complete! (abbreviated)");
+        info!("Handshake complete! (abbr)");
         Ok((
             EstablishedState {
                 session_id: self.session_id,
