@@ -4,6 +4,9 @@ use crate::alert::TlsAlert;
 
 #[derive(Debug, Error)]
 pub enum InvalidEncodingError {
+    #[error("Invalid session ticket mac")]
+    InvalidSessionTicketMac,
+
     #[error("Invalid extension length")]
     InvalidExtensionLength,
 

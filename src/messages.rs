@@ -308,7 +308,7 @@ impl TlsCodable for ServerHello {
 }
 
 type ASN1Cert = LengthPrefixedVec<u24, u8, NonEmpty>;
-type CeritificateList = LengthPrefixedVec<u24, ASN1Cert, MaybeEmpty>;
+pub type CeritificateList = LengthPrefixedVec<u24, ASN1Cert, MaybeEmpty>;
 
 #[derive(Debug, Clone)]
 pub struct Certificate {

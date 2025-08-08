@@ -16,8 +16,8 @@ macro_rules! require_handshake_msg {
             ) => (handshake, inner),
             _ => {
                 return Ok((
-                    ClosedState {}.into(),
-                    vec![TlsAction::SendAlert(TlsAlert::fatal(
+                    crate::state_machine::ClosedState {}.into(),
+                    vec![crate::state_machine::TlsAction::SendAlert(TlsAlert::fatal(
                         TlsAlertDesc::UnexpectedMessage,
                     ))],
                 ))
@@ -31,8 +31,8 @@ macro_rules! require_handshake_msg {
             ) => handshake,
             _ => {
                 return Ok((
-                    ClosedState {}.into(),
-                    vec![TlsAction::SendAlert(TlsAlert::fatal(
+                    crate::state_machine::ClosedState {}.into(),
+                    vec![crate::state_machine::TlsAction::SendAlert(TlsAlert::fatal(
                         TlsAlertDesc::UnexpectedMessage,
                     ))],
                 ))

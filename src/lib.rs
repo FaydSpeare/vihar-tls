@@ -14,6 +14,7 @@ mod record;
 mod signature;
 mod state_machine;
 mod utils;
+mod session_ticket;
 
 pub mod ciphersuite;
 pub mod client;

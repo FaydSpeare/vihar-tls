@@ -1,7 +1,5 @@
 ## TODO
 
-- enforce server doesnt send any extensions the client didnt
-
 - enforce same cipher suite selected by server for session resumption
 - enforce ems is the same for resumption
 - the above as well as fragment length can probably be combined in a nice way
@@ -17,8 +15,6 @@
 
 - Implement server session ticket issuance 
     - check everything is correct: ems, mfl, etc.
-
-- Max fragmentation extension
 
 - Check server certificate chain against local root certificates?
 
