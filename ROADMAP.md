@@ -2,7 +2,6 @@
 
 - enforce same cipher suite selected by server for session resumption
 - enforce ems is the same for resumption
-- the above as well as fragment length can probably be combined in a nice way
 
 - Proper ClientKeyExchange handling
 

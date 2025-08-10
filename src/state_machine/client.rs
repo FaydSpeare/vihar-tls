@@ -14,7 +14,7 @@ use crate::signature::{
     rsa_verify,
 };
 use crate::state_machine::{
-    EstablishedState, SessionResumption, SupportedExtensions, TlsAction, TlsEntity,
+    NegotiatedExtensions, SessionResumption, TlsAction, TlsEntity,
     calculate_master_secret, close_connection,
 };
 use crate::storage::SessionInfo;
@@ -27,17 +27,18 @@ use crate::{
 };
 
 use super::{
-    HandleRecord, HandleResult, PreviousVerifyData, SessionTicketResumption, TlsContext, TlsEvent,
-    close_with_unexpected_message,
+    close_with_unexpected_message, HandleRecord, HandleResult, PreviousVerifyData, SessionTicketResumption, TlsContext, TlsEvent, TlsState
 };
 
 #[derive(Debug)]
 pub struct AwaitClientInitiateState {
+    // The verify_data's from the previous handshake. This only has a
+    // Some value in the case of a secure renegotiation.
     pub previous_verify_data: Option<PreviousVerifyData>,
 }
 
-impl HandleRecord for AwaitClientInitiateState {
-    fn handle(self, ctx: &mut TlsContext, event: TlsEvent) -> HandleResult {
+impl HandleRecord<TlsState> for AwaitClientInitiateState {
+    fn handle(self, ctx: &mut TlsContext, event: TlsEvent) -> HandleResult<TlsState> {
         debug_assert_eq!(ctx.side, TlsEntity::Client);
 
         let TlsEvent::ClientInitiate {
@@ -133,8 +134,8 @@ pub struct AwaitServerHello {
     client_extension_set: HashSet<ExtensionType>,
 }
 
-impl HandleRecord for AwaitServerHello {
-    fn handle(mut self, _ctx: &mut TlsContext, event: TlsEvent) -> HandleResult {
+impl HandleRecord<TlsState> for AwaitServerHello {
+    fn handle(mut self, _ctx: &mut TlsContext, event: TlsEvent) -> HandleResult<TlsState> {
         let (handshake, server_hello) = require_handshake_msg!(event, TlsHandshake::ServerHello);
 
         info!("Received ServerHello");
@@ -170,12 +171,6 @@ impl HandleRecord for AwaitServerHello {
             return close_connection(TlsAlertDesc::UnsupportedExtension);
         }
 
-        let supported_extensions = SupportedExtensions {
-            secure_renegotiation: server_hello.supports_secure_renegotiation(),
-            extended_master_secret: server_hello.supports_extended_master_secret(),
-            session_ticket: server_hello.supports_session_ticket(),
-        };
-
         let mut actions = vec![];
         // Regardless of whether this is a session_resumption or not, we know whether the
         // max_fragment_length needs to be updated for the next message based on whether
@@ -197,27 +192,33 @@ impl HandleRecord for AwaitServerHello {
 
         // If the server echoed back the session_id sent by the client we're
         // now doing an abbreviated handshake.
-        if let SessionResumption::SessionId(info) = &self.session_resumption {
-            if info.session_id == server_hello.session_id.to_vec() {
+        if let SessionResumption::SessionId(session) = &self.session_resumption {
+            if session.session_id == server_hello.session_id.to_vec() {
                 let params = SecurityParams::new(
                     self.client_random,
                     server_hello.random.as_bytes(),
-                    info.master_secret,
-                    info.cipher_suite,
+                    session.master_secret,
+                    session.cipher_suite,
                 );
 
                 // The server must correctly remember the session's max_fragment_length
-                if server_hello.extensions.get_max_fragment_len() != info.max_fragment_len {
+                if server_hello.extensions.get_max_fragment_len() != session.max_fragment_len {
                     return close_connection(TlsAlertDesc::IllegalParameter);
                 }
+
+                let supported_extensions = NegotiatedExtensions {
+                    secure_renegotiation: server_hello.supports_secure_renegotiation(),
+                    extended_master_secret: server_hello.supports_extended_master_secret(),
+                    session_ticket: server_hello.supports_session_ticket(),
+                    max_fragment_length: session.max_fragment_len,
+                };
 
                 return Ok((
                     ExpectServerChangeCipherAbbr {
                         session_id: server_hello.session_id.clone(),
                         handshakes: self.handshakes,
-                        supported_extensions,
+                        negotiated_extensions: supported_extensions,
                         params,
-                        max_fragment_length: info.max_fragment_len,
                     }
                     .into(),
                     actions,
@@ -225,8 +226,15 @@ impl HandleRecord for AwaitServerHello {
             }
         }
 
+        let negotiated_extensions = NegotiatedExtensions {
+            secure_renegotiation: server_hello.supports_secure_renegotiation(),
+            extended_master_secret: server_hello.supports_extended_master_secret(),
+            session_ticket: server_hello.supports_session_ticket(),
+            max_fragment_length,
+        };
+
         // Attempting session resumption with session ticket
-        if let SessionResumption::SessionTicket(info) = self.session_resumption {
+        if let SessionResumption::SessionTicket(session) = self.session_resumption {
             // Server will issue a new ticket, but did it accept the session ticket we sent?
             if server_hello.supports_session_ticket() {
                 // We can only tell if the session ticket was accepted by the
@@ -244,9 +252,8 @@ impl HandleRecord for AwaitServerHello {
                         client_random: self.client_random,
                         server_random: server_hello.random.as_bytes(),
                         selected_cipher_suite_id: server_hello.cipher_suite,
-                        supported_extensions,
-                        session_ticket_resumption: info,
-                        max_fragment_length,
+                        negotiated_extensions,
+                        session_ticket_resumption: session,
                     }
                     .into(),
                     actions,
@@ -267,15 +274,16 @@ impl HandleRecord for AwaitServerHello {
                     client_random: self.client_random,
                     server_random: server_hello.random.as_bytes(),
                     selected_cipher_suite_id: server_hello.cipher_suite,
-                    supported_extensions,
+                    negotiated_extensions,
                     handshakes: self.handshakes,
-                    session_ticket_resumption: info,
-                    max_fragment_length,
+                    session_ticket_resumption: session,
                 }
                 .into(),
                 actions,
             ));
         }
+        println!("sessionid, {:?}", server_hello.session_id);
+        println!("sessionid, {:?}", server_hello.session_id.clone());
 
         // Boring... no session resumption, we're doing a full handshake.
         let cipher_suite = CipherSuite::from(server_hello.cipher_suite);
@@ -287,8 +295,7 @@ impl HandleRecord for AwaitServerHello {
                 client_random: self.client_random,
                 server_random: server_hello.random.as_bytes(),
                 selected_cipher_suite_id: server_hello.cipher_suite,
-                supported_extensions,
-                max_fragment_length,
+                negotiated_extensions,
             }
             .into(),
             actions,
@@ -303,12 +310,11 @@ pub struct AwaitServerCertificate {
     client_random: [u8; 32],
     server_random: [u8; 32],
     selected_cipher_suite_id: CipherSuiteId,
-    supported_extensions: SupportedExtensions,
-    max_fragment_length: Option<MaxFragmentLength>,
+    negotiated_extensions: NegotiatedExtensions,
 }
 
-impl HandleRecord for AwaitServerCertificate {
-    fn handle(mut self, _ctx: &mut TlsContext, event: TlsEvent) -> HandleResult {
+impl HandleRecord<TlsState> for AwaitServerCertificate {
+    fn handle(mut self, _ctx: &mut TlsContext, event: TlsEvent) -> HandleResult<TlsState> {
         let (handshake, certs) = require_handshake_msg!(event, TlsHandshake::Certificates);
 
         handshake.write_to(&mut self.handshakes);
@@ -323,9 +329,8 @@ impl HandleRecord for AwaitServerCertificate {
                         client_random: self.client_random,
                         server_random: self.server_random,
                         selected_cipher_suite_id: self.selected_cipher_suite_id,
-                        supported_extensions: self.supported_extensions,
+                        negotiated_extensions: self.negotiated_extensions,
                         server_certificate_der: certs.list[0].to_vec(),
-                        max_fragment_length: self.max_fragment_length,
                     }
                     .into(),
                     vec![],
@@ -341,10 +346,9 @@ impl HandleRecord for AwaitServerCertificate {
                 client_random: self.client_random,
                 server_random: self.server_random,
                 selected_cipher_suite_id: self.selected_cipher_suite_id,
-                supported_extensions: self.supported_extensions,
+                negotiated_extensions: self.negotiated_extensions,
                 server_certificate_der: certs.list[0].to_vec(),
                 secrets: None,
-                max_fragment_length: self.max_fragment_length,
             }
             .into(),
             vec![],
@@ -359,13 +363,12 @@ pub struct AwaitServerKeyExchange {
     client_random: [u8; 32],
     server_random: [u8; 32],
     selected_cipher_suite_id: CipherSuiteId,
-    supported_extensions: SupportedExtensions,
+    negotiated_extensions: NegotiatedExtensions,
     server_certificate_der: Vec<u8>,
-    max_fragment_length: Option<MaxFragmentLength>,
 }
 
-impl HandleRecord for AwaitServerKeyExchange {
-    fn handle(mut self, _ctx: &mut TlsContext, event: TlsEvent) -> HandleResult {
+impl HandleRecord<TlsState> for AwaitServerKeyExchange {
+    fn handle(mut self, _ctx: &mut TlsContext, event: TlsEvent) -> HandleResult<TlsState> {
         let (handshake, server_kx) = require_handshake_msg!(event, TlsHandshake::ServerKeyExchange);
 
         info!("Received ServerKeyExchange");
@@ -429,14 +432,13 @@ impl HandleRecord for AwaitServerKeyExchange {
                 client_random: self.client_random,
                 server_random: self.server_random,
                 selected_cipher_suite_id: self.selected_cipher_suite_id,
-                supported_extensions: self.supported_extensions,
+                negotiated_extensions: self.negotiated_extensions,
                 server_certificate_der: self.server_certificate_der,
                 secrets: Some(DheParams {
                     p: server_kx.p.to_vec(),
                     g: server_kx.g.to_vec(),
                     public_key: server_kx.server_pubkey.to_vec(),
                 }),
-                max_fragment_length: self.max_fragment_length,
             }
             .into(),
             vec![],
@@ -458,14 +460,13 @@ pub struct AwaitServerHelloDone {
     client_random: [u8; 32],
     server_random: [u8; 32],
     selected_cipher_suite_id: CipherSuiteId,
-    supported_extensions: SupportedExtensions,
+    negotiated_extensions: NegotiatedExtensions,
     server_certificate_der: Vec<u8>,
     secrets: Option<DheParams>,
-    max_fragment_length: Option<MaxFragmentLength>,
 }
 
-impl HandleRecord for AwaitServerHelloDone {
-    fn handle(mut self, _ctx: &mut TlsContext, event: TlsEvent) -> HandleResult {
+impl HandleRecord<TlsState> for AwaitServerHelloDone {
+    fn handle(mut self, _ctx: &mut TlsContext, event: TlsEvent) -> HandleResult<TlsState> {
         let handshake = require_handshake_msg!(event, TlsHandshake::ServerHelloDone, *);
 
         info!("Received ServerHelloDone");
@@ -509,7 +510,7 @@ impl HandleRecord for AwaitServerHelloDone {
             &self.server_random,
             &pre_master_secret,
             ciphersuite.params().prf_algorithm,
-            self.supported_extensions.extended_master_secret,
+            self.negotiated_extensions.extended_master_secret,
         );
         let params = SecurityParams::new(
             self.client_random,
@@ -538,16 +539,14 @@ impl HandleRecord for AwaitServerHelloDone {
             TlsAction::SendHandshakeMsg(client_finished.into()),
         ];
 
-        if self.supported_extensions.session_ticket {
+        if self.negotiated_extensions.session_ticket {
             return Ok((
                 AwaitNewSessionTicket {
                     session_id: self.session_id,
                     handshakes: self.handshakes,
-                    supported_extensions: self.supported_extensions,
+                    negotiated_extensions: self.negotiated_extensions,
                     client_verify_data: verify_data,
                     params,
-                    is_session_resumption: false,
-                    max_fragment_length: self.max_fragment_length,
                 }
                 .into(),
                 actions,
@@ -557,11 +556,11 @@ impl HandleRecord for AwaitServerHelloDone {
         Ok((
             AwaitServerChangeCipher {
                 session_id: self.session_id,
+                session_ticket: None,
                 handshakes: self.handshakes,
-                supported_extensions: self.supported_extensions,
+                negotiated_extensions: self.negotiated_extensions,
                 client_verify_data: verify_data,
                 params,
-                max_fragment_length: self.max_fragment_length,
             }
             .into(),
             actions,
@@ -572,41 +571,30 @@ impl HandleRecord for AwaitServerHelloDone {
 pub struct AwaitNewSessionTicket {
     session_id: SessionId,
     handshakes: Vec<u8>,
-    supported_extensions: SupportedExtensions,
+    negotiated_extensions: NegotiatedExtensions,
     params: SecurityParams,
-    is_session_resumption: bool,
     client_verify_data: Vec<u8>,
-    max_fragment_length: Option<MaxFragmentLength>,
 }
 
-impl HandleRecord for AwaitNewSessionTicket {
-    fn handle(mut self, _: &mut TlsContext, event: TlsEvent) -> HandleResult {
+impl HandleRecord<TlsState> for AwaitNewSessionTicket {
+    fn handle(mut self, _: &mut TlsContext, event: TlsEvent) -> HandleResult<TlsState> {
         let (handshake, new_session_ticket) =
             require_handshake_msg!(event, TlsHandshake::NewSessionTicket);
 
         info!("Received NewSessionTicket");
         handshake.write_to(&mut self.handshakes);
 
-        let action = TlsAction::StoreSessionTicketInfo(
-            new_session_ticket.ticket.to_vec(),
-            SessionInfo::new(
-                self.params.master_secret,
-                self.params.cipher_suite_id,
-                self.max_fragment_length,
-            ),
-        );
-
         return Ok((
             AwaitServerChangeCipher {
                 session_id: self.session_id,
+                session_ticket: Some(new_session_ticket.ticket.to_vec()),
                 handshakes: self.handshakes,
-                supported_extensions: self.supported_extensions,
+                negotiated_extensions: self.negotiated_extensions,
                 client_verify_data: self.client_verify_data,
                 params: self.params,
-                max_fragment_length: self.max_fragment_length,
             }
             .into(),
-            vec![action],
+            vec![],
         ));
     }
 }
@@ -618,13 +606,12 @@ pub struct AwaitNewSessionTicketOrCertificate {
     client_random: [u8; 32],
     server_random: [u8; 32],
     selected_cipher_suite_id: CipherSuiteId,
-    supported_extensions: SupportedExtensions,
+    negotiated_extensions: NegotiatedExtensions,
     session_ticket_resumption: SessionTicketResumption,
-    max_fragment_length: Option<MaxFragmentLength>,
 }
 
-impl HandleRecord for AwaitNewSessionTicketOrCertificate {
-    fn handle(self, ctx: &mut TlsContext, event: TlsEvent) -> HandleResult {
+impl HandleRecord<TlsState> for AwaitNewSessionTicketOrCertificate {
+    fn handle(self, ctx: &mut TlsContext, event: TlsEvent) -> HandleResult<TlsState> {
         // Session resumption accepted
         if let TlsEvent::IncomingMessage(TlsMessage::Handshake(TlsHandshake::NewSessionTicket(_))) =
             event
@@ -638,16 +625,17 @@ impl HandleRecord for AwaitNewSessionTicketOrCertificate {
 
             // The ClientHello and ServerHello resulted in a different max_fragment_length
             // from what was decided for this session.
-            if self.session_ticket_resumption.max_fragment_len != self.max_fragment_length {
+            if self.session_ticket_resumption.max_fragment_len
+                != self.negotiated_extensions.max_fragment_length
+            {
                 return close_connection(TlsAlertDesc::IllegalParameter);
             }
 
             return ExpectNewSessionTicketAbbr {
                 session_id: self.session_id,
                 handshakes: self.handshakes,
-                supported_extensions: self.supported_extensions,
+                negotiated_extensions: self.negotiated_extensions,
                 params,
-                max_fragment_length: self.session_ticket_resumption.max_fragment_len,
             }
             .handle(ctx, event);
         } else if let TlsEvent::IncomingMessage(TlsMessage::Handshake(
@@ -660,8 +648,7 @@ impl HandleRecord for AwaitNewSessionTicketOrCertificate {
                 client_random: self.client_random,
                 server_random: self.server_random,
                 selected_cipher_suite_id: self.selected_cipher_suite_id,
-                supported_extensions: self.supported_extensions,
-                max_fragment_length: self.max_fragment_length,
+                negotiated_extensions: self.negotiated_extensions,
             }
             .handle(ctx, event);
         }
@@ -677,13 +664,12 @@ pub struct AwaitServerChangeCipherOrCertificate {
     client_random: [u8; 32],
     server_random: [u8; 32],
     selected_cipher_suite_id: CipherSuiteId,
-    supported_extensions: SupportedExtensions,
+    negotiated_extensions: NegotiatedExtensions,
     session_ticket_resumption: SessionTicketResumption,
-    max_fragment_length: Option<MaxFragmentLength>,
 }
 
-impl HandleRecord for AwaitServerChangeCipherOrCertificate {
-    fn handle(self, ctx: &mut TlsContext, event: TlsEvent) -> HandleResult {
+impl HandleRecord<TlsState> for AwaitServerChangeCipherOrCertificate {
+    fn handle(self, ctx: &mut TlsContext, event: TlsEvent) -> HandleResult<TlsState> {
         if let TlsEvent::IncomingMessage(TlsMessage::ChangeCipherSpec) = event {
             let params = SecurityParams::new(
                 self.client_random,
@@ -694,16 +680,17 @@ impl HandleRecord for AwaitServerChangeCipherOrCertificate {
 
             // The ClientHello and ServerHello resulted in a different max_fragment_length
             // from what was decided for this session.
-            if self.session_ticket_resumption.max_fragment_len != self.max_fragment_length {
+            if self.session_ticket_resumption.max_fragment_len
+                != self.negotiated_extensions.max_fragment_length
+            {
                 return close_connection(TlsAlertDesc::IllegalParameter);
             }
 
             return ExpectServerChangeCipherAbbr {
                 session_id: self.session_id,
                 handshakes: self.handshakes,
-                supported_extensions: self.supported_extensions,
+                negotiated_extensions: self.negotiated_extensions,
                 params,
-                max_fragment_length: self.max_fragment_length,
             }
             .handle(ctx, event);
         } else if let TlsEvent::IncomingMessage(TlsMessage::Handshake(
@@ -716,8 +703,7 @@ impl HandleRecord for AwaitServerChangeCipherOrCertificate {
                 client_random: self.client_random,
                 server_random: self.server_random,
                 selected_cipher_suite_id: self.selected_cipher_suite_id,
-                supported_extensions: self.supported_extensions,
-                max_fragment_length: self.max_fragment_length,
+                negotiated_extensions: self.negotiated_extensions,
             }
             .handle(ctx, event);
         }
@@ -728,15 +714,15 @@ impl HandleRecord for AwaitServerChangeCipherOrCertificate {
 #[derive(Debug)]
 pub struct AwaitServerChangeCipher {
     session_id: SessionId,
+    session_ticket: Option<Vec<u8>>,
     handshakes: Vec<u8>,
-    supported_extensions: SupportedExtensions,
+    negotiated_extensions: NegotiatedExtensions,
     client_verify_data: Vec<u8>,
     params: SecurityParams,
-    max_fragment_length: Option<MaxFragmentLength>,
 }
 
-impl HandleRecord for AwaitServerChangeCipher {
-    fn handle(self, _ctx: &mut TlsContext, event: TlsEvent) -> HandleResult {
+impl HandleRecord<TlsState> for AwaitServerChangeCipher {
+    fn handle(self, _ctx: &mut TlsContext, event: TlsEvent) -> HandleResult<TlsState> {
         let TlsEvent::IncomingMessage(TlsMessage::ChangeCipherSpec) = event else {
             return close_with_unexpected_message();
         };
@@ -753,11 +739,11 @@ impl HandleRecord for AwaitServerChangeCipher {
         Ok((
             AwaitServerFinished {
                 session_id: self.session_id,
+                session_ticket: self.session_ticket,
                 handshakes: self.handshakes,
-                supported_extensions: self.supported_extensions,
+                negotiated_extensions: self.negotiated_extensions,
                 client_verify_data: self.client_verify_data,
                 params: self.params,
-                max_fragment_length: self.max_fragment_length,
             }
             .into(),
             vec![TlsAction::ChangeCipherSpec(TlsEntity::Server, read)],
@@ -768,15 +754,15 @@ impl HandleRecord for AwaitServerChangeCipher {
 #[derive(Debug)]
 pub struct AwaitServerFinished {
     session_id: SessionId,
+    session_ticket: Option<Vec<u8>>,
     handshakes: Vec<u8>,
-    supported_extensions: SupportedExtensions,
+    negotiated_extensions: NegotiatedExtensions,
     params: SecurityParams,
     client_verify_data: Vec<u8>,
-    max_fragment_length: Option<MaxFragmentLength>,
 }
 
-impl HandleRecord for AwaitServerFinished {
-    fn handle(mut self, _: &mut TlsContext, event: TlsEvent) -> HandleResult {
+impl HandleRecord<TlsState> for AwaitServerFinished {
+    fn handle(mut self, _: &mut TlsContext, event: TlsEvent) -> HandleResult<TlsState> {
         let (handshake, server_finished) = require_handshake_msg!(event, TlsHandshake::Finished);
         info!("Received ServerFinished");
 
@@ -789,21 +775,33 @@ impl HandleRecord for AwaitServerFinished {
         info!("Handshake complete! (full)");
 
         let mut actions = vec![];
+        if let Some(session_ticket) = self.session_ticket {
+            actions.push(TlsAction::StoreSessionTicketInfo(
+                session_ticket,
+                SessionInfo::new(
+                    self.params.master_secret,
+                    self.params.cipher_suite_id,
+                    self.negotiated_extensions.max_fragment_length,
+                ),
+            ));
+        }
+
+        println!("line {:?}", self.session_id);
         if !self.session_id.is_empty() {
             actions.push(TlsAction::StoreSessionIdInfo(
                 self.session_id.to_vec(),
                 SessionInfo {
                     master_secret: self.params.master_secret,
                     cipher_suite: self.params.cipher_suite_id,
-                    max_fragment_len: self.max_fragment_length,
+                    max_fragment_len: self.negotiated_extensions.max_fragment_length,
                 },
             ));
         }
 
         return Ok((
-            EstablishedState {
+            ClientEstablished {
                 session_id: self.session_id,
-                supported_extensions: self.supported_extensions,
+                supported_extensions: self.negotiated_extensions,
                 client_verify_data: self.client_verify_data,
                 server_verify_data,
             }
@@ -817,13 +815,12 @@ impl HandleRecord for AwaitServerFinished {
 pub struct ExpectNewSessionTicketAbbr {
     session_id: SessionId,
     handshakes: Vec<u8>,
-    supported_extensions: SupportedExtensions,
+    negotiated_extensions: NegotiatedExtensions,
     params: SecurityParams,
-    max_fragment_length: Option<MaxFragmentLength>,
 }
 
-impl HandleRecord for ExpectNewSessionTicketAbbr {
-    fn handle(mut self, _: &mut TlsContext, event: TlsEvent) -> HandleResult {
+impl HandleRecord<TlsState> for ExpectNewSessionTicketAbbr {
+    fn handle(mut self, _: &mut TlsContext, event: TlsEvent) -> HandleResult<TlsState> {
         let (handshake, new_session_ticket) =
             require_handshake_msg!(event, TlsHandshake::NewSessionTicket);
 
@@ -835,7 +832,7 @@ impl HandleRecord for ExpectNewSessionTicketAbbr {
             SessionInfo::new(
                 self.params.master_secret,
                 self.params.cipher_suite_id,
-                self.max_fragment_length,
+                self.negotiated_extensions.max_fragment_length,
             ),
         );
 
@@ -843,9 +840,8 @@ impl HandleRecord for ExpectNewSessionTicketAbbr {
             ExpectServerChangeCipherAbbr {
                 session_id: self.session_id,
                 handshakes: self.handshakes,
-                supported_extensions: self.supported_extensions,
+                negotiated_extensions: self.negotiated_extensions,
                 params: self.params,
-                max_fragment_length: self.max_fragment_length,
             }
             .into(),
             vec![action],
@@ -857,13 +853,12 @@ impl HandleRecord for ExpectNewSessionTicketAbbr {
 pub struct ExpectServerChangeCipherAbbr {
     session_id: SessionId,
     handshakes: Vec<u8>,
-    supported_extensions: SupportedExtensions,
+    negotiated_extensions: NegotiatedExtensions,
     params: SecurityParams,
-    max_fragment_length: Option<MaxFragmentLength>,
 }
 
-impl HandleRecord for ExpectServerChangeCipherAbbr {
-    fn handle(self, _ctx: &mut TlsContext, event: TlsEvent) -> HandleResult {
+impl HandleRecord<TlsState> for ExpectServerChangeCipherAbbr {
+    fn handle(self, _ctx: &mut TlsContext, event: TlsEvent) -> HandleResult<TlsState> {
         let TlsEvent::IncomingMessage(TlsMessage::ChangeCipherSpec) = event else {
             return close_with_unexpected_message();
         };
@@ -881,9 +876,8 @@ impl HandleRecord for ExpectServerChangeCipherAbbr {
             ExpectServerFinishedAbbr {
                 session_id: self.session_id,
                 handshakes: self.handshakes,
-                supported_extensions: self.supported_extensions,
+                negotiated_extensions: self.negotiated_extensions,
                 params: self.params,
-                max_fragment_length: self.max_fragment_length,
             }
             .into(),
             vec![TlsAction::ChangeCipherSpec(TlsEntity::Server, read)],
@@ -895,13 +889,12 @@ impl HandleRecord for ExpectServerChangeCipherAbbr {
 pub struct ExpectServerFinishedAbbr {
     session_id: SessionId,
     handshakes: Vec<u8>,
-    supported_extensions: SupportedExtensions,
+    negotiated_extensions: NegotiatedExtensions,
     params: SecurityParams,
-    max_fragment_length: Option<MaxFragmentLength>,
 }
 
-impl HandleRecord for ExpectServerFinishedAbbr {
-    fn handle(mut self, _: &mut TlsContext, event: TlsEvent) -> HandleResult {
+impl HandleRecord<TlsState> for ExpectServerFinishedAbbr {
+    fn handle(mut self, _: &mut TlsContext, event: TlsEvent) -> HandleResult<TlsState> {
         let (handshake, server_finished) = require_handshake_msg!(event, TlsHandshake::Finished);
         info!("Received ServerFinished (abbr)");
 
@@ -926,9 +919,9 @@ impl HandleRecord for ExpectServerFinishedAbbr {
         info!("Sent ClientFinished");
         info!("Handshake complete! (abbr)");
         Ok((
-            EstablishedState {
+            ClientEstablished {
                 session_id: self.session_id,
-                supported_extensions: self.supported_extensions,
+                supported_extensions: self.negotiated_extensions,
                 client_verify_data,
                 server_verify_data,
             }
@@ -942,10 +935,42 @@ impl HandleRecord for ExpectServerFinishedAbbr {
 }
 
 #[derive(Debug)]
+pub struct ClientEstablished {
+    pub session_id: SessionId,
+    #[allow(unused)]
+    supported_extensions: NegotiatedExtensions,
+    pub server_verify_data: Vec<u8>,
+    pub client_verify_data: Vec<u8>,
+}
+
+impl HandleRecord<TlsState> for ClientEstablished {
+    fn handle(self, ctx: &mut TlsContext, event: TlsEvent) -> HandleResult<TlsState> {
+        if let TlsEvent::IncomingMessage(TlsMessage::ApplicationData(data)) = event {
+            println!("{:?}", String::from_utf8_lossy(data));
+            return Ok((self.into(), vec![]));
+        }
+
+        // TODO:
+        // The server may choose to ignore a renegotiation or simply
+        // send a warning alert in which case it will remain in the established
+        // state. The client needs to transition back to the established state
+        // if it sees the server isn't willing to renegotiate, but doesn't want
+        // to close the connection either.
+        AwaitClientInitiateState {
+            previous_verify_data: Some(PreviousVerifyData {
+                client: self.client_verify_data,
+                server: self.server_verify_data,
+            }),
+        }
+        .handle(ctx, event)
+    }
+}
+
+#[derive(Debug)]
 pub struct ClientAttemptedRenegotiationState {}
 
-impl HandleRecord for ClientAttemptedRenegotiationState {
-    fn handle(self, _ctx: &mut TlsContext, _event: TlsEvent) -> HandleResult {
+impl HandleRecord<TlsState> for ClientAttemptedRenegotiationState {
+    fn handle(self, _ctx: &mut TlsContext, _event: TlsEvent) -> HandleResult<TlsState> {
         // Maybe get server hello
         // Maybe get alert
         // Maybe get nothing...

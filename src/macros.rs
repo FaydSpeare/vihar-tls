@@ -1,3 +1,37 @@
+macro_rules! impl_state_dispatch {
+    (
+        pub enum $enum_name:ident { 
+            $($variant:ident($inner:ty)),+ $(,)? 
+        }
+    ) => {
+
+        #[derive(Debug)]
+        pub enum $enum_name {
+            $(
+                $variant($inner),
+            )+
+        }
+
+        $(
+            impl From<$inner> for $enum_name {
+                fn from(state: $inner) -> Self {
+                    Self::$variant(state)
+                }
+            }
+        )+
+
+        impl HandleRecord<$enum_name> for $enum_name {
+            fn handle(self, ctx: &mut TlsContext, event: TlsEvent) -> HandleResult<$enum_name> {
+                match self {
+                    $(
+                        Self::$variant(inner) => inner.handle(ctx, event),
+                    )+
+                }
+            }
+        }
+    };
+}
+
 #[macro_export]
 macro_rules! pcs {
     ($priority:expr, $id:path) => {

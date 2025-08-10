@@ -1,30 +1,27 @@
-use client::{
-    AwaitClientInitiateState, AwaitNewSessionTicket, AwaitNewSessionTicketOrCertificate,
-    AwaitServerCertificate, AwaitServerChangeCipher, AwaitServerChangeCipherOrCertificate,
-    AwaitServerFinished, AwaitServerHello, AwaitServerHelloDone, AwaitServerKeyExchange,
-    ClientAttemptedRenegotiationState, ExpectNewSessionTicketAbbr, ExpectServerChangeCipherAbbr,
-    ExpectServerFinishedAbbr,
-};
-use server::{
-    AwaitClientChangeCipher, AwaitClientFinished, AwaitClientHello, AwaitClientKeyExchange,
-};
-use std::sync::Arc;
-
-use enum_dispatch::enum_dispatch;
-
+use crate::messages::ClientHello;
+use crate::MaxFragmentLength;
 use crate::alert::TlsAlertDesc;
 use crate::ciphersuite::{CipherSuiteId, PrfAlgorithm};
 use crate::client::TlsConfig;
 use crate::errors::TlsError;
-use crate::messages::SessionId;
 use crate::storage::SessionInfo;
-use crate::{MaxFragmentLength, RenegotiationPolicy};
 use crate::{
     TlsResult,
     alert::TlsAlert,
     connection::ConnState,
     messages::{TlsHandshake, TlsMessage},
 };
+use client::{
+    AwaitClientInitiateState, AwaitNewSessionTicket, AwaitNewSessionTicketOrCertificate,
+    AwaitServerCertificate, AwaitServerChangeCipher, AwaitServerChangeCipherOrCertificate,
+    AwaitServerFinished, AwaitServerHello, AwaitServerHelloDone, AwaitServerKeyExchange,
+    ClientAttemptedRenegotiationState, ClientEstablished, ExpectNewSessionTicketAbbr,
+    ExpectServerChangeCipherAbbr, ExpectServerFinishedAbbr,
+};
+use server::{
+    AwaitClientChangeCipher, AwaitClientChangeCipherAbbr, AwaitClientFinished, AwaitClientFinishedAbbr, AwaitClientHello, AwaitClientKeyExchange, AwaitSessionValidation, ServerEstablished
+};
+use std::sync::Arc;
 
 mod client;
 mod server;
@@ -59,6 +56,18 @@ pub enum SessionResumption {
 }
 
 #[derive(Debug)]
+pub enum SessionValidationRequest {
+    SessionId(Vec<u8>),
+    SessionTicket(Vec<u8>),
+}
+
+#[derive(Debug)]
+pub enum SessionValidation {
+    Invalid,
+    Valid(SessionInfo),
+}
+
+#[derive(Debug)]
 pub enum TlsEvent<'a> {
     ClientInitiate {
         cipher_suites: Vec<CipherSuiteId>,
@@ -70,7 +79,7 @@ pub enum TlsEvent<'a> {
         max_fragment_len: Option<MaxFragmentLength>,
     },
     IncomingMessage(&'a TlsMessage),
-    SessionValidation,
+    SessionValidation(SessionValidation),
 }
 
 #[derive(Debug)]
@@ -78,7 +87,7 @@ pub enum TlsAction {
     SendAlert(TlsAlert),
     ChangeCipherSpec(TlsEntity, ConnState),
     SendHandshakeMsg(TlsHandshake),
-    ValidateSession,
+    ValidateSession(SessionValidationRequest),
     StoreSessionTicketInfo(Vec<u8>, SessionInfo),
     StoreSessionIdInfo(Vec<u8>, SessionInfo),
     CloseConnection(TlsAlertDesc),
@@ -130,55 +139,49 @@ impl TlsStateMachine {
 
     pub fn is_established(&self) -> bool {
         match self.state.as_ref().unwrap() {
-            TlsState::Established(_) => true,
+            TlsState::ClientEstablished(_) | TlsState::ServerEstablished(_) => true,
             _ => false,
         }
     }
 }
 
-#[enum_dispatch]
-#[derive(Debug)]
-pub enum TlsState {
-    AwaitClientHello,
-    AwaitClientKeyExchange(AwaitClientKeyExchange),
-    AwaitClientChangeCipher(AwaitClientChangeCipher),
-    AwaitClientFinished(AwaitClientFinished),
+impl_state_dispatch! {
+    pub enum TlsState {
+        AwaitClientHello(AwaitClientHello),
+        AwaitSessionValidation(AwaitSessionValidation),
+        AwaitClientKeyExchange(AwaitClientKeyExchange),
+        AwaitClientChangeCipher(AwaitClientChangeCipher),
+        AwaitClientFinished(AwaitClientFinished),
+        AwaitClientChangeCipherAbbr(AwaitClientChangeCipherAbbr),
+        AwaitClientFinishedAbbr(AwaitClientFinishedAbbr),
 
-    AwaitClientInitiate(AwaitClientInitiateState),
-    AwaitServerHello(AwaitServerHello),
-    AwaitServerCertificate(AwaitServerCertificate),
-    AwaitServerKeyExchange(AwaitServerKeyExchange),
-    AwaitServerHelloDone(AwaitServerHelloDone),
-    AwaitNewSessionTicket(AwaitNewSessionTicket),
-    AwaitNewSessionTicketOrCertificate,
-    AwaitServerChangeCipherOrCertificate,
-    AwaitServerChangeCipher(AwaitServerChangeCipher),
-    AwaitServerFinished(AwaitServerFinished),
+        AwaitClientInitiate(AwaitClientInitiateState),
+        AwaitServerHello(AwaitServerHello),
+        AwaitServerCertificate(AwaitServerCertificate),
+        AwaitServerKeyExchange(AwaitServerKeyExchange),
+        AwaitServerHelloDone(AwaitServerHelloDone),
+        AwaitNewSessionTicket(AwaitNewSessionTicket),
+        AwaitNewSessionTicketOrCertificate(AwaitNewSessionTicketOrCertificate),
+        AwaitServerChangeCipherOrCertificate(AwaitServerChangeCipherOrCertificate),
+        AwaitServerChangeCipher(AwaitServerChangeCipher),
+        AwaitServerFinished(AwaitServerFinished),
 
-    ExpectNewSessionTicketAbbr,
-    ExpectServerChangeCipherAbbr,
-    ExpectServerFinishedAbbr,
+        ExpectNewSessionTicketAbbr(ExpectNewSessionTicketAbbr),
+        ExpectServerChangeCipherAbbr(ExpectServerChangeCipherAbbr),
+        ExpectServerFinishedAbbr(ExpectServerFinishedAbbr),
 
-    Established(EstablishedState),
-    Closed(ClosedState),
+        ClientEstablished(ClientEstablished),
+        ServerEstablished(ServerEstablished),
+        Closed(ClosedState),
 
-    ClientAttemptedRenegotiation(ClientAttemptedRenegotiationState),
-}
-
-impl TlsState {
-    pub fn as_established(&self) -> TlsResult<&EstablishedState> {
-        match self {
-            Self::Established(s) => Ok(s),
-            _ => Err("not in established state".into()),
-        }
+        ClientAttemptedRenegotiation(ClientAttemptedRenegotiationState),
     }
 }
 
-type HandleResult = Result<(TlsState, Vec<TlsAction>), TlsError>;
+type HandleResult<T> = Result<(T, Vec<TlsAction>), TlsError>;
 
-#[enum_dispatch(TlsState)]
-pub trait HandleRecord {
-    fn handle(self, ctx: &mut TlsContext, event: TlsEvent) -> HandleResult;
+pub trait HandleRecord<T> {
+    fn handle(self, ctx: &mut TlsContext, event: TlsEvent) -> HandleResult<T>;
 }
 
 #[derive(Debug)]
@@ -187,13 +190,13 @@ pub struct PreviousVerifyData {
     server: Vec<u8>,
 }
 
+#[allow(unused)]
 #[derive(Debug)]
-struct SupportedExtensions {
+struct NegotiatedExtensions {
     extended_master_secret: bool,
-
-    #[allow(unused)]
     secure_renegotiation: bool,
     session_ticket: bool,
+    max_fragment_length: Option<MaxFragmentLength>,
 }
 
 fn calculate_master_secret(
@@ -216,76 +219,7 @@ fn calculate_master_secret(
     master_secret
 }
 
-#[derive(Debug)]
-pub struct EstablishedState {
-    pub session_id: SessionId,
-    #[allow(unused)]
-    supported_extensions: SupportedExtensions,
-    pub server_verify_data: Vec<u8>,
-    pub client_verify_data: Vec<u8>,
-}
-
-impl HandleRecord for EstablishedState {
-    fn handle(self, ctx: &mut TlsContext, event: TlsEvent) -> HandleResult {
-        if let TlsEvent::IncomingMessage(TlsMessage::ApplicationData(data)) = event {
-            println!("{:?}", String::from_utf8_lossy(data));
-            return Ok((self.into(), vec![]));
-        }
-
-        if ctx.side == TlsEntity::Client {
-            // TODO:
-            // The server may choose to ignore a renegotiation or simply
-            // send a warning alert in which case it will remain in the established
-            // state. The client needs to transition back to the established state
-            // if it sees the server isn't willing to renegotiate, but doesn't want
-            // to close the connection either.
-            return AwaitClientInitiateState {
-                previous_verify_data: Some(PreviousVerifyData {
-                    client: self.client_verify_data,
-                    server: self.server_verify_data,
-                }),
-            }
-            .handle(ctx, event);
-        }
-
-        let (_, client_hello) = require_handshake_msg!(event, TlsHandshake::ClientHello);
-
-        // TODO:
-        // Add options to simply ignore client renegotiation or simply send a warning.
-        match ctx.config.policy.renegotiation {
-            RenegotiationPolicy::None => {
-                return close_connection(TlsAlertDesc::NoRenegotiation);
-            }
-            RenegotiationPolicy::OnlyLegacy => {
-                if client_hello.extensions.includes_secure_renegotiation() {
-                    return close_connection(TlsAlertDesc::HandshakeFailure);
-                }
-                return AwaitClientHello {
-                    previous_verify_data: None,
-                }
-                .handle(ctx, event);
-            }
-            RenegotiationPolicy::OnlySecure => {
-                if let Some(info) = client_hello.extensions.get_renegotiation_info() {
-                    if info != self.client_verify_data {
-                        return close_connection(TlsAlertDesc::NoRenegotiation);
-                    }
-
-                    return AwaitClientHello {
-                        previous_verify_data: Some(PreviousVerifyData {
-                            client: self.client_verify_data,
-                            server: self.server_verify_data,
-                        }),
-                    }
-                    .handle(ctx, event);
-                }
-                return close_connection(TlsAlertDesc::NoRenegotiation);
-            }
-        }
-    }
-}
-
-pub fn close_with_unexpected_message() -> HandleResult {
+pub fn close_with_unexpected_message() -> HandleResult<TlsState> {
     Ok((
         ClosedState {}.into(),
         vec![
@@ -295,7 +229,7 @@ pub fn close_with_unexpected_message() -> HandleResult {
     ))
 }
 
-pub fn close_connection(desc: TlsAlertDesc) -> HandleResult {
+pub fn close_connection(desc: TlsAlertDesc) -> HandleResult<TlsState> {
     Ok((
         ClosedState {}.into(),
         vec![
@@ -308,8 +242,8 @@ pub fn close_connection(desc: TlsAlertDesc) -> HandleResult {
 #[derive(Debug)]
 pub struct ClosedState {}
 
-impl HandleRecord for ClosedState {
-    fn handle(self, _ctx: &mut TlsContext, event: TlsEvent) -> HandleResult {
+impl HandleRecord<TlsState> for ClosedState {
+    fn handle(self, _ctx: &mut TlsContext, event: TlsEvent) -> HandleResult<TlsState> {
         println!("{:?}", event);
         // Maybe get server hello
         // Maybe get alert

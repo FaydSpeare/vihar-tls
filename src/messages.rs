@@ -253,7 +253,7 @@ impl ServerHello {
                 unix_time: utils::get_unix_time(),
                 random_bytes: utils::get_random_bytes(28).try_into().unwrap(),
             },
-            session_id: SessionId(vec![].try_into().unwrap()),
+            session_id: SessionId(utils::get_random_bytes(32).try_into().unwrap()),
             cipher_suite,
             compression_method: CompressionMethodId::Null,
             extensions: Extensions::new(extensions).unwrap(),
