@@ -5,14 +5,19 @@ use log::{debug, info};
 use crate::alert::TlsAlertDesc;
 use crate::ciphersuite::CipherSuiteId;
 use crate::client::PrioritisedCipherSuite;
-use crate::messages::{Certificate, ClientHello, ProtocolVersion, ServerHello, SessionId};
+use crate::encoding::Reader;
+use crate::messages::{
+    Certificate, ClientHello, CompressionMethodId, NewSessionTicket, ProtocolVersion, ServerHello,
+    SessionId,
+};
+use crate::session_ticket::{ClientIdentity, SessionTicket};
 use crate::signature::decrypt_rsa_master_secret;
 use crate::state_machine::{
-    NegotiatedExtensions, SessionValidation, SessionValidationRequest, TlsAction, TlsEntity,
-    calculate_master_secret, close_connection, close_with_unexpected_message,
+    NegotiatedExtensions, SessionValidation, TlsAction, TlsEntity, calculate_master_secret,
+    close_connection, close_with_unexpected_message,
 };
 use crate::storage::SessionInfo;
-use crate::{utils, MaxFragmentLengthNegotiationPolicy, RenegotiationPolicy};
+use crate::{MaxFragmentLengthNegotiationPolicy, RenegotiationPolicy};
 use crate::{
     alert::TlsAlert,
     ciphersuite::{CipherSuite, CipherSuiteMethods},
@@ -48,10 +53,84 @@ fn select_cipher_suite(
         .copied()
 }
 
+fn start_abbr_handshake(client_hello: ClientHello, session: SessionInfo) -> HandleResult<TlsState> {
+    if client_hello.extensions.get_max_fragment_len() != session.max_fragment_len {
+        return close_connection(TlsAlertDesc::IllegalParameter);
+    }
+
+    if session.extended_master_secret != client_hello.extensions.includes_extended_master_secret() {
+        return close_connection(TlsAlertDesc::IllegalParameter);
+    }
+
+    if session.max_fragment_len != client_hello.extensions.get_max_fragment_len() {
+        return close_connection(TlsAlertDesc::IllegalParameter);
+    }
+
+    let mut handshakes = TlsHandshake::ClientHello(client_hello.clone()).get_encoding();
+
+    let negotiated_extensions = NegotiatedExtensions {
+        extended_master_secret: client_hello.extensions.includes_extended_master_secret(),
+        session_ticket: client_hello.extensions.includes_session_ticket(),
+        secure_renegotiation: client_hello.extensions.includes_secure_renegotiation(),
+        max_fragment_length: session.max_fragment_len,
+    };
+
+    let mut server_hello = ServerHello::new(
+        session.cipher_suite,
+        client_hello.extensions.includes_secure_renegotiation(),
+        client_hello.extensions.includes_extended_master_secret(),
+        false,
+        None,
+        session.max_fragment_len,
+    );
+    server_hello.session_id = client_hello.session_id.clone();
+
+    let params = SecurityParams::new(
+        client_hello.random.as_bytes(),
+        server_hello.random.as_bytes(),
+        session.master_secret,
+        session.cipher_suite,
+    );
+
+    let server_hello = TlsHandshake::ServerHello(server_hello);
+    server_hello.write_to(&mut handshakes);
+
+    let keys = params.derive_keys();
+    let write = ConnState::Secure(SecureConnState::new(
+        params.clone(),
+        keys.server_enc_key,
+        keys.server_mac_key,
+        keys.server_write_iv,
+    ));
+
+    let server_verify_data = params.server_verify_data(&handshakes);
+    let server_finished = TlsHandshake::Finished(Finished::new(server_verify_data.clone()));
+    server_finished.write_to(&mut handshakes);
+
+    info!("Sent ServerHello");
+    info!("Sent ChangeCipherSpec");
+    info!("Sent ServerFinished");
+    Ok((
+        AwaitClientChangeCipherAbbr {
+            handshakes,
+            params,
+            negotiated_extensions,
+            server_verify_data,
+        }
+        .into(),
+        vec![
+            TlsAction::SendHandshakeMsg(server_hello),
+            TlsAction::ChangeCipherSpec(TlsEntity::Server, write),
+            TlsAction::SendHandshakeMsg(server_finished),
+        ],
+    ))
+}
+
 fn start_full_handshake(
     ctx: &TlsContext,
     previous_verify_data: Option<PreviousVerifyData>,
     client_hello: ClientHello,
+    issue_session_ticket: bool,
 ) -> HandleResult<TlsState> {
     let mut handshakes = TlsHandshake::ClientHello(client_hello.clone()).get_encoding();
     let suites: Vec<_> = client_hello
@@ -85,6 +164,7 @@ fn start_full_handshake(
         selected_cipher_suite,
         client_hello.extensions.includes_secure_renegotiation(),
         client_hello.extensions.includes_extended_master_secret(),
+        issue_session_ticket,
         renegotiation_info,
         max_fragment_length,
     );
@@ -124,6 +204,7 @@ fn start_full_handshake(
                 secure_renegotiation: client_hello.extensions.includes_secure_renegotiation(),
                 max_fragment_length,
             },
+            issue_session_ticket,
         }
         .into(),
         vec![
@@ -150,21 +231,42 @@ impl HandleRecord<TlsState> for AwaitClientHello {
             return close_connection(TlsAlertDesc::ProtocolVersion);
         }
 
+        let issue_session_ticket = client_hello.extensions.includes_session_ticket();
+
+        if let Some(session_ticket) = client_hello.extensions.get_session_ticket() {
+            let mut reader = Reader::new(&session_ticket);
+            let ticket = SessionTicket::read_from(&mut reader).unwrap();
+            if let Ok(session_state) = ticket.decrypt(&[0; 16], &[0; 32]) {
+                let session = SessionInfo::new(
+                    session_state.master_secret,
+                    session_state.cipher_suite,
+                    session_state.max_fragment_length,
+                    session_state.extended_master_secret,
+                );
+                return start_abbr_handshake(client_hello.clone(), session);
+            }
+        }
+
         if !client_hello.session_id.is_empty() {
-            println!("session_id: {:?}", utils::bytes_to_hex(&client_hello.session_id.to_vec()));
             return Ok((
                 AwaitSessionValidation {
                     previous_verify_data: self.previous_verify_data,
                     client_hello: client_hello.clone(),
+                    issue_session_ticket,
                 }
                 .into(),
-                vec![TlsAction::ValidateSession(
-                    SessionValidationRequest::SessionId(client_hello.session_id.to_vec()),
+                vec![TlsAction::ValidateSessionId(
+                    client_hello.session_id.to_vec(),
                 )],
             ));
         }
 
-        start_full_handshake(ctx, self.previous_verify_data, client_hello.clone())
+        start_full_handshake(
+            ctx,
+            self.previous_verify_data,
+            client_hello.clone(),
+            issue_session_ticket,
+        )
     }
 }
 
@@ -172,6 +274,7 @@ impl HandleRecord<TlsState> for AwaitClientHello {
 pub struct AwaitSessionValidation {
     previous_verify_data: Option<PreviousVerifyData>,
     client_hello: ClientHello,
+    issue_session_ticket: bool,
 }
 
 impl HandleRecord<TlsState> for AwaitSessionValidation {
@@ -180,72 +283,16 @@ impl HandleRecord<TlsState> for AwaitSessionValidation {
             return close_with_unexpected_message();
         };
 
-        let SessionValidation::Valid(session_info) = validation else {
-            return start_full_handshake(ctx, self.previous_verify_data, self.client_hello);
+        let SessionValidation::Valid(session) = validation else {
+            return start_full_handshake(
+                ctx,
+                self.previous_verify_data,
+                self.client_hello,
+                self.issue_session_ticket,
+            );
         };
 
-        let mut handshakes = TlsHandshake::ClientHello(self.client_hello.clone()).get_encoding();
-
-        let negotiated_extensions = NegotiatedExtensions {
-            extended_master_secret: self
-                .client_hello
-                .extensions
-                .includes_extended_master_secret(),
-            session_ticket: false,
-            secure_renegotiation: self.client_hello.extensions.includes_secure_renegotiation(),
-            max_fragment_length: session_info.max_fragment_len,
-        };
-
-        let mut server_hello = ServerHello::new(
-            session_info.cipher_suite,
-            self.client_hello.extensions.includes_secure_renegotiation(),
-            self.client_hello
-                .extensions
-                .includes_extended_master_secret(),
-            None,
-            session_info.max_fragment_len,
-        );
-        server_hello.session_id = self.client_hello.session_id.clone();
-
-        let params = SecurityParams::new(
-            self.client_hello.random.as_bytes(),
-            server_hello.random.as_bytes(),
-            session_info.master_secret,
-            session_info.cipher_suite,
-        );
-
-        let server_hello = TlsHandshake::ServerHello(server_hello);
-        server_hello.write_to(&mut handshakes);
-
-        let keys = params.derive_keys();
-        let write = ConnState::Secure(SecureConnState::new(
-            params.clone(),
-            keys.server_enc_key,
-            keys.server_mac_key,
-            keys.server_write_iv,
-        ));
-
-        let server_verify_data = params.server_verify_data(&handshakes);
-        let server_finished = TlsHandshake::Finished(Finished::new(server_verify_data.clone()));
-        server_finished.write_to(&mut handshakes);
-
-        info!("Sent ServerHello");
-        info!("Sent ChangeCipherSpec");
-        info!("Sent ServerFinished");
-        Ok((
-            AwaitClientChangeCipherAbbr {
-                handshakes,
-                params,
-                negotiated_extensions,
-                server_verify_data,
-            }
-            .into(),
-            vec![
-                TlsAction::SendHandshakeMsg(server_hello),
-                TlsAction::ChangeCipherSpec(TlsEntity::Server, write),
-                TlsAction::SendHandshakeMsg(server_finished),
-            ],
-        ))
+        start_abbr_handshake(self.client_hello, session)
     }
 }
 
@@ -325,6 +372,7 @@ pub struct AwaitClientKeyExchange {
     server_random: [u8; 32],
     selected_cipher_suite: CipherSuiteId,
     supported_extensions: NegotiatedExtensions,
+    issue_session_ticket: bool,
 }
 
 impl HandleRecord<TlsState> for AwaitClientKeyExchange {
@@ -372,6 +420,7 @@ impl HandleRecord<TlsState> for AwaitClientKeyExchange {
                 handshakes: self.handshakes,
                 params,
                 supported_extensions: self.supported_extensions,
+                issue_session_ticket: self.issue_session_ticket,
             }
             .into(),
             vec![],
@@ -385,6 +434,7 @@ pub struct AwaitClientChangeCipher {
     handshakes: Vec<u8>,
     params: SecurityParams,
     supported_extensions: NegotiatedExtensions,
+    issue_session_ticket: bool,
 }
 
 impl HandleRecord<TlsState> for AwaitClientChangeCipher {
@@ -407,7 +457,8 @@ impl HandleRecord<TlsState> for AwaitClientChangeCipher {
                 session_id: self.session_id,
                 handshakes: self.handshakes,
                 params: self.params,
-                supported_extensions: self.supported_extensions,
+                negotiated_extensions: self.supported_extensions,
+                issue_session_ticket: self.issue_session_ticket,
             }
             .into(),
             vec![TlsAction::ChangeCipherSpec(TlsEntity::Client, read)],
@@ -420,7 +471,8 @@ pub struct AwaitClientFinished {
     session_id: Vec<u8>,
     handshakes: Vec<u8>,
     params: SecurityParams,
-    supported_extensions: NegotiatedExtensions,
+    negotiated_extensions: NegotiatedExtensions,
+    issue_session_ticket: bool,
 }
 
 impl HandleRecord<TlsState> for AwaitClientFinished {
@@ -435,6 +487,25 @@ impl HandleRecord<TlsState> for AwaitClientFinished {
 
         handshake.write_to(&mut self.handshakes);
 
+        let mut actions = vec![];
+
+        if self.issue_session_ticket {
+            let new_session_ticket = NewSessionTicket::new(
+                ProtocolVersion::tls12(),
+                self.params.cipher_suite_id,
+                CompressionMethodId::Null,
+                self.params.master_secret,
+                ClientIdentity::Anonymous,
+                0,
+                self.negotiated_extensions.max_fragment_length,
+                self.negotiated_extensions.extended_master_secret,
+            );
+            let new_session_ticket = TlsHandshake::NewSessionTicket(new_session_ticket);
+            new_session_ticket.write_to(&mut self.handshakes);
+            actions.push(TlsAction::SendHandshakeMsg(new_session_ticket));
+            info!("Sent NewSessionTicket");
+        }
+
         let keys = self.params.derive_keys();
         let write = ConnState::Secure(SecureConnState::new(
             self.params.clone(),
@@ -443,34 +514,36 @@ impl HandleRecord<TlsState> for AwaitClientFinished {
             keys.server_write_iv,
         ));
 
+        actions.push(TlsAction::ChangeCipherSpec(TlsEntity::Server, write));
+
         let server_verify_data = self.params.server_verify_data(&self.handshakes);
         let server_finished: TlsHandshake = Finished::new(server_verify_data.clone()).into();
+        actions.push(TlsAction::SendHandshakeMsg(server_finished));
 
-        let store_session_id = TlsAction::StoreSessionIdInfo(
-            self.session_id,
-            SessionInfo::new(
-                self.params.master_secret,
-                self.params.cipher_suite_id,
-                self.supported_extensions.max_fragment_length,
-            ),
-        );
+        if !self.issue_session_ticket {
+            actions.push(TlsAction::StoreSessionIdInfo(
+                self.session_id.clone(),
+                SessionInfo::new(
+                    self.params.master_secret,
+                    self.params.cipher_suite_id,
+                    self.negotiated_extensions.max_fragment_length,
+                    self.negotiated_extensions.extended_master_secret,
+                ),
+            ));
+        }
 
         info!("Sent ChangeCipherSpec");
         info!("Sent ServerFinished");
         info!("Handshake complete! (full)");
         Ok((
             ServerEstablished {
-                session_id: SessionId::new(&[]).unwrap(),
-                supported_extensions: self.supported_extensions,
+                session_id: SessionId::new(&self.session_id).unwrap(),
+                supported_extensions: self.negotiated_extensions,
                 client_verify_data,
                 server_verify_data,
             }
             .into(),
-            vec![
-                TlsAction::ChangeCipherSpec(TlsEntity::Server, write),
-                TlsAction::SendHandshakeMsg(server_finished),
-                store_session_id,
-            ],
+            actions,
         ))
     }
 }

@@ -1,7 +1,6 @@
 use std::{net::TcpStream, thread::sleep, time::Duration};
 
 use vihar_tls::{
-    MaxFragmentLength,
     ciphersuite::CipherSuiteId,
     client::{TlsClient, TlsConfigBuilder},
     pcs,

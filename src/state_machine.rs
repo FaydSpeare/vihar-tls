@@ -1,4 +1,3 @@
-use crate::messages::ClientHello;
 use crate::MaxFragmentLength;
 use crate::alert::TlsAlertDesc;
 use crate::ciphersuite::{CipherSuiteId, PrfAlgorithm};
@@ -38,6 +37,7 @@ pub struct SessionIdResumption {
     pub master_secret: [u8; 48],
     pub cipher_suite: CipherSuiteId,
     pub max_fragment_len: Option<MaxFragmentLength>,
+    pub extended_master_secret: bool,
 }
 
 #[derive(Debug)]
@@ -46,6 +46,7 @@ pub struct SessionTicketResumption {
     pub master_secret: [u8; 48],
     pub cipher_suite: CipherSuiteId,
     pub max_fragment_len: Option<MaxFragmentLength>,
+    pub extended_master_secret: bool,
 }
 
 #[derive(Debug)]
@@ -53,12 +54,6 @@ pub enum SessionResumption {
     None,
     SessionId(SessionIdResumption),
     SessionTicket(SessionTicketResumption),
-}
-
-#[derive(Debug)]
-pub enum SessionValidationRequest {
-    SessionId(Vec<u8>),
-    SessionTicket(Vec<u8>),
 }
 
 #[derive(Debug)]
@@ -87,7 +82,7 @@ pub enum TlsAction {
     SendAlert(TlsAlert),
     ChangeCipherSpec(TlsEntity, ConnState),
     SendHandshakeMsg(TlsHandshake),
-    ValidateSession(SessionValidationRequest),
+    ValidateSessionId(Vec<u8>),
     StoreSessionTicketInfo(Vec<u8>, SessionInfo),
     StoreSessionIdInfo(Vec<u8>, SessionInfo),
     CloseConnection(TlsAlertDesc),

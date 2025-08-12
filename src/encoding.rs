@@ -103,6 +103,17 @@ impl TlsCodable for u8 {
     }
 }
 
+impl TlsCodable for bool {
+    fn write_to(&self, bytes: &mut Vec<u8>) {
+        let value = if *self { 1u8 } else { 0u8 };
+        value.write_to(bytes);
+    }
+
+    fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
+        Ok(1 == u8::read_from(reader)?)
+    }
+}
+
 impl TlsCodable for u16 {
     fn write_to(&self, bytes: &mut Vec<u8>) {
         bytes.extend_from_slice(&self.to_be_bytes());

@@ -7,16 +7,36 @@ use crate::{
     errors::{DecodingError, InvalidEncodingError},
     gcm::{decrypt_aes_cbc, encrypt_aes_cbc},
     messages::{CeritificateList, CompressionMethodId, ProtocolVersion},
-    prf::{HmacHashAlgo, hmac},
-    utils,
+    prf::{hmac, HmacHashAlgo},
+    utils, MaxFragmentLength,
 };
 
 type EncryptedState = LengthPrefixedVec<u16, u8, MaybeEmpty>;
-struct SessionTicket {
+
+#[derive(Debug)]
+pub struct SessionTicket {
     key_name: [u8; 16],
     iv: [u8; 16],
     encrypted_state: EncryptedState,
     mac: [u8; 32],
+}
+
+impl TlsCodable for SessionTicket {
+    fn write_to(&self, bytes: &mut Vec<u8>) {
+        self.key_name.write_to(bytes);
+        self.iv.write_to(bytes);
+        self.encrypted_state.write_to(bytes);
+        self.mac.write_to(bytes);
+    }
+
+    fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
+        Ok(Self {
+            key_name: <[u8; 16]>::read_from(reader)?,
+            iv: <[u8; 16]>::read_from(reader)?,
+            encrypted_state: EncryptedState::read_from(reader)?,
+            mac: <[u8; 32]>::read_from(reader)?,
+        })
+    }
 }
 
 impl SessionTicket {
@@ -46,33 +66,39 @@ impl SessionTicket {
 }
 
 #[derive(Debug, PartialEq)]
-struct StatePlaintext {
-    protocol_version: ProtocolVersion,
-    cipher_suite: CipherSuiteId,
-    compression_method: CompressionMethodId,
-    master_secret: [u8; 48],
-    client_identity: ClientIdentity,
-    timestamp: u32,
+pub struct StatePlaintext {
+    pub timestamp: u32,
+    pub protocol_version: ProtocolVersion,
+    pub cipher_suite: CipherSuiteId,
+    pub compression_method: CompressionMethodId,
+    pub master_secret: [u8; 48],
+    pub client_identity: ClientIdentity,
+    pub max_fragment_length: Option<MaxFragmentLength>,
+    pub extended_master_secret: bool,
 }
 
 impl TlsCodable for StatePlaintext {
     fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
         Ok(Self {
+            timestamp: u32::read_from(reader)?,
             protocol_version: ProtocolVersion::read_from(reader)?,
             cipher_suite: CipherSuiteId::read_from(reader)?,
             compression_method: CompressionMethodId::read_from(reader)?,
             master_secret: <[u8; 48]>::read_from(reader)?,
             client_identity: ClientIdentity::read_from(reader)?,
-            timestamp: u32::read_from(reader)?,
+            max_fragment_length: <Option<MaxFragmentLength>>::read_from(reader)?,
+            extended_master_secret: bool::read_from(reader)?,
         })
     }
     fn write_to(&self, bytes: &mut Vec<u8>) {
+        self.timestamp.write_to(bytes);
         self.protocol_version.write_to(bytes);
         self.cipher_suite.write_to(bytes);
         self.compression_method.write_to(bytes);
         self.master_secret.write_to(bytes);
         self.client_identity.write_to(bytes);
-        self.timestamp.write_to(bytes);
+        self.max_fragment_length.write_to(bytes);
+        self.extended_master_secret.write_to(bytes);
     }
 }
 
@@ -109,7 +135,7 @@ tls_codable_enum! {
 }
 
 #[derive(Debug, PartialEq)]
-enum ClientIdentity {
+pub enum ClientIdentity {
     Anonymous,
     CertificateBased(CeritificateList),
 }
@@ -150,6 +176,8 @@ mod tests {
             master_secret: [0; 48],
             client_identity: ClientIdentity::Anonymous,
             timestamp: 0u32,
+            max_fragment_length: None,
+            extended_master_secret: true
         };
 
         let mac_key: [u8; 32] = utils::get_random_bytes(32).try_into().unwrap();

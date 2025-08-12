@@ -9,9 +9,9 @@ use crate::encoding::{
 };
 use crate::errors::{DecodingError, InvalidEncodingError};
 use crate::extensions::{
-    ExtendedMasterSecretExt, Extension, Extensions, HashAlgo, MaxFragmentLenExt,
-    RenegotiationInfoExt, SigAlgo, SignatureAlgorithmsExt,
+    ExtendedMasterSecretExt, Extension, Extensions, HashAlgo, MaxFragmentLenExt, RenegotiationInfoExt, SessionTicketExt, SigAlgo, SignatureAlgorithmsExt
 };
+use crate::session_ticket::{ClientIdentity, StatePlaintext};
 use crate::{MaxFragmentLength, TlsPolicy, TlsValidateable, utils};
 
 #[derive(Debug, Clone, Copy)]
@@ -227,6 +227,7 @@ impl ServerHello {
         cipher_suite: CipherSuiteId,
         with_renegotiation_info: bool,
         with_extended_master_secret: bool,
+        with_session_ticket: bool,
         renegotiation_info: Option<Vec<u8>>,
         max_fragment_len: Option<MaxFragmentLength>,
     ) -> Self {
@@ -245,6 +246,10 @@ impl ServerHello {
 
         if with_extended_master_secret {
             extensions.push(ExtendedMasterSecretExt::indicate_support().into());
+        }
+
+        if with_session_ticket {
+            extensions.push(SessionTicketExt::new().into());
         }
 
         Self {
@@ -540,12 +545,41 @@ impl From<Finished> for TlsHandshake {
     }
 }
 
-type SessionTicket = LengthPrefixedVec<u16, u8, MaybeEmpty>;
+type SessionTicketBytes = LengthPrefixedVec<u16, u8, MaybeEmpty>;
 
 #[derive(Hash, Eq, PartialEq, Debug, Clone)]
 pub struct NewSessionTicket {
     lifetime_hint: u32,
-    pub ticket: SessionTicket,
+    pub ticket: SessionTicketBytes,
+}
+
+impl NewSessionTicket {
+    pub fn new(
+        protocol_version: ProtocolVersion,
+        cipher_suite: CipherSuiteId,
+        compression_method: CompressionMethodId,
+        master_secret: [u8; 48],
+        client_identity: ClientIdentity,
+        timestamp: u32,
+        max_fragment_length: Option<MaxFragmentLength>,
+        extended_master_secret: bool
+    ) -> Self {
+        let session_ticket = StatePlaintext {
+            timestamp,
+            protocol_version,
+            cipher_suite,
+            compression_method,
+            master_secret,
+            client_identity,
+            max_fragment_length,
+            extended_master_secret
+        }
+        .encrypt([0; 16], &[0; 16], &[0; 32]);
+        Self {
+            lifetime_hint: 0,
+            ticket: session_ticket.get_encoding().try_into().unwrap(),
+        }
+    }
 }
 
 impl TlsCodable for NewSessionTicket {
@@ -555,7 +589,7 @@ impl TlsCodable for NewSessionTicket {
     }
     fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
         let lifetime_hint = u32::read_from(reader)?;
-        let ticket = SessionTicket::read_from(reader)?;
+        let ticket = SessionTicketBytes::read_from(reader)?;
         Ok(Self {
             lifetime_hint,
             ticket,

@@ -16,6 +16,7 @@ pub struct SessionInfo {
     pub master_secret: [u8; 48],
     pub cipher_suite: CipherSuiteId,
     pub max_fragment_len: Option<MaxFragmentLength>,
+    pub extended_master_secret: bool,
 }
 
 impl SessionInfo {
@@ -23,11 +24,13 @@ impl SessionInfo {
         master_secret: [u8; 48],
         cipher_suite: CipherSuiteId,
         max_fragment_len: Option<MaxFragmentLength>,
+        extended_master_secret: bool,
     ) -> Self {
         Self {
             master_secret,
             cipher_suite,
             max_fragment_len,
+            extended_master_secret
         }
     }
 }
@@ -38,6 +41,7 @@ impl SessionInfo {
         self.master_secret.write_to(&mut bytes);
         self.cipher_suite.write_to(&mut bytes);
         self.max_fragment_len.write_to(&mut bytes);
+        self.extended_master_secret.write_to(&mut bytes);
         bytes
     }
     fn decode(mut bytes: Vec<u8>) -> TlsResult<Self> {
@@ -49,6 +53,7 @@ impl SessionInfo {
             master_secret,
             cipher_suite,
             max_fragment_len,
+            extended_master_secret: bool::read_from(&mut reader)?
         })
     }
 }

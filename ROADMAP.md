@@ -1,8 +1,5 @@
 ## TODO
 
-- enforce same cipher suite selected by server for session resumption
-- enforce ems is the same for resumption
-
 - Proper ClientKeyExchange handling
 
 - Support ServerKeyExchange from server-side
@@ -11,9 +8,6 @@
 
 - Delete session from store when rejected
 - delete session when fatal alert
-
-- Implement server session ticket issuance 
-    - check everything is correct: ems, mfl, etc.
 
 - Check server certificate chain against local root certificates?
 

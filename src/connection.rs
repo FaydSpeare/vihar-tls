@@ -9,7 +9,8 @@ use crate::errors::{DecodingError, TlsError};
 use crate::messages::{TlsCiphertext, TlsCompressed, TlsContentType, TlsMessage, TlsPlaintext};
 use crate::record::RecordLayer;
 use crate::state_machine::{
-    SessionIdResumption, SessionResumption, SessionTicketResumption, SessionValidation, SessionValidationRequest, TlsAction, TlsEntity, TlsEvent, TlsStateMachine
+    SessionIdResumption, SessionResumption, SessionTicketResumption, SessionValidation, TlsAction,
+    TlsEntity, TlsEvent, TlsStateMachine,
 };
 use crate::{TlsResult, utils};
 use log::{debug, info, trace};
@@ -430,38 +431,29 @@ impl<T: Read + Write> TlsConnection<T> {
                             self.is_closed = true;
                             return Err(format!("Connection closed due to: {:?}", alert).into());
                         }
-                        TlsAction::ValidateSession(request) => {
+                        TlsAction::ValidateSessionId(session_id) => {
                             trace!("Validating session...");
                             let Some(store) = &self.config.session_store else {
                                 trace!("No session store configured -> invalid session");
-                                self.process_message(TlsEvent::SessionValidation(SessionValidation::Invalid))?;
+                                self.process_message(TlsEvent::SessionValidation(
+                                    SessionValidation::Invalid,
+                                ))?;
                                 continue;
                             };
-                            
-                            let validation = match request {
-                                SessionValidationRequest::SessionId(id) => {
-                                    match store.get_session_id(&id)? {
-                                        None => SessionValidation::Invalid,
-                                        Some(session_info) => SessionValidation::Valid(session_info),
-                                    }
-                                },
-                                SessionValidationRequest::SessionTicket(ticket) => {
-                                    match store.get_session_ticket(&ticket)? {
-                                        None => SessionValidation::Invalid,
-                                        Some(session_info) => SessionValidation::Valid(session_info),
-                                    }
+
+                            let validation = match store.get_session_id(&session_id)? {
+                                None => {
+                                    trace!("Session is invalid");
+                                    SessionValidation::Invalid
+                                }
+                                Some(session_info) => {
+                                    trace!("Session is valid");
+                                    SessionValidation::Valid(session_info)
                                 }
                             };
 
-                            if let SessionValidation::Valid(_) = validation {
-                                trace!("Session is valid");
-                            } else {
-                                trace!("Session is invalid");
-                            }
-                            
                             self.process_message(TlsEvent::SessionValidation(validation))?;
-
-                        },
+                        }
                         TlsAction::StoreSessionTicketInfo(ticket, info) => {
                             trace!("Storing session ticket");
                             if let Some(store) = &self.config.session_store {
@@ -574,6 +566,7 @@ impl<T: Read + Write> TlsConnection<T> {
                             master_secret: info.master_secret,
                             cipher_suite: info.cipher_suite,
                             max_fragment_len: info.max_fragment_len,
+                            extended_master_secret: info.extended_master_secret,
                         })
                     }
                     None => match store.get_any_session_id()? {
@@ -585,6 +578,7 @@ impl<T: Read + Write> TlsConnection<T> {
                                 master_secret: info.master_secret,
                                 cipher_suite: info.cipher_suite,
                                 max_fragment_len: info.max_fragment_len,
+                                extended_master_secret: info.extended_master_secret,
                             })
                         }
                         None => {
