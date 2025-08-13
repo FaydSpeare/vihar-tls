@@ -481,7 +481,7 @@ impl HandleRecord<TlsState> for AwaitServerHelloDone {
         handshake.write_to(&mut self.handshakes);
 
         let ciphersuite = CipherSuite::from(self.selected_cipher_suite_id);
-        let (pre_master_secret, key_exchange_data) = match ciphersuite
+        let (pre_master_secret, client_kx) = match ciphersuite
             .params()
             .key_exchange_algorithm
         {
@@ -496,20 +496,20 @@ impl HandleRecord<TlsState> for AwaitServerHelloDone {
                     return close_connection(TlsAlertDesc::IllegalParameter);
                 };
 
-                let Ok((secret, enc_secret)) = get_rsa_pre_master_secret(&rsa_public_key) else {
+                let Ok((pms, enc_pms)) = get_rsa_pre_master_secret(&rsa_public_key) else {
                     return close_connection(TlsAlertDesc::DecryptError);
                 };
 
-                (secret, enc_secret)
+                (pms, ClientKeyExchange::new_rsa(&enc_pms))
             }
             KeyExchangeAlgorithm::DheRsa | KeyExchangeAlgorithm::DheDss => {
                 let DheParams { p, g, public_key } = self.secrets.as_ref().unwrap();
-                get_dhe_pre_master_secret(p, g, public_key)
+                let (pms, client_public_key) = get_dhe_pre_master_secret(p, g, public_key);
+                (pms, ClientKeyExchange::new_dhe(&client_public_key))
             }
             KeyExchangeAlgorithm::EcdheRsa => unimplemented!(),
         };
 
-        let client_kx = ClientKeyExchange::new(&key_exchange_data);
         TlsHandshake::ClientKeyExchange(client_kx.clone()).write_to(&mut self.handshakes);
 
         let master_secret = calculate_master_secret(

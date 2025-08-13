@@ -1,10 +1,8 @@
 ## TODO
 
+- Clean up ServerKX / ClientKX impl
+
 - Check server certificate chain against local root certificates?
-
-- Support ServerKeyExchange from server-side
-
-- Proper ClientKeyExchange handling
 
 - Support client certificiate
     - Certificate Request

@@ -3,13 +3,14 @@ use std::cmp::Ordering;
 use log::debug;
 
 use crate::alert::{TlsAlert, TlsAlertDesc};
-use crate::ciphersuite::CipherSuiteId;
+use crate::ciphersuite::{CipherSuiteId, KeyExchangeAlgorithm};
 use crate::encoding::{
     LengthPrefixWriter, LengthPrefixedVec, MaybeEmpty, NonEmpty, Reader, TlsCodable, u24,
 };
 use crate::errors::{DecodingError, InvalidEncodingError};
 use crate::extensions::{
-    ExtendedMasterSecretExt, Extension, Extensions, HashAlgo, MaxFragmentLenExt, RenegotiationInfoExt, SessionTicketExt, SigAlgo, SignatureAlgorithmsExt
+    ExtendedMasterSecretExt, Extension, Extensions, HashAlgo, MaxFragmentLenExt,
+    RenegotiationInfoExt, SessionTicketExt, SigAlgo, SignatureAlgorithmsExt,
 };
 use crate::session_ticket::{ClientIdentity, StatePlaintext};
 use crate::{MaxFragmentLength, TlsPolicy, TlsValidateable, utils};
@@ -483,19 +484,40 @@ impl TlsCodable for ServerKeyExchange {
     }
 }
 
-// TODO: split into enum
+type ClientKeyExchangeBytes = LengthPrefixedVec<u16, u8, NonEmpty>;
+
 #[derive(Debug, Clone)]
-pub struct ClientKeyExchange {
-    pub enc_pre_master_secret: Vec<u8>,
+pub enum ClientKeyExchangeInner {
+    EncryptedPreMasterSecret(ClientKeyExchangeBytes),
+    ClientDiffieHellmanPublic(ClientKeyExchangeBytes),
+}
+
+#[derive(Debug, Clone)]
+pub enum ClientKeyExchange {
+    Resolved(ClientKeyExchangeInner),
+    Unresolved(ClientKeyExchangeBytes),
 }
 
 impl ClientKeyExchange {
-    pub fn new(enc_pre_master_secret: &[u8]) -> Self {
-        Self {
-            enc_pre_master_secret: enc_pre_master_secret.to_vec(),
+    pub fn new_dhe(bytes: &[u8]) -> Self {
+        Self::Resolved(ClientKeyExchangeInner::ClientDiffieHellmanPublic(bytes.to_vec().try_into().unwrap()))
+    }
+    pub fn new_rsa(bytes: &[u8]) -> Self {
+        Self::Resolved(ClientKeyExchangeInner::EncryptedPreMasterSecret(bytes.to_vec().try_into().unwrap()))
+    }
+    pub fn resolve(&self, kx: KeyExchangeAlgorithm) -> ClientKeyExchangeInner {
+        match self {
+            Self::Unresolved(bytes) => {
+                match kx {
+                    KeyExchangeAlgorithm::DheRsa | KeyExchangeAlgorithm::DheDss => ClientKeyExchangeInner::ClientDiffieHellmanPublic(bytes.clone()),
+                    _ => ClientKeyExchangeInner::EncryptedPreMasterSecret(bytes.clone())
+                }
+            }
+            Self::Resolved(inner) => inner.clone()
         }
     }
 }
+
 
 impl From<ClientKeyExchange> for TlsHandshake {
     fn from(value: ClientKeyExchange) -> Self {
@@ -505,15 +527,16 @@ impl From<ClientKeyExchange> for TlsHandshake {
 
 impl TlsCodable for ClientKeyExchange {
     fn write_to(&self, bytes: &mut Vec<u8>) {
-        bytes.extend((self.enc_pre_master_secret.len() as u16).to_be_bytes());
-        bytes.extend_from_slice(&self.enc_pre_master_secret);
+        match self {
+            Self::Resolved(inner) => match inner {
+                ClientKeyExchangeInner::ClientDiffieHellmanPublic(value) => value.write_to(bytes),
+                ClientKeyExchangeInner::EncryptedPreMasterSecret(value) => value.write_to(bytes),
+            },
+            Self::Unresolved(value) => value.write_to(bytes),
+        };
     }
     fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
-        let len = u16::read_from(reader)?;
-        let secret = reader.consume(len.into())?;
-        Ok(Self {
-            enc_pre_master_secret: secret.to_vec(),
-        })
+        Ok(Self::Unresolved(ClientKeyExchangeBytes::read_from(reader)?))
     }
 }
 
@@ -562,7 +585,7 @@ impl NewSessionTicket {
         client_identity: ClientIdentity,
         timestamp: u32,
         max_fragment_length: Option<MaxFragmentLength>,
-        extended_master_secret: bool
+        extended_master_secret: bool,
     ) -> Self {
         let session_ticket = StatePlaintext {
             timestamp,
@@ -572,7 +595,7 @@ impl NewSessionTicket {
             master_secret,
             client_identity,
             max_fragment_length,
-            extended_master_secret
+            extended_master_secret,
         }
         .encrypt([0; 16], &[0; 16], &[0; 32]);
         Self {
