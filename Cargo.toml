@@ -22,6 +22,7 @@ base64 = "0.22.1"
 dsa = "0.6.3"
 enum_dispatch = "0.3.13"
 env_logger = "0.11.8"
+lazy_static = "1.5.0"
 log = "0.4.27"
 num-bigint = { version="0.4.6", features = ["rand"] }
 num-traits = "0.2.19"

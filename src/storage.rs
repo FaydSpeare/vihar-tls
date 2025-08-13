@@ -30,7 +30,7 @@ impl SessionInfo {
             master_secret,
             cipher_suite,
             max_fragment_len,
-            extended_master_secret
+            extended_master_secret,
         }
     }
 }
@@ -53,7 +53,7 @@ impl SessionInfo {
             master_secret,
             cipher_suite,
             max_fragment_len,
-            extended_master_secret: bool::read_from(&mut reader)?
+            extended_master_secret: bool::read_from(&mut reader)?,
         })
     }
 }
@@ -65,11 +65,15 @@ pub trait SessionStorage: Debug {
 
     fn insert_session_ticket(&self, ticket: &SessionTicket, info: SessionInfo) -> TlsResult<()>;
 
+    fn delete_session_ticket(&self, ticket: &SessionTicket) -> TlsResult<()>;
+
     fn get_any_session_id(&self) -> TlsResult<Option<(SessionId, SessionInfo)>>;
 
     fn get_session_id(&self, id: &SessionId) -> TlsResult<Option<SessionInfo>>;
 
     fn insert_session_id(&self, id: &SessionId, info: SessionInfo) -> TlsResult<()>;
+
+    fn delete_session_id(&self, id: &SessionId) -> TlsResult<()>;
 }
 
 #[derive(Debug, Clone)]
@@ -111,6 +115,11 @@ impl SledSessionStore {
         db.insert(key, info.encode())?;
         Ok(())
     }
+
+    fn delete_one(db: Tree, key: &[u8]) -> TlsResult<()> {
+        db.remove(key)?;
+        Ok(())
+    }
 }
 
 impl SessionStorage for SledSessionStore {
@@ -126,6 +135,10 @@ impl SessionStorage for SledSessionStore {
         SledSessionStore::insert_one(self.session_ticket_db()?, ticket, info)
     }
 
+    fn delete_session_ticket(&self, ticket: &SessionTicket) -> TlsResult<()> {
+        SledSessionStore::delete_one(self.session_ticket_db()?, ticket)
+    }
+
     fn get_any_session_id(&self) -> TlsResult<Option<(SessionId, SessionInfo)>> {
         SledSessionStore::find_any(self.session_id_db()?)
     }
@@ -136,5 +149,9 @@ impl SessionStorage for SledSessionStore {
 
     fn insert_session_id(&self, id: &SessionId, info: SessionInfo) -> TlsResult<()> {
         SledSessionStore::insert_one(self.session_id_db()?, id, info)
+    }
+
+    fn delete_session_id(&self, id: &SessionId) -> TlsResult<()> {
+        SledSessionStore::delete_one(self.session_id_db()?, id)
     }
 }

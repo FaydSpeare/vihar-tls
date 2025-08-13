@@ -7,13 +7,11 @@ use dsa::{
 use num_bigint::{BigUint, RandBigInt};
 use num_traits::{FromBytes, One};
 use rsa::{
-    Pkcs1v15Encrypt, RsaPrivateKey, RsaPublicKey,
-    pkcs1v15::{Signature, VerifyingKey},
-    rand_core::{OsRng, RngCore},
-    signature::Verifier,
+    pkcs1v15::{Signature, SigningKey, VerifyingKey}, rand_core::{OsRng, RngCore}, signature::{SignatureEncoding, Signer, Verifier}, Pkcs1v15Encrypt, RsaPrivateKey, RsaPublicKey
 };
 use sha2::{Digest, Sha256};
 use x509_parser::parse_x509_certificate;
+use lazy_static::lazy_static;
 
 pub fn public_key_from_cert(cert_der: &[u8]) -> TlsResult<Vec<u8>> {
     let (_, cert) = parse_x509_certificate(cert_der)?;
@@ -71,4 +69,37 @@ pub fn dsa_verify(public_key: &[u8], message: &[u8], signature: &[u8]) -> TlsRes
     let signature = DsaSignature::from_der(signature)?;
     let message = Sha256::new_with_prefix(message);
     Ok(verifying_key.verify_digest(message, &signature).is_ok())
+}
+
+pub fn rsa_sign(
+    rsa_pubkey: &RsaPrivateKey,
+    data: &[u8],
+) -> Vec<u8> {
+    let signing_key = SigningKey::<Sha256>::new(rsa_pubkey.clone());
+    signing_key.sign(&data).to_vec()
+}
+
+lazy_static! {
+     pub static ref P: BigUint = BigUint::parse_bytes(b"FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD1\
+      29024E088A67CC74020BBEA63B139B22514A08798E3404DD\
+      EF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245\
+      E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7ED\
+      EE386BFB5A899FA5AE9F24117C4B1FE649286651ECE45B3D\
+      C2007CB8A163BF0598DA48361C55D39A69163FA8FD24CF5F\
+      83655D23DCA3AD961C62F356208552BB9ED529077096966D\
+      670C354E4ABC9804F1746C08CA18217C32905E462E36CE3B\
+      E39E772C180E86039B2783A2EC07A28FB5C55DF06F4C52C9\
+      DE2BCBF6955817183995497CEA956AE515D2261898FA0510\
+      15728E5A8AACAA68FFFFFFFFFFFFFFFF", 16).unwrap();
+}
+
+pub fn generate_dh_keypair() -> (BigUint, BigUint, BigUint, BigUint) {
+
+    let g = BigUint::from(2u32);
+    let mut rng = rand::thread_rng();
+    // private key: random in [1, p-1)
+    let priv_key = rng.gen_biguint_range(&BigUint::from(1u32), &P);
+    // public key: g^priv_key mod p
+    let pub_key = g.modpow(&priv_key, &P);
+    (P.clone(), g, priv_key, pub_key)
 }

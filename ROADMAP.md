@@ -1,22 +1,20 @@
 ## TODO
 
-- Proper ClientKeyExchange handling
+- Check server certificate chain against local root certificates?
 
 - Support ServerKeyExchange from server-side
 
-- HelloRequest
-
-- Delete session from store when rejected
-- delete session when fatal alert
-
-- Check server certificate chain against local root certificates?
-
-- Need to finished reading before starting client.renegotiate
+- Proper ClientKeyExchange handling
 
 - Support client certificiate
     - Certificate Request
     - Client Certificate
     - Certificate Verify
+
+- HelloRequest
+- Need to finished reading before starting client.renegotiate
+
+- =============================================
 
 - Support ECDH(E) signature & certificate
     - Supported groups extension
@@ -30,3 +28,8 @@
 
 - RFC5246 D3 - setting for min and max key sizes
 
+
+
+- Do sessions need to be invalidated when an fatal error occurs during handshake. E.g. illegal parameter when resuming session
+- Do session tickets need to be invalidated for fatal alerts, how?
+- servername a part of session?

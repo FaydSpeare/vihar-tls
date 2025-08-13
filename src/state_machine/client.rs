@@ -14,8 +14,8 @@ use crate::signature::{
     rsa_verify,
 };
 use crate::state_machine::{
-    NegotiatedExtensions, SessionResumption, TlsAction, TlsEntity,
-    calculate_master_secret, close_connection,
+    NegotiatedExtensions, SessionResumption, TlsAction, TlsEntity, calculate_master_secret,
+    close_connection,
 };
 use crate::storage::SessionInfo;
 use crate::{
@@ -27,7 +27,8 @@ use crate::{
 };
 
 use super::{
-    close_with_unexpected_message, HandleRecord, HandleResult, PreviousVerifyData, SessionTicketResumption, TlsContext, TlsEvent, TlsState
+    HandleRecord, HandleResult, PreviousVerifyData, SessionTicketResumption, TlsContext, TlsEvent,
+    TlsState, close_with_unexpected_message,
 };
 
 #[derive(Debug)]
@@ -207,7 +208,9 @@ impl HandleRecord<TlsState> for AwaitServerHello {
                 }
 
                 // The server must correctly remember the session's ems use
-                if server_hello.extensions.includes_extended_master_secret() != session.extended_master_secret {
+                if server_hello.extensions.includes_extended_master_secret()
+                    != session.extended_master_secret
+                {
                     return close_connection(TlsAlertDesc::IllegalParameter);
                 }
 
@@ -228,6 +231,8 @@ impl HandleRecord<TlsState> for AwaitServerHello {
                     .into(),
                     actions,
                 ));
+            } else {
+                actions.push(TlsAction::InvalidateSessionId(session.session_id.clone()))
             }
         }
 
@@ -287,8 +292,6 @@ impl HandleRecord<TlsState> for AwaitServerHello {
                 actions,
             ));
         }
-        println!("sessionid, {:?}", server_hello.session_id);
-        println!("sessionid, {:?}", server_hello.session_id.clone());
 
         // Boring... no session resumption, we're doing a full handshake.
         let cipher_suite = CipherSuite::from(server_hello.cipher_suite);
@@ -642,9 +645,7 @@ impl HandleRecord<TlsState> for AwaitNewSessionTicketOrCertificate {
                 return close_connection(TlsAlertDesc::IllegalParameter);
             }
 
-            if self.session_ticket_resumption.cipher_suite
-                != self.selected_cipher_suite_id
-            {
+            if self.session_ticket_resumption.cipher_suite != self.selected_cipher_suite_id {
                 return close_connection(TlsAlertDesc::IllegalParameter);
             }
 
@@ -659,7 +660,7 @@ impl HandleRecord<TlsState> for AwaitNewSessionTicketOrCertificate {
             TlsHandshake::Certificates(_),
         )) = event
         {
-            return AwaitServerCertificate {
+            let next_state = AwaitServerCertificate {
                 session_id: self.session_id,
                 handshakes: self.handshakes,
                 client_random: self.client_random,
@@ -668,10 +669,22 @@ impl HandleRecord<TlsState> for AwaitNewSessionTicketOrCertificate {
                 negotiated_extensions: self.negotiated_extensions,
             }
             .handle(ctx, event);
+
+            return prepend_action(
+                next_state,
+                TlsAction::InvalidateSessionTicket(self.session_ticket_resumption.session_ticket),
+            );
         }
 
         return close_with_unexpected_message();
     }
+}
+
+fn prepend_action(result: HandleResult<TlsState>, action: TlsAction) -> HandleResult<TlsState> {
+    result.map(|(state, mut actions)| {
+        actions.insert(0, action);
+        (state, actions)
+    })
 }
 
 #[derive(Debug)]
@@ -709,9 +722,7 @@ impl HandleRecord<TlsState> for AwaitServerChangeCipherOrCertificate {
                 return close_connection(TlsAlertDesc::IllegalParameter);
             }
 
-            if self.session_ticket_resumption.cipher_suite
-                != self.selected_cipher_suite_id
-            {
+            if self.session_ticket_resumption.cipher_suite != self.selected_cipher_suite_id {
                 return close_connection(TlsAlertDesc::IllegalParameter);
             }
 
@@ -726,7 +737,7 @@ impl HandleRecord<TlsState> for AwaitServerChangeCipherOrCertificate {
             TlsHandshake::Certificates(_),
         )) = event
         {
-            return AwaitServerCertificate {
+            let next_state = AwaitServerCertificate {
                 session_id: self.session_id,
                 handshakes: self.handshakes,
                 client_random: self.client_random,
@@ -735,6 +746,11 @@ impl HandleRecord<TlsState> for AwaitServerChangeCipherOrCertificate {
                 negotiated_extensions: self.negotiated_extensions,
             }
             .handle(ctx, event);
+
+            return prepend_action(
+                next_state,
+                TlsAction::InvalidateSessionTicket(self.session_ticket_resumption.session_ticket),
+            );
         }
         panic!("invalid transition");
     }
@@ -811,7 +827,7 @@ impl HandleRecord<TlsState> for AwaitServerFinished {
                     self.params.master_secret,
                     self.params.cipher_suite_id,
                     self.negotiated_extensions.max_fragment_length,
-                    self.negotiated_extensions.extended_master_secret
+                    self.negotiated_extensions.extended_master_secret,
                 ),
             ));
         }
@@ -823,7 +839,7 @@ impl HandleRecord<TlsState> for AwaitServerFinished {
                     master_secret: self.params.master_secret,
                     cipher_suite: self.params.cipher_suite_id,
                     max_fragment_len: self.negotiated_extensions.max_fragment_length,
-                    extended_master_secret: self.negotiated_extensions.extended_master_secret
+                    extended_master_secret: self.negotiated_extensions.extended_master_secret,
                 },
             ));
         }
@@ -863,7 +879,7 @@ impl HandleRecord<TlsState> for ExpectNewSessionTicketAbbr {
                 self.params.master_secret,
                 self.params.cipher_suite_id,
                 self.negotiated_extensions.max_fragment_length,
-                self.negotiated_extensions.extended_master_secret
+                self.negotiated_extensions.extended_master_secret,
             ),
         );
 

@@ -15,12 +15,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         TlsConfigBuilder::new()
             .with_cipher_suites(
                 [
+                    pcs!(3, CipherSuiteId::DheRsaAes128CbcSha),
                     pcs!(2, CipherSuiteId::RsaAes128CbcSha),
                     pcs!(1, CipherSuiteId::RsaAes128CbcSha256),
                 ]
                 .into(),
             )
-            .with_session_store("server-sdb")
+            //.with_session_store("server-sdb")
             .with_certificate_pem("testing/rsacert.pem", "testing/rsakey.pem")
             .with_policy(TlsPolicy {
                 unrecognised_server_name: UnrecognisedServerNamePolicy::Ignore,

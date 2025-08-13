@@ -48,7 +48,8 @@ macro_rules! require_handshake_msg {
             crate::state_machine::TlsEvent::IncomingMessage(
                 crate::messages::TlsMessage::Handshake(handshake @ $handshake(inner)),
             ) => (handshake, inner),
-            _ => {
+            x => {
+                println!("unexpected: {:?}", x);
                 return Ok((
                     crate::state_machine::ClosedState {}.into(),
                     vec![crate::state_machine::TlsAction::SendAlert(TlsAlert::fatal(

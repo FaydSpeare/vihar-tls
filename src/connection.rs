@@ -466,6 +466,18 @@ impl<T: Read + Write> TlsConnection<T> {
                                 store.insert_session_id(&id, info)?
                             }
                         }
+                        TlsAction::InvalidateSessionId(session_id) => {
+                            trace!("Invalidating session id");
+                            if let Some(store) = &self.config.session_store {
+                                store.delete_session_id(&session_id)?
+                            }
+                        }
+                        TlsAction::InvalidateSessionTicket(session_ticket) => {
+                            trace!("Invalidating session ticket");
+                            if let Some(store) = &self.config.session_store {
+                                store.delete_session_ticket(&session_ticket)?
+                            }
+                        }
                         TlsAction::UpdateMaxFragmentLen(max_fragment_len) => {
                             trace!(
                                 "Updating max_fragment_length to {}",

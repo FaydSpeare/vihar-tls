@@ -18,7 +18,9 @@ use client::{
     ExpectServerChangeCipherAbbr, ExpectServerFinishedAbbr,
 };
 use server::{
-    AwaitClientChangeCipher, AwaitClientChangeCipherAbbr, AwaitClientFinished, AwaitClientFinishedAbbr, AwaitClientHello, AwaitClientKeyExchange, AwaitSessionValidation, ServerEstablished
+    AwaitClientChangeCipher, AwaitClientChangeCipherAbbr, AwaitClientFinished,
+    AwaitClientFinishedAbbr, AwaitClientHello, AwaitClientKeyExchange, AwaitSessionValidation,
+    ServerEstablished,
 };
 use std::sync::Arc;
 
@@ -85,6 +87,8 @@ pub enum TlsAction {
     ValidateSessionId(Vec<u8>),
     StoreSessionTicketInfo(Vec<u8>, SessionInfo),
     StoreSessionIdInfo(Vec<u8>, SessionInfo),
+    InvalidateSessionId(Vec<u8>),
+    InvalidateSessionTicket(Vec<u8>),
     CloseConnection(TlsAlertDesc),
     UpdateMaxFragmentLen(MaxFragmentLength),
 }
@@ -105,8 +109,23 @@ impl TlsStateMachine {
         // Fatal alerts are handled the same for all states
         if let TlsEvent::IncomingMessage(TlsMessage::Alert(alert)) = event {
             if alert.is_fatal() {
+                let mut actions = vec![];
+
+                // Must reply with close_notify if we receive one
+                if alert.is_close_notification() {
+                    actions.push(TlsAction::SendAlert(TlsAlert::fatal(
+                        TlsAlertDesc::CloseNotify,
+                    )));
+                }
+
+                // Must invalidate session for fatal alerts
+                if let Some(session_id) = self.established_session_id() {
+                    actions.push(TlsAction::InvalidateSessionId(session_id));
+                }
+
+                actions.push(TlsAction::CloseConnection(alert.description));
                 self.state = Some(ClosedState {}.into());
-                return Ok(vec![TlsAction::CloseConnection(alert.description)]);
+                return Ok(actions);
             }
         }
 
@@ -136,6 +155,14 @@ impl TlsStateMachine {
         match self.state.as_ref().unwrap() {
             TlsState::ClientEstablished(_) | TlsState::ServerEstablished(_) => true,
             _ => false,
+        }
+    }
+
+    pub fn established_session_id(&self) -> Option<Vec<u8>> {
+        match self.state.as_ref().unwrap() {
+            TlsState::ClientEstablished(state) => Some(state.session_id.to_vec()),
+            TlsState::ServerEstablished(state) => Some(state.session_id.to_vec()),
+            _ => None,
         }
     }
 }

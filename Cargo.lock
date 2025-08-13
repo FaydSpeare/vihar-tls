@@ -1150,6 +1150,7 @@ dependencies = [
  "dsa",
  "enum_dispatch",
  "env_logger",
+ "lazy_static",
  "log",
  "num-bigint",
  "num-traits",

@@ -68,6 +68,10 @@ impl TlsAlert {
     pub fn is_fatal(&self) -> bool {
         self.level == TlsAlertLevel::Fatal
     }
+
+    pub fn is_close_notification(&self) -> bool {
+        self.description == TlsAlertDesc::CloseNotify
+    }
 }
 
 impl TlsCodable for TlsAlert {

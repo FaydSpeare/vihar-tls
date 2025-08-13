@@ -1,17 +1,19 @@
 use std::collections::HashMap;
 
 use log::{debug, info};
+use num_bigint::BigUint;
 
 use crate::alert::TlsAlertDesc;
-use crate::ciphersuite::CipherSuiteId;
+use crate::ciphersuite::{CipherSuiteId, KeyExchangeAlgorithm};
 use crate::client::PrioritisedCipherSuite;
 use crate::encoding::Reader;
+use crate::extensions::{HashAlgo, SigAlgo};
 use crate::messages::{
     Certificate, ClientHello, CompressionMethodId, NewSessionTicket, ProtocolVersion, ServerHello,
-    SessionId,
+    ServerKeyExchange, SessionId,
 };
 use crate::session_ticket::{ClientIdentity, SessionTicket};
-use crate::signature::decrypt_rsa_master_secret;
+use crate::signature::{decrypt_rsa_master_secret, generate_dh_keypair, rsa_sign, P};
 use crate::state_machine::{
     NegotiatedExtensions, SessionValidation, TlsAction, TlsEntity, calculate_master_secret,
     close_connection, close_with_unexpected_message,
@@ -184,9 +186,63 @@ fn start_full_handshake(
     )
     .into();
     certificate.write_to(&mut handshakes);
+    let mut actions = vec![];
+    actions.extend([
+        TlsAction::SendHandshakeMsg(server_hello),
+        TlsAction::SendHandshakeMsg(certificate),
+    ]);
+
+    let rsa_private_key = ctx
+        .config
+        .certificate
+        .as_ref()
+        .expect("Server certificate not configured")
+        .private_key
+        .clone();
+
+    let mut server_private_key = None;
+    let cipher_suite = CipherSuite::from(selected_cipher_suite);
+    match cipher_suite.params().key_exchange_algorithm {
+        KeyExchangeAlgorithm::DheRsa => {
+            let (p, g, private_key, public_key) = generate_dh_keypair();
+            println!("p len {:?}", p.to_bytes_be().len());
+            println!("g len {:?}", g.to_bytes_be().len());
+            println!("k len {:?}", public_key.to_bytes_be().len());
+            let mut server_kx = ServerKeyExchange {
+                p: p.to_bytes_be().try_into().unwrap(),
+                g: g.to_bytes_be().try_into().unwrap(),
+                server_pubkey: public_key.to_bytes_be().try_into().unwrap(),
+                hash_algo: HashAlgo::Sha256,
+                sig_algo: SigAlgo::Rsa,
+                signature: vec![].try_into().unwrap(),
+            };
+
+            server_kx.signature = rsa_sign(
+                &rsa_private_key,
+                &[
+                    &client_hello.random.as_bytes()[..],
+                    &server_random,
+                    &server_kx.dh_params_bytes(),
+                ]
+                .concat(),
+            ).try_into().unwrap();
+            server_private_key = Some(private_key);
+
+            let server_kx = TlsHandshake::ServerKeyExchange(server_kx);
+            server_kx.write_to(&mut handshakes);
+
+            actions.push(TlsAction::SendHandshakeMsg(server_kx));
+            info!("Sent ServerKeyExchange");
+        }
+        _ => {}
+    }
 
     let server_hello_done = TlsHandshake::ServerHelloDone;
     server_hello_done.write_to(&mut handshakes);
+
+    actions.extend([
+        TlsAction::SendHandshakeMsg(server_hello_done),
+    ]);
 
     info!("Sent ServerHello");
     info!("Sent Certificate");
@@ -205,13 +261,10 @@ fn start_full_handshake(
                 max_fragment_length,
             },
             issue_session_ticket,
+            server_private_key
         }
         .into(),
-        vec![
-            TlsAction::SendHandshakeMsg(server_hello),
-            TlsAction::SendHandshakeMsg(certificate),
-            TlsAction::SendHandshakeMsg(server_hello_done),
-        ],
+        actions
     ))
 }
 
@@ -373,6 +426,7 @@ pub struct AwaitClientKeyExchange {
     selected_cipher_suite: CipherSuiteId,
     supported_extensions: NegotiatedExtensions,
     issue_session_ticket: bool,
+    server_private_key: Option<BigUint>
 }
 
 impl HandleRecord<TlsState> for AwaitClientKeyExchange {
@@ -382,22 +436,29 @@ impl HandleRecord<TlsState> for AwaitClientKeyExchange {
         info!("Received ClientKeyExchange");
         handshake.write_to(&mut self.handshakes);
 
-        let Ok(pre_master_secret) = decrypt_rsa_master_secret(
-            &ctx.config
-                .certificate
-                .as_ref()
-                .expect("Server private key not configured")
-                .private_key,
-            &client_kx.enc_pre_master_secret,
-        ) else {
-            return close_connection(TlsAlertDesc::DecryptError);
+        let pre_master_secret = match CipherSuite::from(self.selected_cipher_suite).params().key_exchange_algorithm {
+            KeyExchangeAlgorithm::DheRsa => {
+                let client_public_key = BigUint::from_bytes_be(&client_kx.enc_pre_master_secret);
+                let secret = client_public_key.modpow(&self.server_private_key.unwrap(), &P);
+                secret.to_bytes_be()
+            },
+            _ => {
+                let Ok(pre_master_secret) = decrypt_rsa_master_secret(
+                    &ctx.config
+                        .certificate
+                        .as_ref()
+                        .expect("Server private key not configured")
+                        .private_key,
+                    &client_kx.enc_pre_master_secret,
+                ) else {
+                    return close_connection(TlsAlertDesc::DecryptError);
+                };
+                pre_master_secret
+            }
+
         };
 
         let ciphersuite = CipherSuite::from(self.selected_cipher_suite);
-        info!(
-            "Using extended master secret: {}",
-            self.supported_extensions.extended_master_secret
-        );
         let master_secret = calculate_master_secret(
             &self.handshakes,
             &self.client_random,
