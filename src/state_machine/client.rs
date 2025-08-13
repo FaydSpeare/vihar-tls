@@ -3,7 +3,7 @@ use rsa::{RsaPublicKey, pkcs8::DecodePublicKey};
 use std::collections::HashSet;
 
 use crate::alert::TlsAlertDesc;
-use crate::ciphersuite::CipherSuiteId;
+use crate::ciphersuite::{CipherSuiteId, KeyExchangeType};
 use crate::extensions::{
     ExtendedMasterSecretExt, ExtensionType, HashAlgo, MaxFragmentLenExt, MaxFragmentLength,
     RenegotiationInfoExt, ServerNameExt, SessionTicketExt, SigAlgo,
@@ -385,7 +385,9 @@ impl HandleRecord<TlsState> for AwaitServerKeyExchange {
             return close_connection(TlsAlertDesc::IllegalParameter);
         };
 
-        let verified = match server_kx.sig_algo {
+        let cipher_suite = CipherSuite::from(self.selected_cipher_suite_id);
+
+        let verified = match cipher_suite.params().key_exchange_algorithm.signature_algorithm() {
             SigAlgo::Rsa => {
                 let Ok(rsa_public_key) = RsaPublicKey::from_public_key_der(&server_public_key_der)
                 else {
@@ -483,9 +485,9 @@ impl HandleRecord<TlsState> for AwaitServerHelloDone {
         let ciphersuite = CipherSuite::from(self.selected_cipher_suite_id);
         let (pre_master_secret, client_kx) = match ciphersuite
             .params()
-            .key_exchange_algorithm
+            .key_exchange_algorithm.kx_type()
         {
-            KeyExchangeAlgorithm::Rsa => {
+            KeyExchangeType::Rsa => {
                 let Ok(server_public_key_der) = public_key_from_cert(&self.server_certificate_der)
                 else {
                     return close_connection(TlsAlertDesc::IllegalParameter);
@@ -502,12 +504,12 @@ impl HandleRecord<TlsState> for AwaitServerHelloDone {
 
                 (pms, ClientKeyExchange::new_rsa(&enc_pms))
             }
-            KeyExchangeAlgorithm::DheRsa | KeyExchangeAlgorithm::DheDss => {
+            KeyExchangeType::Dhe => {
                 let DheParams { p, g, public_key } = self.secrets.as_ref().unwrap();
                 let (pms, client_public_key) = get_dhe_pre_master_secret(p, g, public_key);
                 (pms, ClientKeyExchange::new_dhe(&client_public_key))
             }
-            KeyExchangeAlgorithm::EcdheRsa => unimplemented!(),
+            KeyExchangeType::Ecdhe => unimplemented!(),
         };
 
         TlsHandshake::ClientKeyExchange(client_kx.clone()).write_to(&mut self.handshakes);

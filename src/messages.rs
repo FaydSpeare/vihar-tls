@@ -3,7 +3,7 @@ use std::cmp::Ordering;
 use log::debug;
 
 use crate::alert::{TlsAlert, TlsAlertDesc};
-use crate::ciphersuite::{CipherSuiteId, KeyExchangeAlgorithm};
+use crate::ciphersuite::{CipherSuiteId, CompressionMethod, KeyExchangeAlgorithm};
 use crate::encoding::{
     LengthPrefixWriter, LengthPrefixedVec, MaybeEmpty, NonEmpty, Reader, TlsCodable, u24,
 };
@@ -129,15 +129,8 @@ impl TlsCodable for SessionId {
     }
 }
 
-tls_codable_enum! {
-    #[repr(u8)]
-    pub enum CompressionMethodId {
-        Null = 0
-    }
-}
-
 type CipherSuites = LengthPrefixedVec<u16, CipherSuiteId, NonEmpty>;
-type CompressionMethods = LengthPrefixedVec<u8, CompressionMethodId, NonEmpty>;
+type CompressionMethods = LengthPrefixedVec<u8, CompressionMethod, NonEmpty>;
 
 #[derive(Debug, Clone)]
 pub struct ClientHello {
@@ -171,7 +164,7 @@ impl ClientHello {
             },
             session_id: session_id.unwrap_or(SessionId::new(&[]).unwrap()),
             cipher_suites: suites.to_vec().try_into()?,
-            compression_methods: vec![CompressionMethodId::Null].try_into()?,
+            compression_methods: vec![CompressionMethod::Null].try_into()?,
             extensions: Extensions::new(extensions)?,
         })
     }
@@ -219,7 +212,7 @@ pub struct ServerHello {
     pub random: Random,
     pub session_id: SessionId,
     pub cipher_suite: CipherSuiteId,
-    pub compression_method: CompressionMethodId,
+    pub compression_method: CompressionMethod,
     pub extensions: Extensions,
 }
 
@@ -261,7 +254,7 @@ impl ServerHello {
             },
             session_id: SessionId(utils::get_random_bytes(32).try_into().unwrap()),
             cipher_suite,
-            compression_method: CompressionMethodId::Null,
+            compression_method: CompressionMethod::Null,
             extensions: Extensions::new(extensions).unwrap(),
         }
     }
@@ -299,7 +292,7 @@ impl TlsCodable for ServerHello {
         let random = Random::read_from(reader)?;
         let session_id = SessionId::read_from(reader)?;
         let cipher_suite = CipherSuiteId::read_from(reader)?;
-        let compression_method = CompressionMethodId::read_from(reader)?;
+        let compression_method = CompressionMethod::read_from(reader)?;
         let extensions = Extensions::read_from(reader)?;
         println!("Server Extensions: {:#?}", extensions.extension_type_set());
         Ok(Self {
@@ -580,7 +573,7 @@ impl NewSessionTicket {
     pub fn new(
         protocol_version: ProtocolVersion,
         cipher_suite: CipherSuiteId,
-        compression_method: CompressionMethodId,
+        compression_method: CompressionMethod,
         master_secret: [u8; 48],
         client_identity: ClientIdentity,
         timestamp: u32,

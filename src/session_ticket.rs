@@ -2,11 +2,11 @@
 use aes::Aes128;
 
 use crate::{
-    ciphersuite::CipherSuiteId,
+    ciphersuite::{CipherSuiteId, CompressionMethod},
     encoding::{LengthPrefixedVec, MaybeEmpty, Reader, TlsCodable},
     errors::{DecodingError, InvalidEncodingError},
     gcm::{decrypt_aes_cbc, encrypt_aes_cbc},
-    messages::{CeritificateList, CompressionMethodId, ProtocolVersion},
+    messages::{CeritificateList, ProtocolVersion},
     prf::{hmac, HmacHashAlgo},
     utils, MaxFragmentLength,
 };
@@ -70,7 +70,7 @@ pub struct StatePlaintext {
     pub timestamp: u32,
     pub protocol_version: ProtocolVersion,
     pub cipher_suite: CipherSuiteId,
-    pub compression_method: CompressionMethodId,
+    pub compression_method: CompressionMethod,
     pub master_secret: [u8; 48],
     pub client_identity: ClientIdentity,
     pub max_fragment_length: Option<MaxFragmentLength>,
@@ -83,7 +83,7 @@ impl TlsCodable for StatePlaintext {
             timestamp: u32::read_from(reader)?,
             protocol_version: ProtocolVersion::read_from(reader)?,
             cipher_suite: CipherSuiteId::read_from(reader)?,
-            compression_method: CompressionMethodId::read_from(reader)?,
+            compression_method: CompressionMethod::read_from(reader)?,
             master_secret: <[u8; 48]>::read_from(reader)?,
             client_identity: ClientIdentity::read_from(reader)?,
             max_fragment_length: <Option<MaxFragmentLength>>::read_from(reader)?,
@@ -172,7 +172,7 @@ mod tests {
         let state = StatePlaintext {
             protocol_version: ProtocolVersion::tls12(),
             cipher_suite: CipherSuiteId::RsaAes128CbcSha,
-            compression_method: CompressionMethodId::Null,
+            compression_method: CompressionMethod::Null,
             master_secret: [0; 48],
             client_identity: ClientIdentity::Anonymous,
             timestamp: 0u32,

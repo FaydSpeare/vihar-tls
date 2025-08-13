@@ -1,6 +1,7 @@
 use std::fmt::Debug;
 
 use crate::{
+    extensions::SigAlgo,
     gcm::{decrypt_aes_cbc, decrypt_aes_gcm, encrypt_aes_cbc, encrypt_aes_gcm},
     prf::{HmacHashAlgo, hmac, prf_sha256, prf_sha384},
 };
@@ -8,9 +9,11 @@ use aes::{Aes128, Aes256};
 use enum_dispatch::enum_dispatch;
 use sha2::{Digest, Sha256, Sha384};
 
-#[derive(Debug, Copy, Clone)]
-pub enum CompressionAlgorithm {
-    Null,
+tls_codable_enum! {
+    #[repr(u8)]
+    pub enum CompressionMethod {
+        Null = 0
+    }
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -167,6 +170,12 @@ impl EncAlgorithm {
         }
     }
 }
+#[derive(Debug, Clone)]
+pub enum KeyExchangeType {
+    Rsa,
+    Dhe,
+    Ecdhe,
+}
 
 #[derive(Debug, Clone)]
 pub enum KeyExchangeAlgorithm {
@@ -174,6 +183,22 @@ pub enum KeyExchangeAlgorithm {
     DheRsa,
     DheDss,
     EcdheRsa,
+}
+
+impl KeyExchangeAlgorithm {
+    pub fn signature_algorithm(&self) -> SigAlgo {
+        match self {
+            Self::Rsa | Self::DheRsa | Self::EcdheRsa => SigAlgo::Rsa,
+            Self::DheDss => SigAlgo::Dsa,
+        }
+    }
+    pub fn kx_type(&self) -> KeyExchangeType {
+        match self {
+            Self::Rsa => KeyExchangeType::Rsa,
+            Self::DheDss | Self::DheRsa => KeyExchangeType::Dhe,
+            Self::EcdheRsa => KeyExchangeType::Ecdhe,
+        }
+    }
 }
 
 #[allow(dead_code)]

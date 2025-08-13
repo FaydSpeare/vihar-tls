@@ -1,7 +1,6 @@
 use crate::alert::{TlsAlert, TlsAlertDesc};
 use crate::ciphersuite::{
-    CipherSuite, CipherSuiteId, CipherSuiteMethods, CipherType, CompressionAlgorithm, EncAlgorithm,
-    MacAlgorithm, PrfAlgorithm,
+    CipherSuite, CipherSuiteId, CipherSuiteMethods, CipherType, CompressionMethod, EncAlgorithm, MacAlgorithm, PrfAlgorithm
 };
 use crate::client::TlsConfig;
 use crate::encoding::TlsCodable;
@@ -34,7 +33,7 @@ pub struct SecurityParams {
     pub enc_algorithm: EncAlgorithm,
     pub mac_algorithm: MacAlgorithm,
     pub prf_algorithm: PrfAlgorithm,
-    pub compression_algorithm: CompressionAlgorithm,
+    pub compression_algorithm: CompressionMethod,
     pub client_random: [u8; 32],
     pub server_random: [u8; 32],
     pub master_secret: [u8; 48],
@@ -56,7 +55,7 @@ impl SecurityParams {
             enc_algorithm: ciphersuite.params().enc_algorithm,
             mac_algorithm: ciphersuite.params().mac_algorithm,
             prf_algorithm: ciphersuite.params().prf_algorithm,
-            compression_algorithm: CompressionAlgorithm::Null,
+            compression_algorithm: CompressionMethod::Null,
         }
     }
     pub fn client_verify_data(&self, handshakes: &[u8]) -> Vec<u8> {
@@ -303,21 +302,23 @@ impl SecureConnState {
 
     pub fn compress(&mut self, plaintext: TlsPlaintext) -> TlsCompressed {
         match self.params.compression_algorithm {
-            CompressionAlgorithm::Null => TlsCompressed {
+            CompressionMethod::Null => TlsCompressed {
                 content_type: plaintext.content_type,
                 version: plaintext.version,
                 fragment: plaintext.fragment,
             },
+            CompressionMethod::Unknown(x) => panic!("unknown compression method: {x}")
         }
     }
 
     pub fn decompress(&mut self, compressed: TlsCompressed) -> Result<TlsPlaintext, TlsError> {
         match self.params.compression_algorithm {
-            CompressionAlgorithm::Null => Ok(TlsPlaintext {
+            CompressionMethod::Null => Ok(TlsPlaintext {
                 content_type: compressed.content_type,
                 version: compressed.version,
                 fragment: compressed.fragment,
             }),
+            CompressionMethod::Unknown(x) => panic!("unknown compression method: {x}")
         }
     }
 

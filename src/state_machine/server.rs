@@ -4,12 +4,12 @@ use log::{debug, info};
 use num_bigint::BigUint;
 
 use crate::alert::TlsAlertDesc;
-use crate::ciphersuite::{CipherSuiteId, KeyExchangeAlgorithm};
+use crate::ciphersuite::{CipherSuiteId, KeyExchangeType};
 use crate::client::PrioritisedCipherSuite;
 use crate::encoding::Reader;
 use crate::extensions::{HashAlgo, SigAlgo};
 use crate::messages::{
-    Certificate, ClientHello, ClientKeyExchangeInner, CompressionMethodId, NewSessionTicket,
+    Certificate, ClientHello, ClientKeyExchangeInner, NewSessionTicket,
     ProtocolVersion, ServerHello, ServerKeyExchange, SessionId,
 };
 use crate::session_ticket::{ClientIdentity, SessionTicket};
@@ -19,7 +19,7 @@ use crate::state_machine::{
     close_connection, close_with_unexpected_message,
 };
 use crate::storage::SessionInfo;
-use crate::{MaxFragmentLengthNegotiationPolicy, RenegotiationPolicy};
+use crate::{utils, MaxFragmentLengthNegotiationPolicy, RenegotiationPolicy};
 use crate::{
     alert::TlsAlert,
     ciphersuite::{CipherSuite, CipherSuiteMethods},
@@ -202,41 +202,36 @@ fn start_full_handshake(
 
     let mut server_private_key = None;
     let cipher_suite = CipherSuite::from(selected_cipher_suite);
-    match cipher_suite.params().key_exchange_algorithm {
-        KeyExchangeAlgorithm::DheRsa => {
-            let (p, g, private_key, public_key) = generate_dh_keypair();
-            println!("p len {:?}", p.to_bytes_be().len());
-            println!("g len {:?}", g.to_bytes_be().len());
-            println!("k len {:?}", public_key.to_bytes_be().len());
-            let mut server_kx = ServerKeyExchange {
-                p: p.to_bytes_be().try_into().unwrap(),
-                g: g.to_bytes_be().try_into().unwrap(),
-                server_pubkey: public_key.to_bytes_be().try_into().unwrap(),
-                hash_algo: HashAlgo::Sha256,
-                sig_algo: SigAlgo::Rsa,
-                signature: vec![].try_into().unwrap(),
-            };
+    if let KeyExchangeType::Dhe = cipher_suite.params().key_exchange_algorithm.kx_type() {
+        let (p, g, private_key, public_key) = generate_dh_keypair();
 
-            server_kx.signature = rsa_sign(
-                &rsa_private_key,
-                &[
-                    &client_hello.random.as_bytes()[..],
-                    &server_random,
-                    &server_kx.dh_params_bytes(),
-                ]
-                .concat(),
-            )
-            .try_into()
-            .unwrap();
-            server_private_key = Some(private_key);
+        let mut server_kx = ServerKeyExchange {
+            p: p.to_bytes_be().try_into().unwrap(),
+            g: g.to_bytes_be().try_into().unwrap(),
+            server_pubkey: public_key.to_bytes_be().try_into().unwrap(),
+            hash_algo: HashAlgo::Sha256,
+            sig_algo: SigAlgo::Rsa,
+            signature: vec![].try_into().unwrap(),
+        };
 
-            let server_kx = TlsHandshake::ServerKeyExchange(server_kx);
-            server_kx.write_to(&mut handshakes);
+        server_kx.signature = rsa_sign(
+            &rsa_private_key,
+            &[
+                &client_hello.random.as_bytes()[..],
+                &server_random,
+                &server_kx.dh_params_bytes(),
+            ]
+            .concat(),
+        )
+        .try_into()
+        .unwrap();
+        server_private_key = Some(private_key);
 
-            actions.push(TlsAction::SendHandshakeMsg(server_kx));
-            info!("Sent ServerKeyExchange");
-        }
-        _ => {}
+        let server_kx = TlsHandshake::ServerKeyExchange(server_kx);
+        server_kx.write_to(&mut handshakes);
+
+        actions.push(TlsAction::SendHandshakeMsg(server_kx));
+        info!("Sent ServerKeyExchange");
     }
 
     let server_hello_done = TlsHandshake::ServerHelloDone;
@@ -407,7 +402,7 @@ impl HandleRecord<TlsState> for AwaitClientFinishedAbbr {
         Ok((
             ServerEstablished {
                 session_id: SessionId::new(&[]).unwrap(),
-                supported_extensions: self.supported_extensions,
+                negotiated_extensions: self.supported_extensions,
                 client_verify_data,
                 server_verify_data: self.server_verify_data,
             }
@@ -558,10 +553,10 @@ impl HandleRecord<TlsState> for AwaitClientFinished {
             let new_session_ticket = NewSessionTicket::new(
                 ProtocolVersion::tls12(),
                 self.params.cipher_suite_id,
-                CompressionMethodId::Null,
+                self.params.compression_algorithm,
                 self.params.master_secret,
                 ClientIdentity::Anonymous,
-                0,
+                utils::get_unix_time(),
                 self.negotiated_extensions.max_fragment_length,
                 self.negotiated_extensions.extended_master_secret,
             );
@@ -603,7 +598,7 @@ impl HandleRecord<TlsState> for AwaitClientFinished {
         Ok((
             ServerEstablished {
                 session_id: SessionId::new(&self.session_id).unwrap(),
-                supported_extensions: self.negotiated_extensions,
+                negotiated_extensions: self.negotiated_extensions,
                 client_verify_data,
                 server_verify_data,
             }
@@ -617,7 +612,7 @@ impl HandleRecord<TlsState> for AwaitClientFinished {
 pub struct ServerEstablished {
     pub session_id: SessionId,
     #[allow(unused)]
-    supported_extensions: NegotiatedExtensions,
+    negotiated_extensions: NegotiatedExtensions,
     pub server_verify_data: Vec<u8>,
     pub client_verify_data: Vec<u8>,
 }
