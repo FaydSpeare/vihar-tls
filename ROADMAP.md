@@ -1,6 +1,8 @@
 ## TODO
 
-- Clean up ServerKX / ClientKX impl
+- Use algorithm from signature algorithms for digital signing
+what if none are supported?
+- make this a config
 
 - Check server certificate chain against local root certificates?
 

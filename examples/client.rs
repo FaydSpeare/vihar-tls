@@ -26,7 +26,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut client = TlsClient::new(
         TlsConfigBuilder::new()
             .with_max_fragment_length(MaxFragmentLength::Len1024)
-            .with_cipher_suites([pcs!(2, CipherSuiteId::RsaAes128CbcSha)].into())
+            .with_cipher_suites([pcs!(2, CipherSuiteId::DheRsaAes128CbcSha)].into())
             //.with_server_name("google.com")
             .with_session_store("sdb")
             .build(),

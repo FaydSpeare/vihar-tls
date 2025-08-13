@@ -1,6 +1,7 @@
 use std::cmp::Ordering;
 
 use log::debug;
+use num_bigint::BigUint;
 
 use crate::alert::{TlsAlert, TlsAlertDesc};
 use crate::ciphersuite::{CipherSuiteId, CompressionMethod, KeyExchangeAlgorithm};
@@ -10,7 +11,7 @@ use crate::encoding::{
 use crate::errors::{DecodingError, InvalidEncodingError};
 use crate::extensions::{
     ExtendedMasterSecretExt, Extension, Extensions, HashAlgo, MaxFragmentLenExt,
-    RenegotiationInfoExt, SessionTicketExt, SigAlgo, SignatureAlgorithmsExt,
+    RenegotiationInfoExt, SessionTicketExt, SigAlgo, SignatureAlgorithmsExt, sign,
 };
 use crate::session_ticket::{ClientIdentity, StatePlaintext};
 use crate::{MaxFragmentLength, TlsPolicy, TlsValidateable, utils};
@@ -193,7 +194,7 @@ impl TlsCodable for ClientHello {
         let cipher_suites = CipherSuites::read_from(reader)?;
         let compression_methods = CompressionMethods::read_from(reader)?;
         let extensions = Extensions::read_from(reader)?;
-        // println!("Client Extensions: {:#?}", extensions);
+        println!("Client Extensions: {:#?}", extensions);
         Ok(Self {
             version: client_version,
             random,
@@ -422,58 +423,119 @@ type DHParam = LengthPrefixedVec<u16, u8, NonEmpty>;
 type Signature = LengthPrefixedVec<u16, u8, MaybeEmpty>;
 
 #[derive(Debug, Clone)]
-pub struct ServerKeyExchange {
+pub struct ServerDHParams {
     pub p: DHParam,
     pub g: DHParam,
-    pub server_pubkey: DHParam,
-    pub hash_algo: HashAlgo,
-    pub sig_algo: SigAlgo,
+    pub server_public_key: DHParam,
+}
+
+impl ServerDHParams {
+    pub fn new(p: BigUint, g: BigUint, server_public_key: BigUint) -> Self {
+        Self {
+            p: p.to_bytes_be().try_into().unwrap(),
+            g: g.to_bytes_be().try_into().unwrap(),
+            server_public_key: server_public_key.to_bytes_be().try_into().unwrap(),
+        }
+    }
+}
+
+impl TlsCodable for ServerDHParams {
+    fn write_to(&self, bytes: &mut Vec<u8>) {
+        self.p.write_to(bytes);
+        self.g.write_to(bytes);
+        self.server_public_key.write_to(bytes);
+    }
+    fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
+        Ok(Self {
+            p: DHParam::read_from(reader)?,
+            g: DHParam::read_from(reader)?,
+            server_public_key: DHParam::read_from(reader)?,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DigitallySigned {
+    pub hash_algorithm: HashAlgo,
+    pub signature_algorithm: SigAlgo,
     pub signature: Signature,
 }
 
+impl TlsCodable for DigitallySigned {
+    fn write_to(&self, bytes: &mut Vec<u8>) {
+        self.hash_algorithm.write_to(bytes);
+        self.signature_algorithm.write_to(bytes);
+        self.signature.write_to(bytes);
+    }
+    fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
+        Ok(Self {
+            hash_algorithm: HashAlgo::read_from(reader)?,
+            signature_algorithm: SigAlgo::read_from(reader)?,
+            signature: Signature::read_from(reader)?,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum ServerKeyExchange {
+    Dhe(DheServerKeyExchange),
+}
+
 impl ServerKeyExchange {
-    pub fn dh_params_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(&(self.p.len() as u16).to_be_bytes());
-        bytes.extend_from_slice(&self.p);
-        bytes.extend_from_slice(&(self.g.len() as u16).to_be_bytes());
-        bytes.extend_from_slice(&self.g);
-        bytes.extend_from_slice(&(self.server_pubkey.len() as u16).to_be_bytes());
-        bytes.extend_from_slice(&self.server_pubkey);
-        bytes
+    pub fn new_dhe(
+        params: ServerDHParams,
+        client_random: [u8; 32],
+        server_random: [u8; 32],
+        hash_algorithm: HashAlgo,
+        signature_algorithm: SigAlgo,
+        private_key_der: &[u8],
+    ) -> Self {
+        let data = [&client_random[..], &server_random, &params.get_encoding()].concat();
+        let signature = sign(signature_algorithm, hash_algorithm, private_key_der, &data).unwrap();
+        Self::Dhe(DheServerKeyExchange {
+            params,
+            signed_params: DigitallySigned {
+                hash_algorithm,
+                signature_algorithm,
+                signature: signature.try_into().unwrap(),
+            },
+        })
+    }
+}
+
+impl TlsCodable for ServerKeyExchange {
+    fn write_to(&self, bytes: &mut Vec<u8>) {
+        match self {
+            Self::Dhe(kx) => kx.write_to(bytes),
+        };
+    }
+    fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
+        Ok(Self::Dhe(DheServerKeyExchange::read_from(reader)?))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DheServerKeyExchange {
+    pub params: ServerDHParams,
+    pub signed_params: DigitallySigned,
+}
+
+impl TlsCodable for DheServerKeyExchange {
+    fn write_to(&self, bytes: &mut Vec<u8>) {
+        self.params.write_to(bytes);
+        self.signed_params.write_to(bytes);
+    }
+    fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
+        Ok(Self {
+            params: ServerDHParams::read_from(reader)?,
+            signed_params: DigitallySigned::read_from(reader)?,
+        })
     }
 }
 
 impl From<ServerKeyExchange> for TlsHandshake {
     fn from(value: ServerKeyExchange) -> Self {
         Self::ServerKeyExchange(value)
-    }
-}
-
-impl TlsCodable for ServerKeyExchange {
-    fn write_to(&self, bytes: &mut Vec<u8>) {
-        self.p.write_to(bytes);
-        self.g.write_to(bytes);
-        self.server_pubkey.write_to(bytes);
-        self.hash_algo.write_to(bytes);
-        self.sig_algo.write_to(bytes);
-        self.signature.write_to(bytes);
-    }
-    fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
-        let p = DHParam::read_from(reader)?;
-        let g = DHParam::read_from(reader)?;
-        let server_pubkey = DHParam::read_from(reader)?;
-        let hash_algo = HashAlgo::read_from(reader)?;
-        let sig_algo = SigAlgo::read_from(reader)?;
-        let signature = Signature::read_from(reader)?;
-        return Ok(Self {
-            p,
-            g,
-            server_pubkey,
-            hash_algo,
-            sig_algo,
-            signature,
-        });
     }
 }
 
@@ -493,24 +555,27 @@ pub enum ClientKeyExchange {
 
 impl ClientKeyExchange {
     pub fn new_dhe(bytes: &[u8]) -> Self {
-        Self::Resolved(ClientKeyExchangeInner::ClientDiffieHellmanPublic(bytes.to_vec().try_into().unwrap()))
+        Self::Resolved(ClientKeyExchangeInner::ClientDiffieHellmanPublic(
+            bytes.to_vec().try_into().unwrap(),
+        ))
     }
     pub fn new_rsa(bytes: &[u8]) -> Self {
-        Self::Resolved(ClientKeyExchangeInner::EncryptedPreMasterSecret(bytes.to_vec().try_into().unwrap()))
+        Self::Resolved(ClientKeyExchangeInner::EncryptedPreMasterSecret(
+            bytes.to_vec().try_into().unwrap(),
+        ))
     }
     pub fn resolve(&self, kx: KeyExchangeAlgorithm) -> ClientKeyExchangeInner {
         match self {
-            Self::Unresolved(bytes) => {
-                match kx {
-                    KeyExchangeAlgorithm::DheRsa | KeyExchangeAlgorithm::DheDss => ClientKeyExchangeInner::ClientDiffieHellmanPublic(bytes.clone()),
-                    _ => ClientKeyExchangeInner::EncryptedPreMasterSecret(bytes.clone())
+            Self::Unresolved(bytes) => match kx {
+                KeyExchangeAlgorithm::DheRsa | KeyExchangeAlgorithm::DheDss => {
+                    ClientKeyExchangeInner::ClientDiffieHellmanPublic(bytes.clone())
                 }
-            }
-            Self::Resolved(inner) => inner.clone()
+                _ => ClientKeyExchangeInner::EncryptedPreMasterSecret(bytes.clone()),
+            },
+            Self::Resolved(inner) => inner.clone(),
         }
     }
 }
-
 
 impl From<ClientKeyExchange> for TlsHandshake {
     fn from(value: ClientKeyExchange) -> Self {

@@ -5,13 +5,12 @@ use std::collections::HashSet;
 use crate::alert::TlsAlertDesc;
 use crate::ciphersuite::{CipherSuiteId, KeyExchangeType};
 use crate::extensions::{
-    ExtendedMasterSecretExt, ExtensionType, HashAlgo, MaxFragmentLenExt, MaxFragmentLength,
-    RenegotiationInfoExt, ServerNameExt, SessionTicketExt, SigAlgo,
+    ExtendedMasterSecretExt, ExtensionType, MaxFragmentLenExt, MaxFragmentLength,
+    RenegotiationInfoExt, ServerNameExt, SessionTicketExt, verify,
 };
-use crate::messages::{ClientHello, SessionId};
+use crate::messages::{ClientHello, ServerDHParams, ServerKeyExchange, SessionId};
 use crate::signature::{
-    dsa_verify, get_dhe_pre_master_secret, get_rsa_pre_master_secret, public_key_from_cert,
-    rsa_verify,
+    get_dhe_pre_master_secret, get_rsa_pre_master_secret, public_key_from_cert,
 };
 use crate::state_machine::{
     NegotiatedExtensions, SessionResumption, TlsAction, TlsEntity, calculate_master_secret,
@@ -385,48 +384,26 @@ impl HandleRecord<TlsState> for AwaitServerKeyExchange {
             return close_connection(TlsAlertDesc::IllegalParameter);
         };
 
-        let cipher_suite = CipherSuite::from(self.selected_cipher_suite_id);
+        #[allow(irrefutable_let_patterns)]
+        let ServerKeyExchange::Dhe(server_kx) = server_kx else {
+            unimplemented!()
+        };
 
-        let verified = match cipher_suite.params().key_exchange_algorithm.signature_algorithm() {
-            SigAlgo::Rsa => {
-                let Ok(rsa_public_key) = RsaPublicKey::from_public_key_der(&server_public_key_der)
-                else {
-                    return close_connection(TlsAlertDesc::IllegalParameter);
-                };
+        let message = [
+            self.client_random.as_ref(),
+            self.server_random.as_ref(),
+            &server_kx.params.get_encoding(),
+        ]
+        .concat();
 
-                let Ok(verified) = rsa_verify(
-                    &rsa_public_key,
-                    &[
-                        self.client_random.as_ref(),
-                        self.server_random.as_ref(),
-                        &server_kx.dh_params_bytes(),
-                    ]
-                    .concat(),
-                    &server_kx.signature,
-                ) else {
-                    return close_connection(TlsAlertDesc::IllegalParameter);
-                };
-
-                verified
-            }
-            SigAlgo::Dsa => {
-                assert_eq!(server_kx.hash_algo, HashAlgo::Sha256);
-                let Ok(verified) = dsa_verify(
-                    &server_public_key_der,
-                    &[
-                        self.client_random.as_ref(),
-                        self.server_random.as_ref(),
-                        &server_kx.dh_params_bytes(),
-                    ]
-                    .concat(),
-                    &server_kx.signature,
-                ) else {
-                    return close_connection(TlsAlertDesc::IllegalParameter);
-                };
-
-                verified
-            }
-            _ => unimplemented!(),
+        let Ok(verified) = verify(
+            server_kx.signed_params.signature_algorithm,
+            server_kx.signed_params.hash_algorithm,
+            &server_public_key_der,
+            &message,
+            &server_kx.signed_params.signature,
+        ) else {
+            return close_connection(TlsAlertDesc::IllegalParameter);
         };
 
         if !verified {
@@ -444,23 +421,12 @@ impl HandleRecord<TlsState> for AwaitServerKeyExchange {
                 selected_cipher_suite_id: self.selected_cipher_suite_id,
                 negotiated_extensions: self.negotiated_extensions,
                 server_certificate_der: self.server_certificate_der,
-                secrets: Some(DheParams {
-                    p: server_kx.p.to_vec(),
-                    g: server_kx.g.to_vec(),
-                    public_key: server_kx.server_pubkey.to_vec(),
-                }),
+                secrets: Some(server_kx.params.clone()),
             }
             .into(),
             vec![],
         ))
     }
-}
-
-#[derive(Debug)]
-struct DheParams {
-    p: Vec<u8>,
-    g: Vec<u8>,
-    public_key: Vec<u8>,
 }
 
 #[derive(Debug)]
@@ -472,7 +438,7 @@ pub struct AwaitServerHelloDone {
     selected_cipher_suite_id: CipherSuiteId,
     negotiated_extensions: NegotiatedExtensions,
     server_certificate_der: Vec<u8>,
-    secrets: Option<DheParams>,
+    secrets: Option<ServerDHParams>,
 }
 
 impl HandleRecord<TlsState> for AwaitServerHelloDone {
@@ -485,7 +451,8 @@ impl HandleRecord<TlsState> for AwaitServerHelloDone {
         let ciphersuite = CipherSuite::from(self.selected_cipher_suite_id);
         let (pre_master_secret, client_kx) = match ciphersuite
             .params()
-            .key_exchange_algorithm.kx_type()
+            .key_exchange_algorithm
+            .kx_type()
         {
             KeyExchangeType::Rsa => {
                 let Ok(server_public_key_der) = public_key_from_cert(&self.server_certificate_der)
@@ -505,8 +472,12 @@ impl HandleRecord<TlsState> for AwaitServerHelloDone {
                 (pms, ClientKeyExchange::new_rsa(&enc_pms))
             }
             KeyExchangeType::Dhe => {
-                let DheParams { p, g, public_key } = self.secrets.as_ref().unwrap();
-                let (pms, client_public_key) = get_dhe_pre_master_secret(p, g, public_key);
+                let ServerDHParams {
+                    p,
+                    g,
+                    server_public_key,
+                } = self.secrets.as_ref().unwrap();
+                let (pms, client_public_key) = get_dhe_pre_master_secret(p, g, server_public_key);
                 (pms, ClientKeyExchange::new_dhe(&client_public_key))
             }
             KeyExchangeType::Ecdhe => unimplemented!(),

@@ -9,17 +9,17 @@ use crate::client::PrioritisedCipherSuite;
 use crate::encoding::Reader;
 use crate::extensions::{HashAlgo, SigAlgo};
 use crate::messages::{
-    Certificate, ClientHello, ClientKeyExchangeInner, NewSessionTicket,
-    ProtocolVersion, ServerHello, ServerKeyExchange, SessionId,
+    Certificate, ClientHello, ClientKeyExchangeInner, NewSessionTicket, ProtocolVersion,
+    ServerDHParams, ServerHello, ServerKeyExchange, SessionId,
 };
 use crate::session_ticket::{ClientIdentity, SessionTicket};
-use crate::signature::{P, decrypt_rsa_master_secret, generate_dh_keypair, rsa_sign};
+use crate::signature::{P, decrypt_rsa_master_secret, generate_dh_keypair};
 use crate::state_machine::{
     NegotiatedExtensions, SessionValidation, TlsAction, TlsEntity, calculate_master_secret,
     close_connection, close_with_unexpected_message,
 };
 use crate::storage::SessionInfo;
-use crate::{utils, MaxFragmentLengthNegotiationPolicy, RenegotiationPolicy};
+use crate::{MaxFragmentLengthNegotiationPolicy, RenegotiationPolicy, utils};
 use crate::{
     alert::TlsAlert,
     ciphersuite::{CipherSuite, CipherSuiteMethods},
@@ -28,6 +28,7 @@ use crate::{
     messages::{Finished, TlsHandshake, TlsMessage},
 };
 
+use rsa::pkcs1::EncodeRsaPrivateKey;
 use super::{HandleRecord, HandleResult, PreviousVerifyData, TlsContext, TlsEvent, TlsState};
 
 fn select_cipher_suite(
@@ -204,28 +205,17 @@ fn start_full_handshake(
     let cipher_suite = CipherSuite::from(selected_cipher_suite);
     if let KeyExchangeType::Dhe = cipher_suite.params().key_exchange_algorithm.kx_type() {
         let (p, g, private_key, public_key) = generate_dh_keypair();
-
-        let mut server_kx = ServerKeyExchange {
-            p: p.to_bytes_be().try_into().unwrap(),
-            g: g.to_bytes_be().try_into().unwrap(),
-            server_pubkey: public_key.to_bytes_be().try_into().unwrap(),
-            hash_algo: HashAlgo::Sha256,
-            sig_algo: SigAlgo::Rsa,
-            signature: vec![].try_into().unwrap(),
-        };
-
-        server_kx.signature = rsa_sign(
-            &rsa_private_key,
-            &[
-                &client_hello.random.as_bytes()[..],
-                &server_random,
-                &server_kx.dh_params_bytes(),
-            ]
-            .concat(),
-        )
-        .try_into()
-        .unwrap();
         server_private_key = Some(private_key);
+
+        let dh_params = ServerDHParams::new(p, g, public_key);
+        let server_kx = ServerKeyExchange::new_dhe(
+            dh_params,
+            client_hello.random.as_bytes(),
+            server_random,
+            HashAlgo::Sha256,
+            SigAlgo::Rsa,
+            &rsa_private_key.to_pkcs1_der().unwrap().to_bytes(),
+        );
 
         let server_kx = TlsHandshake::ServerKeyExchange(server_kx);
         server_kx.write_to(&mut handshakes);

@@ -1,4 +1,6 @@
 use log::{trace, warn};
+use sha1::Sha1;
+use sha2::{Sha224, Sha256, Sha384, Sha512};
 use std::{collections::HashSet, fmt::Debug};
 
 use crate::{
@@ -9,6 +11,7 @@ use crate::{
         TlsCodable,
     },
     errors::{DecodingError, InvalidEncodingError},
+    signature::{dsa_sign, dsa_verify, rsa_sign, rsa_verify},
 };
 
 tls_codable_enum! {
@@ -141,7 +144,7 @@ impl From<MaxFragmentLenExt> for Extension {
 
 #[derive(Debug, Clone)]
 pub struct Extensions {
-    list: Option<LengthPrefixedVec<u16, Extension, NonEmpty>>, 
+    list: Option<LengthPrefixedVec<u16, Extension, NonEmpty>>,
 }
 
 impl Extensions {
@@ -157,7 +160,6 @@ impl Extensions {
     pub fn empty() -> Self {
         Self { list: None }
     }
-
 
     pub fn validate(&self, policy: &TlsPolicy) -> Result<(), TlsAlert> {
         if let Some(extensions) = &self.list {
@@ -365,12 +367,59 @@ tls_codable_enum! {
     }
 }
 
+pub fn verify(
+    signature_algorithm: SigAlgo,
+    hash_algorithm: HashAlgo,
+    key_der: &[u8],
+    message: &[u8],
+    signature: &[u8],
+) -> Result<bool, String> {
+    match (signature_algorithm, hash_algorithm) {
+        (SigAlgo::Dsa, HashAlgo::Sha1) => dsa_verify::<Sha1>(key_der, message, signature),
+        (SigAlgo::Dsa, HashAlgo::Sha224) => dsa_verify::<Sha224>(key_der, message, signature),
+        (SigAlgo::Dsa, HashAlgo::Sha256) => dsa_verify::<Sha256>(key_der, message, signature),
+        (SigAlgo::Dsa, HashAlgo::Sha384) => dsa_verify::<Sha384>(key_der, message, signature),
+        (SigAlgo::Dsa, HashAlgo::Sha512) => dsa_verify::<Sha512>(key_der, message, signature),
+        (SigAlgo::Rsa, HashAlgo::Sha1) => rsa_verify::<Sha1>(key_der, message, signature),
+        (SigAlgo::Rsa, HashAlgo::Sha224) => rsa_verify::<Sha224>(key_der, message, signature),
+        (SigAlgo::Rsa, HashAlgo::Sha256) => rsa_verify::<Sha256>(key_der, message, signature),
+        (SigAlgo::Rsa, HashAlgo::Sha384) => rsa_verify::<Sha384>(key_der, message, signature),
+        (SigAlgo::Rsa, HashAlgo::Sha512) => rsa_verify::<Sha512>(key_der, message, signature),
+        _ => Err(format!(
+            "No verification available for {signature_algorithm:?} {hash_algorithm:?}"
+        )),
+    }
+}
+
+pub fn sign(
+    signature_algorithm: SigAlgo,
+    hash_algorithm: HashAlgo,
+    key_der: &[u8],
+    data: &[u8],
+) -> Result<Vec<u8>, String> {
+    match (signature_algorithm, hash_algorithm) {
+        (SigAlgo::Dsa, HashAlgo::Sha1) => dsa_sign::<Sha1>(key_der, data),
+        (SigAlgo::Dsa, HashAlgo::Sha224) => dsa_sign::<Sha224>(key_der, data),
+        (SigAlgo::Dsa, HashAlgo::Sha256) => dsa_sign::<Sha256>(key_der, data),
+        (SigAlgo::Dsa, HashAlgo::Sha384) => dsa_sign::<Sha384>(key_der, data),
+        (SigAlgo::Dsa, HashAlgo::Sha512) => dsa_sign::<Sha512>(key_der, data),
+        (SigAlgo::Rsa, HashAlgo::Sha1) => rsa_sign::<Sha1>(key_der, data),
+        (SigAlgo::Rsa, HashAlgo::Sha224) => rsa_sign::<Sha224>(key_der, data),
+        (SigAlgo::Rsa, HashAlgo::Sha256) => rsa_sign::<Sha256>(key_der, data),
+        (SigAlgo::Rsa, HashAlgo::Sha384) => rsa_sign::<Sha384>(key_der, data),
+        (SigAlgo::Rsa, HashAlgo::Sha512) => rsa_sign::<Sha512>(key_der, data),
+        _ => Err(format!(
+            "No signing available for {signature_algorithm:?} {hash_algorithm:?}"
+        )),
+    }
+}
+
 tls_codable_enum! {
     #[repr(u8)]
     pub enum HashAlgo {
         Md5 = 1,
         Sha1 = 2,
-        Sha244 = 3,
+        Sha224 = 3,
         Sha256 = 4,
         Sha384 = 5,
         Sha512 = 6
