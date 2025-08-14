@@ -11,7 +11,7 @@ use crate::encoding::{
 use crate::errors::{DecodingError, InvalidEncodingError};
 use crate::extensions::{
     ExtendedMasterSecretExt, Extension, Extensions, HashAlgo, MaxFragmentLenExt,
-    RenegotiationInfoExt, SessionTicketExt, SigAlgo, sign,
+    RenegotiationInfoExt, SessionTicketExt, SigAlgo, SignatureAndHashAlgorithm, sign,
 };
 use crate::session_ticket::{ClientIdentity, StatePlaintext};
 use crate::{MaxFragmentLength, TlsPolicy, TlsValidateable, utils};
@@ -528,6 +528,51 @@ impl TlsCodable for DheServerKeyExchange {
 impl From<ServerKeyExchange> for TlsHandshake {
     fn from(value: ServerKeyExchange) -> Self {
         Self::ServerKeyExchange(value)
+    }
+}
+
+tls_codable_enum! {
+    #[repr(u8)]
+    pub enum ClientCertificateType {
+        RsaSign = 1,
+        DssSign = 2
+    }
+}
+
+type CertificateTypes = LengthPrefixedVec<u8, ClientCertificateType, NonEmpty>;
+type DistinguishedName = LengthPrefixedVec<u16, u8, NonEmpty>;
+type CertificateAuthorities = LengthPrefixedVec<u16, DistinguishedName, MaybeEmpty>;
+type SupportedSignatureAlgorithms = LengthPrefixedVec<u16, SignatureAndHashAlgorithm, MaybeEmpty>;
+
+#[derive(Debug, Clone)]
+pub struct CertificateRequest {
+    certificate_types: CertificateTypes,
+    supported_signature_algorithms: SupportedSignatureAlgorithms,
+    certificate_authorities: CertificateAuthorities,
+}
+
+impl CertificateRequest {
+    pub fn new(signature_algorithms: &[SignatureAndHashAlgorithm]) -> Self {
+        Self {
+            certificate_types: vec![ClientCertificateType::RsaSign].try_into().unwrap(),
+            supported_signature_algorithms: signature_algorithms.to_vec().try_into().unwrap(),
+            certificate_authorities: vec![].try_into().unwrap(),
+        }
+    }
+}
+
+impl TlsCodable for CertificateRequest {
+    fn write_to(&self, bytes: &mut Vec<u8>) {
+        self.certificate_types.write_to(bytes);
+        self.supported_signature_algorithms.write_to(bytes);
+        self.certificate_authorities.write_to(bytes);
+    }
+    fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
+        Ok(Self {
+            certificate_types: CertificateTypes::read_from(reader)?,
+            supported_signature_algorithms: SupportedSignatureAlgorithms::read_from(reader)?,
+            certificate_authorities: CertificateAuthorities::read_from(reader)?,
+        })
     }
 }
 
