@@ -11,10 +11,10 @@ mod gcm;
 mod messages;
 mod prf;
 mod record;
+mod session_ticket;
 mod signature;
 mod state_machine;
 mod utils;
-mod session_ticket;
 
 pub mod ciphersuite;
 pub mod client;
@@ -45,6 +45,22 @@ pub enum MaxFragmentLengthNegotiationPolicy {
     Support,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum ClientAuthPolicy {
+    /// Server will not send a CertificateRequest during handshake.
+    NoAuth,
+
+    /// Server will send a CertificateRequest during handshake, but will accept
+    /// a empty ClientCertificate (and absence of CertificateVerify) message.
+    OptionalAuth,
+
+    // Server will send a CertificateRequest during handshake, and expects a valid
+    // verifiable certificate from the client. In the case of an empty client
+    // certificate or failed certificate verification, the server will send a fatal
+    // handshake_failure alert.
+    MandatoryAuth,
+}
+
 #[derive(Debug, Clone)]
 pub struct TlsPolicy {
     // Google just sends a fatal decode_error rather than unrecognised_name
@@ -53,6 +69,8 @@ pub struct TlsPolicy {
     pub renegotiation: RenegotiationPolicy,
 
     pub max_fragment_length_negotiation: MaxFragmentLengthNegotiationPolicy,
+
+    pub client_auth: ClientAuthPolicy,
 }
 
 impl Default for TlsPolicy {
@@ -61,6 +79,7 @@ impl Default for TlsPolicy {
             unrecognised_server_name: UnrecognisedServerNamePolicy::Alert(TlsAlertLevel::Fatal),
             renegotiation: RenegotiationPolicy::OnlySecure,
             max_fragment_length_negotiation: MaxFragmentLengthNegotiationPolicy::Support,
+            client_auth: ClientAuthPolicy::NoAuth,
         }
     }
 }

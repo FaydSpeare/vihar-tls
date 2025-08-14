@@ -539,8 +539,10 @@ impl From<ServerKeyExchange> for TlsHandshake {
 tls_codable_enum! {
     #[repr(u8)]
     pub enum ClientCertificateType {
-        RsaSign = 1,
-        DssSign = 2
+        RsaSign = 1, // A certificate containing an RSA key
+        DssSign = 2, // A certificate containing an DSA key
+        RsaFixedDh = 3, // A certificate containing a static DH key
+        DssFixedDh = 4 // A certificate containing a static DH key
     }
 }
 
@@ -551,17 +553,21 @@ type SupportedSignatureAlgorithms = LengthPrefixedVec<u16, SignatureAndHashAlgor
 
 #[derive(Debug, Clone)]
 pub struct CertificateRequest {
-    certificate_types: CertificateTypes,
-    supported_signature_algorithms: SupportedSignatureAlgorithms,
-    certificate_authorities: CertificateAuthorities,
+    pub certificate_types: CertificateTypes,
+    pub supported_signature_algorithms: SupportedSignatureAlgorithms,
+    pub certificate_authorities: CertificateAuthorities,
 }
 
 impl CertificateRequest {
     pub fn new(signature_algorithms: &[SignatureAndHashAlgorithm]) -> Self {
+        let v = vec![
+            48, 20, 49, 18, 48, 16, 6, 3, 85, 4, 3, 12, 9, 108, 111, 99, 97, 108, 104, 111, 115,
+            116,
+        ];
         Self {
             certificate_types: vec![ClientCertificateType::RsaSign].try_into().unwrap(),
             supported_signature_algorithms: signature_algorithms.to_vec().try_into().unwrap(),
-            certificate_authorities: vec![].try_into().unwrap(),
+            certificate_authorities: vec![v.try_into().unwrap()].try_into().unwrap(),
         }
     }
 }

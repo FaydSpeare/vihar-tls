@@ -4,10 +4,15 @@ use std::{
 };
 
 use rsa::{RsaPrivateKey, pkcs8::DecodePrivateKey};
-use x509_parser::pem::parse_x509_pem;
+use x509_parser::{asn1_rs::Oid, pem::parse_x509_pem};
 
 use crate::{
-    ciphersuite::CipherSuiteId, connection::TlsConnection, extensions::{HashAlgo, MaxFragmentLength, SigAlgo, SignatureAndHashAlgorithm}, state_machine::TlsEntity, storage::{SessionStorage, SledSessionStore}, TlsPolicy, TlsResult
+    TlsPolicy, TlsResult,
+    ciphersuite::CipherSuiteId,
+    connection::TlsConnection,
+    extensions::{HashAlgo, MaxFragmentLength, SigAlgo, SignatureAndHashAlgorithm},
+    state_machine::TlsEntity,
+    storage::{SessionStorage, SledSessionStore},
 };
 
 #[derive(Debug, Clone)]
@@ -20,6 +25,8 @@ pub struct PrioritisedCipherSuite {
 pub struct CertificateAndPrivateKey {
     pub certificate_der: Vec<u8>,
     pub private_key: RsaPrivateKey,
+    pub cert_signature_algorithm: SigAlgo,
+    pub distinguised_name_der: Vec<u8>,
 }
 
 pub struct TlsConfigBuilder {
@@ -55,11 +62,26 @@ impl TlsConfigBuilder {
                 pcs!(1, RsaAes256CbcSha256),
             ])),
             signature_algorithms: Box::new([
-                SignatureAndHashAlgorithm { signature: SigAlgo::Rsa, hash: HashAlgo::Sha1 },
-                SignatureAndHashAlgorithm { signature: SigAlgo::Rsa, hash: HashAlgo::Sha224 },
-                SignatureAndHashAlgorithm { signature: SigAlgo::Rsa, hash: HashAlgo::Sha256 },
-                SignatureAndHashAlgorithm { signature: SigAlgo::Rsa, hash: HashAlgo::Sha384 },
-                SignatureAndHashAlgorithm { signature: SigAlgo::Rsa, hash: HashAlgo::Sha512 },
+                SignatureAndHashAlgorithm {
+                    signature: SigAlgo::Rsa,
+                    hash: HashAlgo::Sha1,
+                },
+                SignatureAndHashAlgorithm {
+                    signature: SigAlgo::Rsa,
+                    hash: HashAlgo::Sha224,
+                },
+                SignatureAndHashAlgorithm {
+                    signature: SigAlgo::Rsa,
+                    hash: HashAlgo::Sha256,
+                },
+                SignatureAndHashAlgorithm {
+                    signature: SigAlgo::Rsa,
+                    hash: HashAlgo::Sha384,
+                },
+                SignatureAndHashAlgorithm {
+                    signature: SigAlgo::Rsa,
+                    hash: HashAlgo::Sha512,
+                },
             ]),
             session_store: self.session_store,
             certificate: self.certificate,
@@ -96,10 +118,14 @@ impl TlsConfigBuilder {
 
     pub fn with_certificate_pem(mut self, certificate_path: &str, private_key_path: &str) -> Self {
         let certificate_pem = std::fs::read(certificate_path).expect("Failed to read certificate");
-        let certificate_der = parse_x509_pem(&certificate_pem)
+        let pem = parse_x509_pem(&certificate_pem)
             .expect("Failed to parse certificate")
-            .1
-            .contents;
+            .1;
+        let certificate_der = pem.contents.clone();
+        let certificate = pem.parse_x509().unwrap();
+        println!("{:?}", certificate.issuer().as_raw());
+        let cert_signature_algorithm =
+            oid_to_key_type(&certificate.subject_pki.algorithm.algorithm);
         let private_key_pem =
             std::fs::read_to_string(private_key_path).expect("Failed to read private key");
         let private_key =
@@ -107,8 +133,17 @@ impl TlsConfigBuilder {
         self.certificate = Some(CertificateAndPrivateKey {
             certificate_der,
             private_key,
+            cert_signature_algorithm,
+            distinguised_name_der: certificate.issuer().as_raw().to_vec(),
         });
         self
+    }
+}
+
+fn oid_to_key_type(oid: &Oid) -> SigAlgo {
+    match oid.to_id_string().as_str() {
+        "1.2.840.113549.1.1.1" => SigAlgo::Rsa,
+        _ => unimplemented!(),
     }
 }
 

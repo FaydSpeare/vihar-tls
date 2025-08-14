@@ -1,8 +1,9 @@
 ## TODO
 
 - Use CertificateRequest contents to decide what to send
-- Server config policy to allow/reject empty client certificate
 - Client auth config (for multiple certs?)
+
+- Storing session ticket keynames
 
 - Fix bad decryption overflow panics
 

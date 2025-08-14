@@ -19,7 +19,7 @@ use crate::state_machine::{
     close_connection, close_with_unexpected_message,
 };
 use crate::storage::SessionInfo;
-use crate::{MaxFragmentLengthNegotiationPolicy, RenegotiationPolicy, utils};
+use crate::{ClientAuthPolicy, MaxFragmentLengthNegotiationPolicy, RenegotiationPolicy, utils};
 use crate::{
     alert::TlsAlert,
     ciphersuite::{CipherSuite, CipherSuiteMethods},
@@ -249,7 +249,7 @@ fn start_full_handshake(
         info!("Sent ServerKeyExchange");
     }
 
-    let request_certificate = true;
+    let request_certificate = ctx.config.policy.client_auth != ClientAuthPolicy::NoAuth;
     if request_certificate {
         let certificate_request = CertificateRequest::new(&ctx.config.signature_algorithms);
         let certificate_request = TlsHandshake::CertificateRequest(certificate_request);
@@ -472,10 +472,17 @@ pub struct AwaitClientCertificate {
 }
 
 impl HandleRecord<TlsState> for AwaitClientCertificate {
-    fn handle(mut self, _ctx: &mut TlsContext, event: TlsEvent) -> HandleResult<TlsState> {
+    fn handle(mut self, ctx: &mut TlsContext, event: TlsEvent) -> HandleResult<TlsState> {
         let (handshake, certificate) = require_handshake_msg!(event, TlsHandshake::Certificates);
 
         info!("Received ClientCertificate");
+
+        if ctx.config.policy.client_auth == ClientAuthPolicy::MandatoryAuth {
+            if certificate.list.is_empty() {
+                return close_connection(TlsAlertDesc::HandshakeFailure);
+            }
+        }
+
         handshake.write_to(&mut self.handshakes);
 
         let client_public_key = if let Some(cert) = certificate.list.first() {
