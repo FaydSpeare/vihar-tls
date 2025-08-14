@@ -314,6 +314,11 @@ impl Certificate {
             list: vec![cert].try_into().unwrap(),
         }
     }
+    pub fn empty() -> Self {
+        Self {
+            list: vec![].try_into().unwrap(),
+        }
+    }
 }
 
 impl From<Certificate> for TlsHandshake {
@@ -856,7 +861,7 @@ impl TlsCodable for TlsHandshake {
             TlsHandshakeType::CertificateVerify => {
                 CertificateVerify::read_from(&mut subreader).map(TlsHandshake::CertificateVerify)
             }
-            TlsHandshakeType::Unknown(_) => unimplemented!()
+            TlsHandshakeType::Unknown(_) => unimplemented!(),
         }
     }
 }

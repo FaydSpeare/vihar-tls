@@ -8,7 +8,7 @@ use crate::extensions::{
     ExtendedMasterSecretExt, ExtensionType, MaxFragmentLenExt, MaxFragmentLength,
     RenegotiationInfoExt, ServerNameExt, SessionTicketExt, SignatureAlgorithmsExt, verify,
 };
-use crate::messages::{ClientHello, ServerDHParams, ServerKeyExchange, SessionId};
+use crate::messages::{Certificate, ClientHello, ServerDHParams, ServerKeyExchange, SessionId};
 use crate::signature::{
     get_dhe_pre_master_secret, get_rsa_pre_master_secret, public_key_from_cert,
 };
@@ -19,7 +19,7 @@ use crate::state_machine::{
 use crate::storage::SessionInfo;
 use crate::{
     alert::TlsAlert,
-    ciphersuite::{CipherSuite, CipherSuiteMethods, KeyExchangeAlgorithm},
+    ciphersuite::{CipherSuite, CipherSuiteMethods},
     connection::{ConnState, SecureConnState, SecurityParams},
     encoding::TlsCodable,
     messages::{ClientKeyExchange, Finished, TlsHandshake, TlsMessage},
@@ -330,10 +330,10 @@ impl HandleRecord<TlsState> for AwaitServerCertificate {
         handshake.write_to(&mut self.handshakes);
 
         let cipher_suite = CipherSuite::from(self.selected_cipher_suite_id);
-        match cipher_suite.params().key_exchange_algorithm {
-            KeyExchangeAlgorithm::DheRsa | KeyExchangeAlgorithm::DheDss => {
+        match cipher_suite.params().key_exchange_algorithm.kx_type() {
+            KeyExchangeType::Dhe => {
                 return Ok((
-                    AwaitServerKeyExchange {
+                    AwaitServerKeyExchangeOrCertificateRequest {
                         session_id: self.session_id,
                         handshakes: self.handshakes,
                         client_random: self.client_random,
@@ -346,11 +346,12 @@ impl HandleRecord<TlsState> for AwaitServerCertificate {
                     vec![],
                 ));
             }
-            _ => {}
+            KeyExchangeType::Rsa => {}
+            _ => unimplemented!(),
         }
 
         return Ok((
-            AwaitServerHelloDone {
+            AwaitServerHelloDoneOrCertificateRequest {
                 session_id: self.session_id,
                 handshakes: self.handshakes,
                 client_random: self.client_random,
@@ -367,6 +368,60 @@ impl HandleRecord<TlsState> for AwaitServerCertificate {
 }
 
 #[derive(Debug)]
+pub struct AwaitServerKeyExchangeOrCertificateRequest {
+    session_id: SessionId,
+    handshakes: Vec<u8>,
+    client_random: [u8; 32],
+    server_random: [u8; 32],
+    selected_cipher_suite_id: CipherSuiteId,
+    negotiated_extensions: NegotiatedExtensions,
+    server_certificate_der: Vec<u8>,
+}
+
+impl HandleRecord<TlsState> for AwaitServerKeyExchangeOrCertificateRequest {
+    fn handle(mut self, ctx: &mut TlsContext, event: TlsEvent) -> HandleResult<TlsState> {
+        match event {
+            // TODO: use certificate request contents
+            TlsEvent::IncomingMessage(TlsMessage::Handshake(
+                handshake @ TlsHandshake::CertificateRequest(_certificate_request),
+            )) => {
+                handshake.write_to(&mut self.handshakes);
+                return Ok((
+                    AwaitServerKeyExchange {
+                        session_id: self.session_id,
+                        handshakes: self.handshakes,
+                        client_random: self.client_random,
+                        server_random: self.server_random,
+                        selected_cipher_suite_id: self.selected_cipher_suite_id,
+                        negotiated_extensions: self.negotiated_extensions,
+                        server_certificate_der: self.server_certificate_der,
+                        client_certificate_requested: true,
+                    }
+                    .into(),
+                    vec![],
+                ));
+            }
+            TlsEvent::IncomingMessage(TlsMessage::Handshake(TlsHandshake::ServerKeyExchange(
+                _,
+            ))) => {
+                return AwaitServerKeyExchange {
+                    session_id: self.session_id,
+                    handshakes: self.handshakes,
+                    client_random: self.client_random,
+                    server_random: self.server_random,
+                    selected_cipher_suite_id: self.selected_cipher_suite_id,
+                    negotiated_extensions: self.negotiated_extensions,
+                    server_certificate_der: self.server_certificate_der,
+                    client_certificate_requested: false,
+                }
+                .handle(ctx, event);
+            }
+            _ => return close_with_unexpected_message(),
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct AwaitServerKeyExchange {
     session_id: SessionId,
     handshakes: Vec<u8>,
@@ -375,6 +430,7 @@ pub struct AwaitServerKeyExchange {
     selected_cipher_suite_id: CipherSuiteId,
     negotiated_extensions: NegotiatedExtensions,
     server_certificate_der: Vec<u8>,
+    client_certificate_requested: bool,
 }
 
 impl HandleRecord<TlsState> for AwaitServerKeyExchange {
@@ -425,10 +481,66 @@ impl HandleRecord<TlsState> for AwaitServerKeyExchange {
                 negotiated_extensions: self.negotiated_extensions,
                 server_certificate_der: self.server_certificate_der,
                 secrets: Some(server_kx.params.clone()),
+                client_certificate_requested: self.client_certificate_requested,
             }
             .into(),
             vec![],
         ))
+    }
+}
+
+#[derive(Debug)]
+pub struct AwaitServerHelloDoneOrCertificateRequest {
+    session_id: SessionId,
+    handshakes: Vec<u8>,
+    client_random: [u8; 32],
+    server_random: [u8; 32],
+    selected_cipher_suite_id: CipherSuiteId,
+    negotiated_extensions: NegotiatedExtensions,
+    server_certificate_der: Vec<u8>,
+    secrets: Option<ServerDHParams>,
+}
+
+impl HandleRecord<TlsState> for AwaitServerHelloDoneOrCertificateRequest {
+    fn handle(mut self, ctx: &mut TlsContext, event: TlsEvent) -> HandleResult<TlsState> {
+        match event {
+            // TODO: use certificate request contents
+            TlsEvent::IncomingMessage(TlsMessage::Handshake(
+                handshake @ TlsHandshake::CertificateRequest(_certificate_request),
+            )) => {
+                handshake.write_to(&mut self.handshakes);
+                return Ok((
+                    AwaitServerHelloDone {
+                        session_id: self.session_id,
+                        handshakes: self.handshakes,
+                        client_random: self.client_random,
+                        server_random: self.server_random,
+                        selected_cipher_suite_id: self.selected_cipher_suite_id,
+                        negotiated_extensions: self.negotiated_extensions,
+                        server_certificate_der: self.server_certificate_der,
+                        secrets: self.secrets,
+                        client_certificate_requested: true,
+                    }
+                    .into(),
+                    vec![],
+                ));
+            }
+            TlsEvent::IncomingMessage(TlsMessage::Handshake(TlsHandshake::ServerHelloDone)) => {
+                return AwaitServerHelloDone {
+                    session_id: self.session_id,
+                    handshakes: self.handshakes,
+                    client_random: self.client_random,
+                    server_random: self.server_random,
+                    selected_cipher_suite_id: self.selected_cipher_suite_id,
+                    negotiated_extensions: self.negotiated_extensions,
+                    server_certificate_der: self.server_certificate_der,
+                    secrets: self.secrets,
+                    client_certificate_requested: false,
+                }
+                .handle(ctx, event);
+            }
+            _ => return close_with_unexpected_message(),
+        }
     }
 }
 
@@ -442,6 +554,7 @@ pub struct AwaitServerHelloDone {
     negotiated_extensions: NegotiatedExtensions,
     server_certificate_der: Vec<u8>,
     secrets: Option<ServerDHParams>,
+    client_certificate_requested: bool,
 }
 
 impl HandleRecord<TlsState> for AwaitServerHelloDone {
@@ -450,6 +563,15 @@ impl HandleRecord<TlsState> for AwaitServerHelloDone {
 
         info!("Received ServerHelloDone");
         handshake.write_to(&mut self.handshakes);
+
+        let mut actions = vec![];
+        let client_has_certificate = false; // TODO make config
+        if self.client_certificate_requested {
+            let client_certificate = TlsHandshake::Certificates(Certificate::empty());
+            client_certificate.write_to(&mut self.handshakes);
+            actions.push(TlsAction::SendHandshakeMsg(client_certificate));
+            info!("Sent ClientCertificate");
+        }
 
         let ciphersuite = CipherSuite::from(self.selected_cipher_suite_id);
         let (pre_master_secret, client_kx) = match ciphersuite
@@ -486,7 +608,18 @@ impl HandleRecord<TlsState> for AwaitServerHelloDone {
             KeyExchangeType::Ecdhe => unimplemented!(),
         };
 
-        TlsHandshake::ClientKeyExchange(client_kx.clone()).write_to(&mut self.handshakes);
+        let client_kx = TlsHandshake::ClientKeyExchange(client_kx);
+        client_kx.write_to(&mut self.handshakes);
+        actions.push(TlsAction::SendHandshakeMsg(client_kx));
+        info!("Sent ClientKeyExchange");
+
+        if self.client_certificate_requested && client_has_certificate {
+            // TODO
+            // let client_certificate = TlsHandshake::Certificates(Certificate::new(vec![]));
+            // client_certificate.write_to(&mut self.handshakes);
+            // actions.push(TlsAction::SendHandshakeMsg(client_certificate));
+            info!("Sent CertificateVerify");
+        }
 
         let master_secret = calculate_master_secret(
             &self.handshakes,
@@ -496,6 +629,7 @@ impl HandleRecord<TlsState> for AwaitServerHelloDone {
             ciphersuite.params().prf_algorithm,
             self.negotiated_extensions.extended_master_secret,
         );
+
         let params = SecurityParams::new(
             self.client_random,
             self.server_random,
@@ -512,16 +646,15 @@ impl HandleRecord<TlsState> for AwaitServerHelloDone {
 
         let verify_data = params.client_verify_data(&self.handshakes);
         let client_finished = Finished::new(verify_data.clone());
-        TlsHandshake::Finished(client_finished.clone()).write_to(&mut self.handshakes);
+        let client_finished = TlsHandshake::Finished(client_finished);
+        client_finished.write_to(&mut self.handshakes);
 
-        info!("Sent ClientKeyExchange");
+        actions.extend([
+            TlsAction::ChangeCipherSpec(TlsEntity::Client, write),
+            TlsAction::SendHandshakeMsg(client_finished),
+        ]);
         info!("Sent ChangeCipherSuite");
         info!("Sent ClientFinished");
-        let actions = vec![
-            TlsAction::SendHandshakeMsg(client_kx.into()),
-            TlsAction::ChangeCipherSpec(TlsEntity::Client, write),
-            TlsAction::SendHandshakeMsg(client_finished.into()),
-        ];
 
         if self.negotiated_extensions.session_ticket {
             return Ok((

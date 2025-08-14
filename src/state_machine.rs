@@ -13,9 +13,11 @@ use crate::{
 use client::{
     AwaitClientInitiateState, AwaitNewSessionTicket, AwaitNewSessionTicketOrCertificate,
     AwaitServerCertificate, AwaitServerChangeCipher, AwaitServerChangeCipherOrCertificate,
-    AwaitServerFinished, AwaitServerHello, AwaitServerHelloDone, AwaitServerKeyExchange,
-    ClientAttemptedRenegotiationState, ClientEstablished, ExpectNewSessionTicketAbbr,
-    ExpectServerChangeCipherAbbr, ExpectServerFinishedAbbr,
+    AwaitServerFinished, AwaitServerHello, AwaitServerHelloDone,
+    AwaitServerHelloDoneOrCertificateRequest, AwaitServerKeyExchange,
+    AwaitServerKeyExchangeOrCertificateRequest, ClientAttemptedRenegotiationState,
+    ClientEstablished, ExpectNewSessionTicketAbbr, ExpectServerChangeCipherAbbr,
+    ExpectServerFinishedAbbr,
 };
 use server::{
     AwaitCertificateVerify, AwaitClientCertificate, AwaitClientChangeCipher,
@@ -182,7 +184,9 @@ impl_state_dispatch! {
         AwaitClientInitiate(AwaitClientInitiateState),
         AwaitServerHello(AwaitServerHello),
         AwaitServerCertificate(AwaitServerCertificate),
+        AwaitServerKeyExchangeOrCertificateRequest(AwaitServerKeyExchangeOrCertificateRequest),
         AwaitServerKeyExchange(AwaitServerKeyExchange),
+        AwaitServerHelloDoneOrCertificateRequest(AwaitServerHelloDoneOrCertificateRequest),
         AwaitServerHelloDone(AwaitServerHelloDone),
         AwaitNewSessionTicket(AwaitNewSessionTicket),
         AwaitNewSessionTicketOrCertificate(AwaitNewSessionTicketOrCertificate),
