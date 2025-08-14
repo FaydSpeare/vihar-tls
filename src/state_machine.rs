@@ -18,9 +18,9 @@ use client::{
     ExpectServerChangeCipherAbbr, ExpectServerFinishedAbbr,
 };
 use server::{
-    AwaitClientChangeCipher, AwaitClientChangeCipherAbbr, AwaitClientFinished,
-    AwaitClientFinishedAbbr, AwaitClientHello, AwaitClientKeyExchange, AwaitSessionValidation,
-    ServerEstablished,
+    AwaitCertificateVerify, AwaitClientCertificate, AwaitClientChangeCipher,
+    AwaitClientChangeCipherAbbr, AwaitClientFinished, AwaitClientFinishedAbbr, AwaitClientHello,
+    AwaitClientKeyExchange, AwaitSessionValidation, ServerEstablished,
 };
 use std::sync::Arc;
 
@@ -171,7 +171,9 @@ impl_state_dispatch! {
     pub enum TlsState {
         AwaitClientHello(AwaitClientHello),
         AwaitSessionValidation(AwaitSessionValidation),
+        AwaitClientCertificate(AwaitClientCertificate),
         AwaitClientKeyExchange(AwaitClientKeyExchange),
+        AwaitCertificateVerify(AwaitCertificateVerify),
         AwaitClientChangeCipher(AwaitClientChangeCipher),
         AwaitClientFinished(AwaitClientFinished),
         AwaitClientChangeCipherAbbr(AwaitClientChangeCipherAbbr),

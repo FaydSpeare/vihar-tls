@@ -9,8 +9,8 @@ use crate::client::PrioritisedCipherSuite;
 use crate::encoding::Reader;
 use crate::extensions::{HashAlgo, SignatureAndHashAlgorithm};
 use crate::messages::{
-    Certificate, ClientHello, ClientKeyExchangeInner, NewSessionTicket, ProtocolVersion,
-    ServerDHParams, ServerHello, ServerKeyExchange, SessionId,
+    Certificate, CertificateRequest, ClientHello, ClientKeyExchangeInner, NewSessionTicket,
+    ProtocolVersion, ServerDHParams, ServerHello, ServerKeyExchange, SessionId,
 };
 use crate::session_ticket::{ClientIdentity, SessionTicket};
 use crate::signature::{P, decrypt_rsa_master_secret, generate_dh_keypair};
@@ -29,8 +29,8 @@ use crate::{
 };
 
 use super::{HandleRecord, HandleResult, PreviousVerifyData, TlsContext, TlsEvent, TlsState};
-use rsa::pkcs1::EncodeRsaPrivateKey;
 use rand::prelude::IteratorRandom;
+use rsa::pkcs1::EncodeRsaPrivateKey;
 
 fn select_cipher_suite(
     prioritised: &[PrioritisedCipherSuite],
@@ -167,10 +167,10 @@ fn start_full_handshake(
             .config
             .signature_algorithms
             .iter()
-            .flat_map(|(signature, hash)| {
+            .flat_map(|algo| {
                 algorithms
                     .iter()
-                    .filter(move |hs| hs.hash == *hash && hs.signature == *signature)
+                    .filter(move |hs| hs.hash == algo.hash && hs.signature == algo.signature)
                     .cloned()
             })
             .choose(&mut rand::thread_rng())
@@ -215,6 +215,8 @@ fn start_full_handshake(
         TlsAction::SendHandshakeMsg(server_hello),
         TlsAction::SendHandshakeMsg(certificate),
     ]);
+    info!("Sent ServerHello");
+    info!("Sent Certificate");
 
     let rsa_private_key = ctx
         .config
@@ -247,14 +249,45 @@ fn start_full_handshake(
         info!("Sent ServerKeyExchange");
     }
 
+    let request_certificate = true;
+    if request_certificate {
+        let certificate_request = CertificateRequest::new(&ctx.config.signature_algorithms);
+        let certificate_request = TlsHandshake::CertificateRequest(certificate_request);
+        certificate_request.write_to(&mut handshakes);
+        actions.push(TlsAction::SendHandshakeMsg(certificate_request));
+        info!("Sent CertificateRequest");
+    }
+
     let server_hello_done = TlsHandshake::ServerHelloDone;
     server_hello_done.write_to(&mut handshakes);
 
     actions.extend([TlsAction::SendHandshakeMsg(server_hello_done)]);
 
-    info!("Sent ServerHello");
-    info!("Sent Certificate");
     info!("Sent ServerHelloDone");
+
+    if request_certificate {
+        return Ok((
+            AwaitClientCertificate {
+                session_id,
+                handshakes,
+                client_random: client_hello.random.as_bytes(),
+                server_random,
+                selected_cipher_suite,
+                supported_extensions: NegotiatedExtensions {
+                    session_ticket: false,
+                    extended_master_secret: client_hello
+                        .extensions
+                        .includes_extended_master_secret(),
+                    secure_renegotiation: client_hello.extensions.includes_secure_renegotiation(),
+                    max_fragment_length,
+                },
+                issue_session_ticket,
+                server_private_key,
+            }
+            .into(),
+            actions,
+        ));
+    }
     Ok((
         AwaitClientKeyExchange {
             session_id,
@@ -270,6 +303,7 @@ fn start_full_handshake(
             },
             issue_session_ticket,
             server_private_key,
+            expect_certificate_verify: false,
         }
         .into(),
         actions,
@@ -424,6 +458,42 @@ impl HandleRecord<TlsState> for AwaitClientFinishedAbbr {
         ))
     }
 }
+#[derive(Debug)]
+pub struct AwaitClientCertificate {
+    session_id: Vec<u8>,
+    handshakes: Vec<u8>,
+    client_random: [u8; 32],
+    server_random: [u8; 32],
+    selected_cipher_suite: CipherSuiteId,
+    supported_extensions: NegotiatedExtensions,
+    issue_session_ticket: bool,
+    server_private_key: Option<BigUint>,
+}
+
+impl HandleRecord<TlsState> for AwaitClientCertificate {
+    fn handle(mut self, _ctx: &mut TlsContext, event: TlsEvent) -> HandleResult<TlsState> {
+        let (handshake, certificate) = require_handshake_msg!(event, TlsHandshake::Certificates);
+
+        info!("Received ClientCertificate");
+        handshake.write_to(&mut self.handshakes);
+
+        Ok((
+            AwaitClientKeyExchange {
+                session_id: self.session_id,
+                handshakes: self.handshakes,
+                client_random: self.client_random,
+                server_random: self.server_random,
+                selected_cipher_suite: self.selected_cipher_suite,
+                supported_extensions: self.supported_extensions,
+                issue_session_ticket: self.issue_session_ticket,
+                server_private_key: self.server_private_key,
+                expect_certificate_verify: !certificate.list.is_empty(),
+            }
+            .into(),
+            vec![],
+        ))
+    }
+}
 
 #[derive(Debug)]
 pub struct AwaitClientKeyExchange {
@@ -435,6 +505,7 @@ pub struct AwaitClientKeyExchange {
     supported_extensions: NegotiatedExtensions,
     issue_session_ticket: bool,
     server_private_key: Option<BigUint>,
+    expect_certificate_verify: bool,
 }
 
 impl HandleRecord<TlsState> for AwaitClientKeyExchange {
@@ -487,11 +558,56 @@ impl HandleRecord<TlsState> for AwaitClientKeyExchange {
             self.selected_cipher_suite,
         );
 
+        if self.expect_certificate_verify {
+            return Ok((
+                AwaitCertificateVerify {
+                    session_id: self.session_id,
+                    handshakes: self.handshakes,
+                    params,
+                    supported_extensions: self.supported_extensions,
+                    issue_session_ticket: self.issue_session_ticket,
+                }
+                .into(),
+                vec![],
+            ));
+        }
+
         Ok((
             AwaitClientChangeCipher {
                 session_id: self.session_id,
                 handshakes: self.handshakes,
                 params,
+                supported_extensions: self.supported_extensions,
+                issue_session_ticket: self.issue_session_ticket,
+            }
+            .into(),
+            vec![],
+        ))
+    }
+}
+
+#[derive(Debug)]
+pub struct AwaitCertificateVerify {
+    session_id: Vec<u8>,
+    handshakes: Vec<u8>,
+    params: SecurityParams,
+    supported_extensions: NegotiatedExtensions,
+    issue_session_ticket: bool,
+}
+
+impl HandleRecord<TlsState> for AwaitCertificateVerify {
+    fn handle(mut self, _ctx: &mut TlsContext, event: TlsEvent) -> HandleResult<TlsState> {
+        let (handshake, _certificate_verify) =
+            require_handshake_msg!(event, TlsHandshake::CertificateVerify);
+
+        info!("Received CertificateVerify");
+        handshake.write_to(&mut self.handshakes);
+
+        Ok((
+            AwaitClientChangeCipher {
+                session_id: self.session_id,
+                handshakes: self.handshakes,
+                params: self.params,
                 supported_extensions: self.supported_extensions,
                 issue_session_ticket: self.issue_session_ticket,
             }

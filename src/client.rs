@@ -7,7 +7,7 @@ use rsa::{RsaPrivateKey, pkcs8::DecodePrivateKey};
 use x509_parser::pem::parse_x509_pem;
 
 use crate::{
-    ciphersuite::CipherSuiteId, connection::TlsConnection, extensions::{HashAlgo, MaxFragmentLength, SigAlgo}, state_machine::TlsEntity, storage::{SessionStorage, SledSessionStore}, TlsPolicy, TlsResult
+    ciphersuite::CipherSuiteId, connection::TlsConnection, extensions::{HashAlgo, MaxFragmentLength, SigAlgo, SignatureAndHashAlgorithm}, state_machine::TlsEntity, storage::{SessionStorage, SledSessionStore}, TlsPolicy, TlsResult
 };
 
 #[derive(Debug, Clone)]
@@ -55,11 +55,11 @@ impl TlsConfigBuilder {
                 pcs!(1, RsaAes256CbcSha256),
             ])),
             signature_algorithms: Box::new([
-                (SigAlgo::Rsa, HashAlgo::Sha1),
-                (SigAlgo::Rsa, HashAlgo::Sha224),
-                (SigAlgo::Rsa, HashAlgo::Sha256),
-                (SigAlgo::Rsa, HashAlgo::Sha384),
-                (SigAlgo::Rsa, HashAlgo::Sha512),
+                SignatureAndHashAlgorithm { signature: SigAlgo::Rsa, hash: HashAlgo::Sha1 },
+                SignatureAndHashAlgorithm { signature: SigAlgo::Rsa, hash: HashAlgo::Sha224 },
+                SignatureAndHashAlgorithm { signature: SigAlgo::Rsa, hash: HashAlgo::Sha256 },
+                SignatureAndHashAlgorithm { signature: SigAlgo::Rsa, hash: HashAlgo::Sha384 },
+                SignatureAndHashAlgorithm { signature: SigAlgo::Rsa, hash: HashAlgo::Sha512 },
             ]),
             session_store: self.session_store,
             certificate: self.certificate,
@@ -115,7 +115,7 @@ impl TlsConfigBuilder {
 #[derive(Debug)]
 pub struct TlsConfig {
     pub cipher_suites: Box<[PrioritisedCipherSuite]>,
-    pub signature_algorithms: Box<[(SigAlgo, HashAlgo)]>,
+    pub signature_algorithms: Box<[SignatureAndHashAlgorithm]>,
     pub session_store: Option<Box<dyn SessionStorage>>,
     pub certificate: Option<CertificateAndPrivateKey>,
     pub server_name: Option<String>,

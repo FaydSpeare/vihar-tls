@@ -486,13 +486,9 @@ impl TlsCodable for SignatureAlgorithmsExt {
 }
 
 impl SignatureAlgorithmsExt {
-    pub fn new(signature_algorithms: &[(SigAlgo, HashAlgo)]) -> Self {
-        let algorithms = signature_algorithms
-            .iter()
-            .map(|&(signature, hash)| SignatureAndHashAlgorithm { hash, signature })
-            .collect::<Vec<_>>();
+    pub fn new(signature_algorithms: &[SignatureAndHashAlgorithm]) -> Self {
         Self {
-            algorithms: algorithms.try_into().unwrap(),
+            algorithms: signature_algorithms.to_vec().try_into().unwrap(),
         }
     }
 }

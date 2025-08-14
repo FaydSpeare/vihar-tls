@@ -576,6 +576,22 @@ impl TlsCodable for CertificateRequest {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct CertificateVerify {
+    handshake_messages: DigitallySigned,
+}
+
+impl TlsCodable for CertificateVerify {
+    fn write_to(&self, bytes: &mut Vec<u8>) {
+        self.handshake_messages.write_to(bytes);
+    }
+    fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
+        Ok(Self {
+            handshake_messages: DigitallySigned::read_from(reader)?,
+        })
+    }
+}
+
 type ClientKeyExchangeBytes = LengthPrefixedVec<u16, u8, NonEmpty>;
 
 #[derive(Debug, Clone)]
@@ -739,10 +755,11 @@ tls_codable_enum! {
         NewSessionTicket = 4,
         Certificates = 11,
         ServerKeyExchange = 12,
+        CertificateRequest = 13,
         ServerHelloDone = 14,
+        CertificateVerify = 15,
         ClientKeyExchange = 16,
         Finished = 20,
-        VerifyCertificate = 15
     }
 }
 
@@ -754,6 +771,8 @@ pub enum TlsHandshake {
     Certificates(Certificate),
     ServerKeyExchange(ServerKeyExchange),
     ServerHelloDone,
+    CertificateVerify(CertificateVerify),
+    CertificateRequest(CertificateRequest),
     ClientKeyExchange(ClientKeyExchange),
     Finished(Finished),
 }
@@ -767,6 +786,8 @@ impl TlsHandshake {
             Self::Certificates(_) => TlsHandshakeType::Certificates,
             Self::ServerKeyExchange(_) => TlsHandshakeType::ServerKeyExchange,
             Self::ServerHelloDone => TlsHandshakeType::ServerHelloDone,
+            Self::CertificateVerify(_) => TlsHandshakeType::CertificateVerify,
+            Self::CertificateRequest(_) => TlsHandshakeType::CertificateRequest,
             Self::ClientKeyExchange(_) => TlsHandshakeType::ClientKeyExchange,
             Self::Finished(_) => TlsHandshakeType::Finished,
         }
@@ -793,6 +814,8 @@ impl TlsCodable for TlsHandshake {
             Self::Certificates(h) => h.write_to(&mut writer),
             Self::ServerKeyExchange(h) => h.write_to(&mut writer),
             Self::ServerHelloDone => {}
+            Self::CertificateVerify(h) => h.write_to(&mut writer),
+            Self::CertificateRequest(h) => h.write_to(&mut writer),
             Self::ClientKeyExchange(h) => h.write_to(&mut writer),
             Self::Finished(h) => h.write_to(&mut writer),
         }
@@ -827,7 +850,13 @@ impl TlsCodable for TlsHandshake {
             TlsHandshakeType::Finished => {
                 Finished::read_from(&mut subreader).map(TlsHandshake::Finished)
             }
-            _ => unimplemented!(),
+            TlsHandshakeType::CertificateRequest => {
+                CertificateRequest::read_from(&mut subreader).map(TlsHandshake::CertificateRequest)
+            }
+            TlsHandshakeType::CertificateVerify => {
+                CertificateVerify::read_from(&mut subreader).map(TlsHandshake::CertificateVerify)
+            }
+            TlsHandshakeType::Unknown(_) => unimplemented!()
         }
     }
 }
