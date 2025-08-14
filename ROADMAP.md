@@ -1,8 +1,6 @@
 ## TODO
 
-- Use algorithm from signature algorithms for digital signing
-what if none are supported?
-- make this a config
+- Specify all certs for server, and then use them depending on sig algo chosen
 
 - Check server certificate chain against local root certificates?
 

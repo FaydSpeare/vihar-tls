@@ -7,7 +7,7 @@ use crate::alert::TlsAlertDesc;
 use crate::ciphersuite::{CipherSuiteId, KeyExchangeType};
 use crate::client::PrioritisedCipherSuite;
 use crate::encoding::Reader;
-use crate::extensions::{HashAlgo, SigAlgo};
+use crate::extensions::{HashAlgo, SignatureAndHashAlgorithm};
 use crate::messages::{
     Certificate, ClientHello, ClientKeyExchangeInner, NewSessionTicket, ProtocolVersion,
     ServerDHParams, ServerHello, ServerKeyExchange, SessionId,
@@ -28,8 +28,9 @@ use crate::{
     messages::{Finished, TlsHandshake, TlsMessage},
 };
 
-use rsa::pkcs1::EncodeRsaPrivateKey;
 use super::{HandleRecord, HandleResult, PreviousVerifyData, TlsContext, TlsEvent, TlsState};
+use rsa::pkcs1::EncodeRsaPrivateKey;
+use rand::prelude::IteratorRandom;
 
 fn select_cipher_suite(
     prioritised: &[PrioritisedCipherSuite],
@@ -150,10 +151,32 @@ fn start_full_handshake(
         return close_connection(TlsAlertDesc::HandshakeFailure);
     };
 
-    debug!(
-        "Selected CipherSuite {}",
-        CipherSuite::from(selected_cipher_suite).params().name
-    );
+    let cipher_suite = CipherSuite::from(selected_cipher_suite);
+    debug!("Selected CipherSuite {}", cipher_suite.params().name);
+
+    let backup = SignatureAndHashAlgorithm {
+        hash: HashAlgo::Sha1,
+        signature: cipher_suite
+            .params()
+            .key_exchange_algorithm
+            .signature_algorithm(),
+    };
+    let signature_algorithm = match client_hello.extensions.get_signature_algorithms() {
+        None => backup,
+        Some(algorithms) => ctx
+            .config
+            .signature_algorithms
+            .iter()
+            .flat_map(|(signature, hash)| {
+                algorithms
+                    .iter()
+                    .filter(move |hs| hs.hash == *hash && hs.signature == *signature)
+                    .cloned()
+            })
+            .choose(&mut rand::thread_rng())
+            .unwrap_or(backup),
+    };
+    debug!("Selected SignatureAlgorithm: {:?}", signature_algorithm);
 
     let max_fragment_length = client_hello.extensions.get_max_fragment_len().filter(|_| {
         ctx.config.policy.max_fragment_length_negotiation
@@ -212,8 +235,8 @@ fn start_full_handshake(
             dh_params,
             client_hello.random.as_bytes(),
             server_random,
-            HashAlgo::Sha256,
-            SigAlgo::Rsa,
+            signature_algorithm.hash,
+            signature_algorithm.signature,
             &rsa_private_key.to_pkcs1_der().unwrap().to_bytes(),
         );
 

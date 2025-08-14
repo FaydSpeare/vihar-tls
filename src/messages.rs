@@ -11,7 +11,7 @@ use crate::encoding::{
 use crate::errors::{DecodingError, InvalidEncodingError};
 use crate::extensions::{
     ExtendedMasterSecretExt, Extension, Extensions, HashAlgo, MaxFragmentLenExt,
-    RenegotiationInfoExt, SessionTicketExt, SigAlgo, SignatureAlgorithmsExt, sign,
+    RenegotiationInfoExt, SessionTicketExt, SigAlgo, sign,
 };
 use crate::session_ticket::{ClientIdentity, StatePlaintext};
 use crate::{MaxFragmentLength, TlsPolicy, TlsValidateable, utils};
@@ -146,17 +146,9 @@ pub struct ClientHello {
 impl ClientHello {
     pub fn new(
         suites: &[CipherSuiteId],
-        mut extensions: Vec<Extension>,
+        extensions: Vec<Extension>,
         session_id: Option<SessionId>,
     ) -> Result<Self, DecodingError> {
-        extensions.push(
-            SignatureAlgorithmsExt::new_from_product(
-                vec![SigAlgo::Rsa, SigAlgo::Dsa],
-                vec![HashAlgo::Sha1, HashAlgo::Sha256],
-            )?
-            .into(),
-        );
-        // println!("Client Extensions {:?}", extensions);
         Ok(ClientHello {
             version: ProtocolVersion { major: 3, minor: 3 },
             random: Random {

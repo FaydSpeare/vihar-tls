@@ -251,6 +251,19 @@ impl Extensions {
             }),
         }
     }
+
+    pub fn get_signature_algorithms(&self) -> Option<Vec<SignatureAndHashAlgorithm>> {
+        match &self.list {
+            None => None,
+            Some(extensions) => extensions.iter().find_map(|ext| {
+                if let Extension::SignatureAlgorithms(SignatureAlgorithmsExt { algorithms }) = ext {
+                    Some(algorithms.to_vec())
+                } else {
+                    None
+                }
+            }),
+        }
+    }
 }
 
 impl TlsCodable for Extensions {
@@ -427,9 +440,9 @@ tls_codable_enum! {
 }
 
 #[derive(Debug, Clone)]
-struct SignatureAndHashAlgorithm {
-    hash: HashAlgo,
-    signature: SigAlgo,
+pub struct SignatureAndHashAlgorithm {
+    pub hash: HashAlgo,
+    pub signature: SigAlgo,
 }
 
 impl TlsCodable for SignatureAndHashAlgorithm {
@@ -473,21 +486,14 @@ impl TlsCodable for SignatureAlgorithmsExt {
 }
 
 impl SignatureAlgorithmsExt {
-    pub fn new_from_product(
-        signature_algorithms: Vec<SigAlgo>,
-        hash_algorithms: Vec<HashAlgo>,
-    ) -> Result<Self, DecodingError> {
-        let algorithms: Vec<SignatureAndHashAlgorithm> = signature_algorithms
+    pub fn new(signature_algorithms: &[(SigAlgo, HashAlgo)]) -> Self {
+        let algorithms = signature_algorithms
             .iter()
-            .flat_map(|&signature| {
-                hash_algorithms
-                    .iter()
-                    .map(move |&hash| SignatureAndHashAlgorithm { hash, signature })
-            })
-            .collect();
-        Ok(Self {
-            algorithms: algorithms.try_into()?,
-        })
+            .map(|&(signature, hash)| SignatureAndHashAlgorithm { hash, signature })
+            .collect::<Vec<_>>();
+        Self {
+            algorithms: algorithms.try_into().unwrap(),
+        }
     }
 }
 

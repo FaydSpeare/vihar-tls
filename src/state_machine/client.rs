@@ -6,7 +6,7 @@ use crate::alert::TlsAlertDesc;
 use crate::ciphersuite::{CipherSuiteId, KeyExchangeType};
 use crate::extensions::{
     ExtendedMasterSecretExt, ExtensionType, MaxFragmentLenExt, MaxFragmentLength,
-    RenegotiationInfoExt, ServerNameExt, SessionTicketExt, verify,
+    RenegotiationInfoExt, ServerNameExt, SessionTicketExt, SignatureAlgorithmsExt, verify,
 };
 use crate::messages::{ClientHello, ServerDHParams, ServerKeyExchange, SessionId};
 use crate::signature::{
@@ -96,6 +96,9 @@ impl HandleRecord<TlsState> for AwaitClientInitiateState {
             SessionResumption::SessionId(info) => Some(info.session_id.clone()),
             _ => None,
         };
+
+        extensions.push(SignatureAlgorithmsExt::new(&ctx.config.signature_algorithms).into());
+        // println!("Client Extensions {:?}", extensions);
 
         let client_hello = ClientHello::new(
             cipher_suites.as_ref(),
