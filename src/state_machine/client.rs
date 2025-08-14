@@ -1,14 +1,19 @@
 use log::{debug, info, trace};
+use rsa::pkcs1::EncodeRsaPrivateKey;
 use rsa::{RsaPublicKey, pkcs8::DecodePublicKey};
 use std::collections::HashSet;
 
 use crate::alert::TlsAlertDesc;
 use crate::ciphersuite::{CipherSuiteId, KeyExchangeType};
 use crate::extensions::{
-    ExtendedMasterSecretExt, ExtensionType, MaxFragmentLenExt, MaxFragmentLength,
-    RenegotiationInfoExt, ServerNameExt, SessionTicketExt, SignatureAlgorithmsExt, verify,
+    ExtendedMasterSecretExt, ExtensionType, HashAlgo, MaxFragmentLenExt, MaxFragmentLength,
+    RenegotiationInfoExt, ServerNameExt, SessionTicketExt, SigAlgo, SignatureAlgorithmsExt, sign,
+    verify,
 };
-use crate::messages::{Certificate, ClientHello, ServerDHParams, ServerKeyExchange, SessionId};
+use crate::messages::{
+    Certificate, CertificateVerify, ClientHello, DigitallySigned, ServerDHParams,
+    ServerKeyExchange, SessionId,
+};
 use crate::signature::{
     get_dhe_pre_master_secret, get_rsa_pre_master_secret, public_key_from_cert,
 };
@@ -558,16 +563,20 @@ pub struct AwaitServerHelloDone {
 }
 
 impl HandleRecord<TlsState> for AwaitServerHelloDone {
-    fn handle(mut self, _ctx: &mut TlsContext, event: TlsEvent) -> HandleResult<TlsState> {
+    fn handle(mut self, ctx: &mut TlsContext, event: TlsEvent) -> HandleResult<TlsState> {
         let handshake = require_handshake_msg!(event, TlsHandshake::ServerHelloDone, *);
 
         info!("Received ServerHelloDone");
         handshake.write_to(&mut self.handshakes);
 
         let mut actions = vec![];
-        let client_has_certificate = false; // TODO make config
         if self.client_certificate_requested {
-            let client_certificate = TlsHandshake::Certificates(Certificate::empty());
+            let client_certificate = match &ctx.config.certificate {
+                None => TlsHandshake::Certificates(Certificate::empty()),
+                Some(value) => {
+                    TlsHandshake::Certificates(Certificate::new(value.certificate_der.clone()))
+                }
+            };
             client_certificate.write_to(&mut self.handshakes);
             actions.push(TlsAction::SendHandshakeMsg(client_certificate));
             info!("Sent ClientCertificate");
@@ -613,14 +622,6 @@ impl HandleRecord<TlsState> for AwaitServerHelloDone {
         actions.push(TlsAction::SendHandshakeMsg(client_kx));
         info!("Sent ClientKeyExchange");
 
-        if self.client_certificate_requested && client_has_certificate {
-            // TODO
-            // let client_certificate = TlsHandshake::Certificates(Certificate::new(vec![]));
-            // client_certificate.write_to(&mut self.handshakes);
-            // actions.push(TlsAction::SendHandshakeMsg(client_certificate));
-            info!("Sent CertificateVerify");
-        }
-
         let master_secret = calculate_master_secret(
             &self.handshakes,
             &self.client_random,
@@ -629,6 +630,28 @@ impl HandleRecord<TlsState> for AwaitServerHelloDone {
             ciphersuite.params().prf_algorithm,
             self.negotiated_extensions.extended_master_secret,
         );
+
+        if self.client_certificate_requested {
+            if let Some(value) = &ctx.config.certificate {
+                let signature = sign(
+                    SigAlgo::Rsa,
+                    HashAlgo::Sha1,
+                    &value.private_key.to_pkcs1_der().unwrap().to_bytes(),
+                    &self.handshakes,
+                )
+                .unwrap();
+                let certificate_verify = TlsHandshake::CertificateVerify(CertificateVerify {
+                    signed: DigitallySigned {
+                        hash_algorithm: HashAlgo::Sha1,
+                        signature_algorithm: SigAlgo::Rsa,
+                        signature: signature.try_into().unwrap(),
+                    },
+                });
+                certificate_verify.write_to(&mut self.handshakes);
+                actions.push(TlsAction::SendHandshakeMsg(certificate_verify));
+                info!("Sent CertificateVerify");
+            }
+        }
 
         let params = SecurityParams::new(
             self.client_random,

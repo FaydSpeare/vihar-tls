@@ -1,14 +1,15 @@
 ## TODO
 
+- Use CertificateRequest contents to decide what to send
+- Server config policy to allow/reject empty client certificate
+- Client auth config (for multiple certs?)
+
+- Fix bad decryption overflow panics
+
 - Specify all certs paths (dsa, rsa, ecdsa etc) for server, and then use them depending on sig algo chosen
 - server: Allow DSA cert
 
 - Check server certificate chain against local root certificates?
-
-- Support client certificiate
-    - Certificate Request
-    - Client Certificate
-    - Certificate Verify
 
 - HelloRequest
 - Need to finished reading before starting client.renegotiate

@@ -27,6 +27,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         TlsConfigBuilder::new()
             .with_max_fragment_length(MaxFragmentLength::Len1024)
             .with_cipher_suites([pcs!(2, CipherSuiteId::RsaAes128CbcSha)].into())
+            .with_certificate_pem("testing/rsacert.pem", "testing/rsakey.pem")
             //.with_server_name("google.com")
             .with_session_store("sdb")
             .build(),
