@@ -578,16 +578,16 @@ impl TlsCodable for CertificateRequest {
 
 #[derive(Debug, Clone)]
 pub struct CertificateVerify {
-    handshake_messages: DigitallySigned,
+    pub signed: DigitallySigned,
 }
 
 impl TlsCodable for CertificateVerify {
     fn write_to(&self, bytes: &mut Vec<u8>) {
-        self.handshake_messages.write_to(bytes);
+        self.signed.write_to(bytes);
     }
     fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
         Ok(Self {
-            handshake_messages: DigitallySigned::read_from(reader)?,
+            signed: DigitallySigned::read_from(reader)?,
         })
     }
 }

@@ -7,13 +7,13 @@ use crate::alert::TlsAlertDesc;
 use crate::ciphersuite::{CipherSuiteId, KeyExchangeType};
 use crate::client::PrioritisedCipherSuite;
 use crate::encoding::Reader;
-use crate::extensions::{HashAlgo, SignatureAndHashAlgorithm};
+use crate::extensions::{HashAlgo, SignatureAndHashAlgorithm, verify};
 use crate::messages::{
     Certificate, CertificateRequest, ClientHello, ClientKeyExchangeInner, NewSessionTicket,
     ProtocolVersion, ServerDHParams, ServerHello, ServerKeyExchange, SessionId,
 };
 use crate::session_ticket::{ClientIdentity, SessionTicket};
-use crate::signature::{P, decrypt_rsa_master_secret, generate_dh_keypair};
+use crate::signature::{P, decrypt_rsa_master_secret, generate_dh_keypair, public_key_from_cert};
 use crate::state_machine::{
     NegotiatedExtensions, SessionValidation, TlsAction, TlsEntity, calculate_master_secret,
     close_connection, close_with_unexpected_message,
@@ -304,6 +304,7 @@ fn start_full_handshake(
             issue_session_ticket,
             server_private_key,
             expect_certificate_verify: false,
+            client_public_key: None,
         }
         .into(),
         actions,
@@ -477,6 +478,15 @@ impl HandleRecord<TlsState> for AwaitClientCertificate {
         info!("Received ClientCertificate");
         handshake.write_to(&mut self.handshakes);
 
+        let client_public_key = if let Some(cert) = certificate.list.first() {
+            let Ok(key) = public_key_from_cert(cert) else {
+                return close_connection(TlsAlertDesc::IllegalParameter);
+            };
+            Some(key)
+        } else {
+            None
+        };
+
         Ok((
             AwaitClientKeyExchange {
                 session_id: self.session_id,
@@ -488,6 +498,7 @@ impl HandleRecord<TlsState> for AwaitClientCertificate {
                 issue_session_ticket: self.issue_session_ticket,
                 server_private_key: self.server_private_key,
                 expect_certificate_verify: !certificate.list.is_empty(),
+                client_public_key,
             }
             .into(),
             vec![],
@@ -506,6 +517,7 @@ pub struct AwaitClientKeyExchange {
     issue_session_ticket: bool,
     server_private_key: Option<BigUint>,
     expect_certificate_verify: bool,
+    client_public_key: Option<Vec<u8>>,
 }
 
 impl HandleRecord<TlsState> for AwaitClientKeyExchange {
@@ -566,6 +578,7 @@ impl HandleRecord<TlsState> for AwaitClientKeyExchange {
                     params,
                     supported_extensions: self.supported_extensions,
                     issue_session_ticket: self.issue_session_ticket,
+                    client_public_key: self.client_public_key.unwrap(),
                 }
                 .into(),
                 vec![],
@@ -593,14 +606,31 @@ pub struct AwaitCertificateVerify {
     params: SecurityParams,
     supported_extensions: NegotiatedExtensions,
     issue_session_ticket: bool,
+    client_public_key: Vec<u8>,
 }
 
 impl HandleRecord<TlsState> for AwaitCertificateVerify {
     fn handle(mut self, _ctx: &mut TlsContext, event: TlsEvent) -> HandleResult<TlsState> {
-        let (handshake, _certificate_verify) =
+        let (handshake, certificate_verify) =
             require_handshake_msg!(event, TlsHandshake::CertificateVerify);
 
         info!("Received CertificateVerify");
+
+        let verified = match verify(
+            certificate_verify.signed.signature_algorithm,
+            certificate_verify.signed.hash_algorithm,
+            &self.client_public_key,
+            &self.handshakes,
+            &certificate_verify.signed.signature,
+        ) {
+            Ok(verified) => verified,
+            Err(_) => return close_connection(TlsAlertDesc::IllegalParameter),
+        };
+
+        if !verified {
+            return close_connection(TlsAlertDesc::DecryptError);
+        }
+
         handshake.write_to(&mut self.handshakes);
 
         Ok((
