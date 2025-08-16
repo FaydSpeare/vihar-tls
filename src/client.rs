@@ -3,8 +3,10 @@ use std::{
     sync::Arc,
 };
 
-use rsa::{RsaPrivateKey, pkcs8::DecodePrivateKey};
-use x509_parser::{asn1_rs::Oid, pem::parse_x509_pem};
+use x509_parser::{
+    asn1_rs::Oid,
+    prelude::{FromDer, X509Certificate},
+};
 
 use crate::{
     TlsPolicy, TlsResult,
@@ -13,6 +15,7 @@ use crate::{
     extensions::{HashAlgo, MaxFragmentLength, SigAlgo, SignatureAndHashAlgorithm},
     state_machine::TlsEntity,
     storage::{SessionStorage, SledSessionStore},
+    utils,
 };
 
 #[derive(Debug, Clone)]
@@ -24,15 +27,64 @@ pub struct PrioritisedCipherSuite {
 #[derive(Debug, Clone)]
 pub struct CertificateAndPrivateKey {
     pub certificate_der: Vec<u8>,
-    pub private_key: RsaPrivateKey,
+    pub private_key_der: Vec<u8>,
     pub cert_signature_algorithm: SigAlgo,
     pub distinguised_name_der: Vec<u8>,
+}
+
+#[derive(Debug)]
+pub struct Certificates {
+    pub rsa: Option<CertificateAndPrivateKey>,
+    pub dsa: Option<CertificateAndPrivateKey>,
+}
+
+impl Certificates {
+    pub fn new() -> Self {
+        Self {
+            rsa: None,
+            dsa: None,
+        }
+    }
+
+    pub fn primary(&self) -> Option<&CertificateAndPrivateKey> {
+        self.rsa.as_ref().or(self.dsa.as_ref())
+    }
+
+    fn parse(certificate_path: &str, private_key_path: &str) -> CertificateAndPrivateKey {
+        let certificate_der = utils::read_pem(certificate_path).expect("Failed to read certifiate");
+        let certificate = X509Certificate::from_der(&certificate_der)
+            .expect("Failed to parse certificate")
+            .1;
+        let distinguised_name_der = certificate.issuer().as_raw().to_vec();
+        let cert_signature_algorithm =
+            oid_to_key_type(&certificate.subject_pki.algorithm.algorithm);
+
+        let private_key_der =
+            utils::read_pem(private_key_path).expect("Failed to read private key");
+
+        CertificateAndPrivateKey {
+            certificate_der,
+            private_key_der,
+            cert_signature_algorithm,
+            distinguised_name_der,
+        }
+    }
+
+    pub fn with_rsa(mut self, certificate_path: &str, private_key_path: &str) -> Self {
+        self.rsa = Some(Self::parse(certificate_path, private_key_path));
+        self
+    }
+
+    pub fn with_dsa(mut self, certificate_path: &str, private_key_path: &str) -> Self {
+        self.dsa = Some(Self::parse(certificate_path, private_key_path));
+        self
+    }
 }
 
 pub struct TlsConfigBuilder {
     pub cipher_suites: Option<Box<[PrioritisedCipherSuite]>>,
     pub session_store: Option<Box<dyn SessionStorage>>,
-    pub certificate: Option<CertificateAndPrivateKey>,
+    pub certificates: Option<Certificates>,
     pub server_name: Option<String>,
     pub policy: Option<TlsPolicy>,
     pub max_fragment_length: Option<MaxFragmentLength>,
@@ -43,7 +95,7 @@ impl TlsConfigBuilder {
         Self {
             cipher_suites: None,
             session_store: None,
-            certificate: None,
+            certificates: None,
             server_name: None,
             policy: None,
             max_fragment_length: None,
@@ -84,7 +136,7 @@ impl TlsConfigBuilder {
                 },
             ]),
             session_store: self.session_store,
-            certificate: self.certificate,
+            certificates: self.certificates.unwrap_or(Certificates::new()),
             server_name: self.server_name,
             policy: self.policy.unwrap_or_default(),
             max_fragment_length: self.max_fragment_length,
@@ -116,26 +168,8 @@ impl TlsConfigBuilder {
         self
     }
 
-    pub fn with_certificate_pem(mut self, certificate_path: &str, private_key_path: &str) -> Self {
-        let certificate_pem = std::fs::read(certificate_path).expect("Failed to read certificate");
-        let pem = parse_x509_pem(&certificate_pem)
-            .expect("Failed to parse certificate")
-            .1;
-        let certificate_der = pem.contents.clone();
-        let certificate = pem.parse_x509().unwrap();
-        println!("{:?}", certificate.issuer().as_raw());
-        let cert_signature_algorithm =
-            oid_to_key_type(&certificate.subject_pki.algorithm.algorithm);
-        let private_key_pem =
-            std::fs::read_to_string(private_key_path).expect("Failed to read private key");
-        let private_key =
-            RsaPrivateKey::from_pkcs8_pem(&private_key_pem).expect("Failed to parse private key");
-        self.certificate = Some(CertificateAndPrivateKey {
-            certificate_der,
-            private_key,
-            cert_signature_algorithm,
-            distinguised_name_der: certificate.issuer().as_raw().to_vec(),
-        });
+    pub fn with_certificates(mut self, certificates: Certificates) -> Self {
+        self.certificates = Some(certificates);
         self
     }
 }
@@ -143,7 +177,8 @@ impl TlsConfigBuilder {
 fn oid_to_key_type(oid: &Oid) -> SigAlgo {
     match oid.to_id_string().as_str() {
         "1.2.840.113549.1.1.1" => SigAlgo::Rsa,
-        _ => unimplemented!(),
+        "1.2.840.10040.4.1" => SigAlgo::Dsa,
+        x => unimplemented!("{x}"),
     }
 }
 
@@ -152,7 +187,7 @@ pub struct TlsConfig {
     pub cipher_suites: Box<[PrioritisedCipherSuite]>,
     pub signature_algorithms: Box<[SignatureAndHashAlgorithm]>,
     pub session_store: Option<Box<dyn SessionStorage>>,
-    pub certificate: Option<CertificateAndPrivateKey>,
+    pub certificates: Certificates,
     pub server_name: Option<String>,
     pub policy: TlsPolicy,
     pub max_fragment_length: Option<MaxFragmentLength>,

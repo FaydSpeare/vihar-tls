@@ -36,9 +36,10 @@ pub fn get_rsa_pre_master_secret(rsa_pubkey: &RsaPublicKey) -> TlsResult<(Vec<u8
 }
 
 pub fn decrypt_rsa_master_secret(
-    private_key: &RsaPrivateKey,
+    private_key: &[u8],
     enc_pre_master_secret: &[u8],
 ) -> TlsResult<Vec<u8>> {
+    let private_key = RsaPrivateKey::from_pkcs8_der(private_key)?;
     Ok(private_key.decrypt(Pkcs1v15Encrypt, enc_pre_master_secret)?)
 }
 
@@ -98,7 +99,7 @@ pub fn dsa_sign<D: Digest + BlockSizeUser + FixedOutputReset>(
 }
 
 pub fn rsa_sign<D: Digest + AssociatedOid>(key_der: &[u8], data: &[u8]) -> Result<Vec<u8>, String> {
-    let key = RsaPrivateKey::from_pkcs1_der(&key_der)
+    let key = RsaPrivateKey::from_pkcs8_der(&key_der)
         .map_err(|e| format!("Failed to parse rsa private key: {e}"))?;
     let signing_key = SigningKey::<D>::new(key.clone());
     let data = D::new_with_prefix(data);

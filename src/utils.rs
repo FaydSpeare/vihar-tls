@@ -1,5 +1,8 @@
 use rand::Rng;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    path::Path,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 pub fn xor_bytes(a: &[u8], b: &[u8]) -> Vec<u8> {
     assert_eq!(a.len(), b.len(), "Slices must be the same length");
@@ -35,4 +38,10 @@ pub fn hex_to_bytes(hex: &str) -> Vec<u8> {
         .step_by(2)
         .map(|i| u8::from_str_radix(&clean_hex[i..i + 2], 16).expect("Invalid hex"))
         .collect()
+}
+
+pub fn read_pem<P: AsRef<Path>>(path: P) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let bytes = std::fs::read_to_string(path)?;
+    let parsed = pem::parse(bytes)?;
+    Ok(parsed.into_contents())
 }

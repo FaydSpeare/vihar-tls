@@ -30,7 +30,6 @@ use crate::{
 
 use super::{HandleRecord, HandleResult, PreviousVerifyData, TlsContext, TlsEvent, TlsState};
 use rand::prelude::IteratorRandom;
-use rsa::pkcs1::EncodeRsaPrivateKey;
 
 fn select_cipher_suite(
     prioritised: &[PrioritisedCipherSuite],
@@ -202,7 +201,8 @@ fn start_full_handshake(
 
     let certificate: TlsHandshake = Certificate::new(
         ctx.config
-            .certificate
+            .certificates
+            .primary()
             .as_ref()
             .expect("Server certificate not configured")
             .certificate_der
@@ -218,12 +218,13 @@ fn start_full_handshake(
     info!("Sent ServerHello");
     info!("Sent Certificate");
 
-    let rsa_private_key = ctx
+    let private_key_der = ctx
         .config
-        .certificate
+        .certificates
+        .primary()
         .as_ref()
         .expect("Server certificate not configured")
-        .private_key
+        .private_key_der
         .clone();
 
     let mut server_private_key = None;
@@ -239,7 +240,7 @@ fn start_full_handshake(
             server_random,
             signature_algorithm.hash,
             signature_algorithm.signature,
-            &rsa_private_key.to_pkcs1_der().unwrap().to_bytes(),
+            &private_key_der,
         );
 
         let server_kx = TlsHandshake::ServerKeyExchange(server_kx);
@@ -584,10 +585,11 @@ impl HandleRecord<TlsState> for AwaitClientKeyExchange {
             ClientKeyExchangeInner::EncryptedPreMasterSecret(enc_pre_master_secret) => {
                 let Ok(pre_master_secret) = decrypt_rsa_master_secret(
                     &ctx.config
-                        .certificate
+                        .certificates
+                        .rsa
                         .as_ref()
                         .expect("Server private key not configured")
-                        .private_key,
+                        .private_key_der,
                     &enc_pre_master_secret,
                 ) else {
                     return close_connection(TlsAlertDesc::DecryptError);

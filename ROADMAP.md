@@ -1,7 +1,6 @@
 ## TODO
 
 - Use CertificateRequest contents to decide what to send
-- Client auth config (for multiple certs?)
 
 - Fix bad decryption overflow panics
 
@@ -30,3 +29,7 @@
 - Do sessions need to be invalidated when an fatal error occurs during handshake. E.g. illegal parameter when resuming session
 - Do session tickets need to be invalidated for fatal alerts, how?
 - servername a part of session?
+
+
+=== Questions ===
+what to do about all the try_into().unwraps() when creating length prefixed vectors

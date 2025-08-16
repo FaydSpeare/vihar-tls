@@ -27,6 +27,7 @@ log = "0.4.27"
 num-bigint = { version="0.4.6", features = ["rand"] }
 num-traits = "0.2.19"
 num_enum = "0.7.4"
+pem = "3.0.5"
 rand = "0.8"
 rand_chacha = "0.3.1"
 rsa = { version = "0.9.8", features = ["sha1", "sha2"] }

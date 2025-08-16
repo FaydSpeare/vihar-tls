@@ -1,6 +1,5 @@
 use log::{debug, info, trace};
 use rand::prelude::SliceRandom;
-use rsa::pkcs1::EncodeRsaPrivateKey;
 use rsa::{RsaPublicKey, pkcs8::DecodePublicKey};
 use std::collections::HashSet;
 
@@ -599,7 +598,7 @@ impl HandleRecord<TlsState> for AwaitServerHelloDone {
         let mut chosen_hash_algo = HashAlgo::Sha1;
         let mut send_verify = false;
         if let Some(cert_request) = &self.client_certificate_request {
-            let client_certificate = match &ctx.config.certificate {
+            let client_certificate = match &ctx.config.certificates.primary() {
                 None => TlsHandshake::Certificates(Certificate::empty()),
                 Some(value) => {
                     let possible_signature_algorithms = cert_request
@@ -683,11 +682,11 @@ impl HandleRecord<TlsState> for AwaitServerHelloDone {
 
         if send_verify {
             if let Some(_) = &self.client_certificate_request {
-                if let Some(value) = &ctx.config.certificate {
+                if let Some(value) = &ctx.config.certificates.primary() {
                     let signature = sign(
                         chosen_sig_algo,
                         chosen_hash_algo,
-                        &value.private_key.to_pkcs1_der().unwrap().to_bytes(),
+                        &value.private_key_der,
                         &self.handshakes,
                     )
                     .unwrap();
