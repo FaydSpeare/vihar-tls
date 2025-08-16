@@ -2,20 +2,22 @@
 use aes::Aes128;
 
 use crate::{
+    MaxFragmentLength,
     ciphersuite::{CipherSuiteId, CompressionMethod},
     encoding::{LengthPrefixedVec, MaybeEmpty, Reader, TlsCodable},
     errors::{DecodingError, InvalidEncodingError},
     gcm::{decrypt_aes_cbc, encrypt_aes_cbc},
     messages::{CeritificateList, ProtocolVersion},
-    prf::{hmac, HmacHashAlgo},
-    utils, MaxFragmentLength,
+    prf::{HmacHashAlgo, hmac},
+    storage::StekInfo,
+    utils,
 };
 
 type EncryptedState = LengthPrefixedVec<u16, u8, MaybeEmpty>;
 
 #[derive(Debug)]
 pub struct SessionTicket {
-    key_name: [u8; 16],
+    pub key_name: [u8; 16],
     iv: [u8; 16],
     encrypted_state: EncryptedState,
     mac: [u8; 32],
@@ -40,7 +42,7 @@ impl TlsCodable for SessionTicket {
 }
 
 impl SessionTicket {
-    pub fn decrypt(&self, aes_key: &[u8], mac_key: &[u8]) -> Result<StatePlaintext, DecodingError> {
+    pub fn decrypt(&self, stek: &StekInfo) -> Result<StatePlaintext, DecodingError> {
         let data = [
             &self.key_name[..],
             &self.iv,
@@ -48,7 +50,7 @@ impl SessionTicket {
         ]
         .concat();
 
-        let expected_mac: [u8; 32] = hmac(mac_key, &data, HmacHashAlgo::Sha256)
+        let expected_mac: [u8; 32] = hmac(&stek.mac_key, &data, HmacHashAlgo::Sha256)
             .try_into()
             .unwrap();
 
@@ -57,7 +59,7 @@ impl SessionTicket {
         }
 
         let ciphertext: Vec<u8> = self.encrypted_state.to_vec();
-        let plaintext = decrypt_aes_cbc::<Aes128>(&ciphertext, aes_key, &self.iv);
+        let plaintext = decrypt_aes_cbc::<Aes128>(&ciphertext, &stek.enc_key, &self.iv);
         // TODO: check padding
 
         let mut reader = Reader::new(&plaintext);
@@ -103,22 +105,22 @@ impl TlsCodable for StatePlaintext {
 }
 
 impl StatePlaintext {
-    pub fn encrypt(&self, key_name: [u8; 16], aes_key: &[u8], mac_key: &[u8]) -> SessionTicket {
+    pub fn encrypt(&self, stek: &StekInfo) -> SessionTicket {
         let mut plaintext = self.get_encoding();
 
         let pad_len = 16 - plaintext.len() % 16;
         plaintext.extend(std::iter::repeat(pad_len as u8).take(pad_len));
 
         let iv: [u8; 16] = utils::get_random_bytes(16).try_into().unwrap();
-        let ciphertext = encrypt_aes_cbc::<Aes128>(&plaintext, aes_key, &iv);
+        let ciphertext = encrypt_aes_cbc::<Aes128>(&plaintext, &stek.enc_key, &iv);
         let encrypted_state =
             EncryptedState::try_from(ciphertext).expect("failed to convert to encrypted_state");
-        let data = [&key_name[..], &iv, &encrypted_state.get_encoding()].concat();
-        let mac: [u8; 32] = hmac(mac_key, &data, HmacHashAlgo::Sha256)
+        let data = [&stek.key_name[..], &iv, &encrypted_state.get_encoding()].concat();
+        let mac: [u8; 32] = hmac(&stek.mac_key, &data, HmacHashAlgo::Sha256)
             .try_into()
             .unwrap();
         SessionTicket {
-            key_name,
+            key_name: stek.key_name,
             iv,
             encrypted_state,
             mac,
@@ -177,14 +179,12 @@ mod tests {
             client_identity: ClientIdentity::Anonymous,
             timestamp: 0u32,
             max_fragment_length: None,
-            extended_master_secret: true
+            extended_master_secret: true,
         };
 
-        let mac_key: [u8; 32] = utils::get_random_bytes(32).try_into().unwrap();
-        let enc_key: [u8; 16] = utils::get_random_bytes(16).try_into().unwrap();
-        let key_name: [u8; 16] = utils::get_random_bytes(16).try_into().unwrap();
-        let ticket = state.encrypt(key_name, &enc_key, &mac_key);
-        assert_eq!(state, ticket.decrypt(&enc_key, &mac_key)?);
+        let stek = StekInfo::new();
+        let ticket = state.encrypt(&stek);
+        assert_eq!(state, ticket.decrypt(&stek)?);
         Ok(())
     }
 }

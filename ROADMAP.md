@@ -3,8 +3,6 @@
 - Use CertificateRequest contents to decide what to send
 - Client auth config (for multiple certs?)
 
-- Storing session ticket keynames
-
 - Fix bad decryption overflow panics
 
 - Specify all certs paths (dsa, rsa, ecdsa etc) for server, and then use them depending on sig algo chosen

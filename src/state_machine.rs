@@ -3,7 +3,7 @@ use crate::alert::TlsAlertDesc;
 use crate::ciphersuite::{CipherSuiteId, PrfAlgorithm};
 use crate::client::TlsConfig;
 use crate::errors::TlsError;
-use crate::storage::SessionInfo;
+use crate::storage::{SessionInfo, StekInfo};
 use crate::{
     TlsResult,
     alert::TlsAlert,
@@ -22,7 +22,7 @@ use client::{
 use server::{
     AwaitCertificateVerify, AwaitClientCertificate, AwaitClientChangeCipher,
     AwaitClientChangeCipherAbbr, AwaitClientFinished, AwaitClientFinishedAbbr, AwaitClientHello,
-    AwaitClientKeyExchange, AwaitSessionValidation, ServerEstablished,
+    AwaitClientKeyExchange, AwaitSessionValidation, AwaitStekInfo, ServerEstablished,
 };
 use std::sync::Arc;
 
@@ -79,6 +79,7 @@ pub enum TlsEvent<'a> {
     },
     IncomingMessage(&'a TlsMessage),
     SessionValidation(SessionValidation),
+    StekInfo(Option<StekInfo>),
 }
 
 #[derive(Debug)]
@@ -86,6 +87,7 @@ pub enum TlsAction {
     SendAlert(TlsAlert),
     ChangeCipherSpec(TlsEntity, ConnState),
     SendHandshakeMsg(TlsHandshake),
+    GetStekInfo(Vec<u8>),
     ValidateSessionId(Vec<u8>),
     StoreSessionTicketInfo(Vec<u8>, SessionInfo),
     StoreSessionIdInfo(Vec<u8>, SessionInfo),
@@ -99,6 +101,7 @@ pub enum TlsAction {
 pub struct TlsContext {
     pub side: TlsEntity,
     pub config: Arc<TlsConfig>,
+    pub stek: Option<StekInfo>,
 }
 
 pub struct TlsStateMachine {
@@ -147,8 +150,17 @@ impl TlsStateMachine {
             }
             .into(),
         };
+
+        let stek = config.session_store.as_ref().map(|store| {
+            let new_stek = StekInfo::new();
+            store
+                .insert_stek(&new_stek.key_name.to_vec(), new_stek.clone())
+                .expect("failed to create new STEK");
+            new_stek
+        });
+
         Self {
-            ctx: TlsContext { side, config },
+            ctx: TlsContext { side, config, stek },
             state: Some(state),
         }
     }
@@ -172,6 +184,7 @@ impl TlsStateMachine {
 impl_state_dispatch! {
     pub enum TlsState {
         AwaitClientHello(AwaitClientHello),
+        AwaitStekInfo(AwaitStekInfo),
         AwaitSessionValidation(AwaitSessionValidation),
         AwaitClientCertificate(AwaitClientCertificate),
         AwaitClientKeyExchange(AwaitClientKeyExchange),

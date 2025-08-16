@@ -1,6 +1,7 @@
 use crate::alert::{TlsAlert, TlsAlertDesc};
 use crate::ciphersuite::{
-    CipherSuite, CipherSuiteId, CipherSuiteMethods, CipherType, CompressionMethod, EncAlgorithm, MacAlgorithm, PrfAlgorithm
+    CipherSuite, CipherSuiteId, CipherSuiteMethods, CipherType, CompressionMethod, EncAlgorithm,
+    MacAlgorithm, PrfAlgorithm,
 };
 use crate::client::TlsConfig;
 use crate::encoding::TlsCodable;
@@ -307,7 +308,7 @@ impl SecureConnState {
                 version: plaintext.version,
                 fragment: plaintext.fragment,
             },
-            CompressionMethod::Unknown(x) => panic!("unknown compression method: {x}")
+            CompressionMethod::Unknown(x) => panic!("unknown compression method: {x}"),
         }
     }
 
@@ -318,7 +319,7 @@ impl SecureConnState {
                 version: compressed.version,
                 fragment: compressed.fragment,
             }),
-            CompressionMethod::Unknown(x) => panic!("unknown compression method: {x}")
+            CompressionMethod::Unknown(x) => panic!("unknown compression method: {x}"),
         }
     }
 
@@ -454,6 +455,16 @@ impl<T: Read + Write> TlsConnection<T> {
                             };
 
                             self.process_message(TlsEvent::SessionValidation(validation))?;
+                        }
+                        TlsAction::GetStekInfo(key_name) => {
+                            trace!("Retrieving stek...");
+                            let Some(store) = &self.config.session_store else {
+                                trace!("No session store configured -> no stek");
+                                self.process_message(TlsEvent::StekInfo(None))?;
+                                continue;
+                            };
+                            let stek = store.get_stek(&key_name)?;
+                            self.process_message(TlsEvent::StekInfo(stek))?;
                         }
                         TlsAction::StoreSessionTicketInfo(ticket, info) => {
                             trace!("Storing session ticket");

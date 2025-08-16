@@ -332,15 +332,17 @@ impl HandleRecord<TlsState> for AwaitClientHello {
         if let Some(session_ticket) = client_hello.extensions.get_session_ticket() {
             let mut reader = Reader::new(&session_ticket);
             let ticket = SessionTicket::read_from(&mut reader).unwrap();
-            if let Ok(session_state) = ticket.decrypt(&[0; 16], &[0; 32]) {
-                let session = SessionInfo::new(
-                    session_state.master_secret,
-                    session_state.cipher_suite,
-                    session_state.max_fragment_length,
-                    session_state.extended_master_secret,
-                );
-                return start_abbr_handshake(client_hello.clone(), session);
-            }
+            let key_name = ticket.key_name;
+            return Ok((
+                AwaitStekInfo {
+                    previous_verify_data: self.previous_verify_data,
+                    client_hello: client_hello.clone(),
+                    issue_session_ticket,
+                    ticket,
+                }
+                .into(),
+                vec![TlsAction::GetStekInfo(key_name.to_vec())],
+            ));
         }
 
         if !client_hello.session_id.is_empty() {
@@ -362,6 +364,40 @@ impl HandleRecord<TlsState> for AwaitClientHello {
             self.previous_verify_data,
             client_hello.clone(),
             issue_session_ticket,
+        )
+    }
+}
+
+#[derive(Debug)]
+pub struct AwaitStekInfo {
+    previous_verify_data: Option<PreviousVerifyData>,
+    client_hello: ClientHello,
+    issue_session_ticket: bool,
+    ticket: SessionTicket,
+}
+impl HandleRecord<TlsState> for AwaitStekInfo {
+    fn handle(self, ctx: &mut TlsContext, event: TlsEvent) -> HandleResult<TlsState> {
+        let TlsEvent::StekInfo(maybe_stek) = event else {
+            panic!("Expected STEK info");
+        };
+
+        if let Some(stek) = maybe_stek {
+            if let Ok(session_state) = self.ticket.decrypt(&stek) {
+                let session = SessionInfo::new(
+                    session_state.master_secret,
+                    session_state.cipher_suite,
+                    session_state.max_fragment_length,
+                    session_state.extended_master_secret,
+                );
+                return start_abbr_handshake(self.client_hello, session);
+            }
+        }
+
+        start_full_handshake(
+            ctx,
+            self.previous_verify_data,
+            self.client_hello,
+            self.issue_session_ticket,
         )
     }
 }
@@ -702,7 +738,7 @@ pub struct AwaitClientFinished {
 }
 
 impl HandleRecord<TlsState> for AwaitClientFinished {
-    fn handle(mut self, _ctx: &mut TlsContext, event: TlsEvent) -> HandleResult<TlsState> {
+    fn handle(mut self, ctx: &mut TlsContext, event: TlsEvent) -> HandleResult<TlsState> {
         let (handshake, client_finished) = require_handshake_msg!(event, TlsHandshake::Finished);
 
         info!("Received ClientFinished");
@@ -725,6 +761,7 @@ impl HandleRecord<TlsState> for AwaitClientFinished {
                 utils::get_unix_time(),
                 self.negotiated_extensions.max_fragment_length,
                 self.negotiated_extensions.extended_master_secret,
+                &ctx.stek.as_ref().unwrap(),
             );
             let new_session_ticket = TlsHandshake::NewSessionTicket(new_session_ticket);
             new_session_ticket.write_to(&mut self.handshakes);

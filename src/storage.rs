@@ -6,10 +6,12 @@ use crate::{
     MaxFragmentLength, TlsResult,
     ciphersuite::CipherSuiteId,
     encoding::{Reader, TlsCodable},
+    utils,
 };
 
 type SessionTicket = Vec<u8>;
 type SessionId = Vec<u8>;
+type StekName = Vec<u8>;
 
 #[derive(Debug, Clone)]
 pub struct SessionInfo {
@@ -58,6 +60,39 @@ impl SessionInfo {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct StekInfo {
+    pub key_name: [u8; 16],
+    pub enc_key: [u8; 16],
+    pub mac_key: [u8; 32],
+}
+
+impl StekInfo {
+    pub fn new() -> Self {
+        Self {
+            key_name: utils::get_random_bytes(16).try_into().unwrap(),
+            enc_key: utils::get_random_bytes(16).try_into().unwrap(),
+            mac_key: utils::get_random_bytes(32).try_into().unwrap(),
+        }
+    }
+
+    fn encode(&self) -> Vec<u8> {
+        let mut bytes = vec![];
+        self.key_name.write_to(&mut bytes);
+        self.enc_key.write_to(&mut bytes);
+        self.mac_key.write_to(&mut bytes);
+        bytes
+    }
+    fn decode(mut bytes: Vec<u8>) -> TlsResult<Self> {
+        let mut reader = Reader::new(bytes.as_mut());
+        Ok(Self {
+            key_name: <[u8; 16]>::read_from(&mut reader)?,
+            enc_key: <[u8; 16]>::read_from(&mut reader)?,
+            mac_key: <[u8; 32]>::read_from(&mut reader)?,
+        })
+    }
+}
+
 pub trait SessionStorage: Debug {
     fn get_any_session_ticket(&self) -> TlsResult<Option<(SessionTicket, SessionInfo)>>;
 
@@ -74,6 +109,12 @@ pub trait SessionStorage: Debug {
     fn insert_session_id(&self, id: &SessionId, info: SessionInfo) -> TlsResult<()>;
 
     fn delete_session_id(&self, id: &SessionId) -> TlsResult<()>;
+
+    fn get_stek(&self, name: &StekName) -> TlsResult<Option<StekInfo>>;
+
+    fn insert_stek(&self, name: &StekName, info: StekInfo) -> TlsResult<()>;
+
+    fn delete_stek(&self, name: &StekName) -> TlsResult<()>;
 }
 
 #[derive(Debug, Clone)]
@@ -94,6 +135,10 @@ impl SledSessionStore {
 
     fn session_id_db(&self) -> TlsResult<Tree> {
         Ok(self.db.open_tree("session_ids")?)
+    }
+
+    fn stek_db(&self) -> TlsResult<Tree> {
+        Ok(self.db.open_tree("steks")?)
     }
 
     fn find_any(db: Tree) -> TlsResult<Option<(Vec<u8>, SessionInfo)>> {
@@ -153,5 +198,22 @@ impl SessionStorage for SledSessionStore {
 
     fn delete_session_id(&self, id: &SessionId) -> TlsResult<()> {
         SledSessionStore::delete_one(self.session_id_db()?, id)
+    }
+
+    fn get_stek(&self, name: &StekName) -> TlsResult<Option<StekInfo>> {
+        if let Some(x) = self.stek_db()?.get(name)? {
+            return Ok(Some(StekInfo::decode(x.to_vec())?));
+        }
+        Ok(None)
+    }
+
+    fn insert_stek(&self, name: &StekName, info: StekInfo) -> TlsResult<()> {
+        self.stek_db()?.insert(name, info.encode())?;
+        Ok(())
+    }
+
+    fn delete_stek(&self, name: &StekName) -> TlsResult<()> {
+        self.stek_db()?.remove(name)?;
+        Ok(())
     }
 }

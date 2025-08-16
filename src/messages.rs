@@ -14,6 +14,7 @@ use crate::extensions::{
     RenegotiationInfoExt, SessionTicketExt, SigAlgo, SignatureAndHashAlgorithm, sign,
 };
 use crate::session_ticket::{ClientIdentity, StatePlaintext};
+use crate::storage::StekInfo;
 use crate::{MaxFragmentLength, TlsPolicy, TlsValidateable, utils};
 
 #[derive(Debug, Clone, Copy)]
@@ -708,6 +709,7 @@ impl NewSessionTicket {
         timestamp: u32,
         max_fragment_length: Option<MaxFragmentLength>,
         extended_master_secret: bool,
+        stek: &StekInfo
     ) -> Self {
         let session_ticket = StatePlaintext {
             timestamp,
@@ -719,7 +721,7 @@ impl NewSessionTicket {
             max_fragment_length,
             extended_master_secret,
         }
-        .encrypt([0; 16], &[0; 16], &[0; 32]);
+        .encrypt(stek);
         Self {
             lifetime_hint: 0,
             ticket: session_ticket.get_encoding().try_into().unwrap(),
