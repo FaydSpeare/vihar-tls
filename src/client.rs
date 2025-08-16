@@ -29,7 +29,7 @@ pub struct CertificateAndPrivateKey {
     pub certificate_der: Vec<u8>,
     pub private_key_der: Vec<u8>,
     pub cert_signature_algorithm: SigAlgo,
-    pub distinguised_name_der: Vec<u8>,
+    pub distinguished_name_der: Vec<u8>,
 }
 
 #[derive(Debug)]
@@ -50,12 +50,19 @@ impl Certificates {
         self.rsa.as_ref().or(self.dsa.as_ref())
     }
 
+    pub fn certificates(&self) -> Vec<&CertificateAndPrivateKey> {
+        let mut certs = vec![];
+        self.rsa.as_ref().map(|v| certs.push(v));
+        self.dsa.as_ref().map(|v| certs.push(v));
+        certs
+    }
+
     fn parse(certificate_path: &str, private_key_path: &str) -> CertificateAndPrivateKey {
         let certificate_der = utils::read_pem(certificate_path).expect("Failed to read certifiate");
         let certificate = X509Certificate::from_der(&certificate_der)
             .expect("Failed to parse certificate")
             .1;
-        let distinguised_name_der = certificate.issuer().as_raw().to_vec();
+        let distinguished_name_der = certificate.issuer().as_raw().to_vec();
         let cert_signature_algorithm =
             oid_to_key_type(&certificate.subject_pki.algorithm.algorithm);
 
@@ -66,7 +73,7 @@ impl Certificates {
             certificate_der,
             private_key_der,
             cert_signature_algorithm,
-            distinguised_name_der,
+            distinguished_name_der,
         }
     }
 
@@ -115,25 +122,29 @@ impl TlsConfigBuilder {
             ])),
             signature_algorithms: Box::new([
                 SignatureAndHashAlgorithm {
-                    signature: SigAlgo::Rsa,
-                    hash: HashAlgo::Sha1,
-                },
-                SignatureAndHashAlgorithm {
-                    signature: SigAlgo::Rsa,
-                    hash: HashAlgo::Sha224,
-                },
-                SignatureAndHashAlgorithm {
-                    signature: SigAlgo::Rsa,
-                    hash: HashAlgo::Sha256,
-                },
-                SignatureAndHashAlgorithm {
-                    signature: SigAlgo::Rsa,
-                    hash: HashAlgo::Sha384,
-                },
-                SignatureAndHashAlgorithm {
-                    signature: SigAlgo::Rsa,
+                    signature: SigAlgo::Dsa,
                     hash: HashAlgo::Sha512,
                 },
+                // SignatureAndHashAlgorithm {
+                //     signature: SigAlgo::Rsa,
+                //     hash: HashAlgo::Sha1,
+                // },
+                // SignatureAndHashAlgorithm {
+                //     signature: SigAlgo::Rsa,
+                //     hash: HashAlgo::Sha224,
+                // },
+                // SignatureAndHashAlgorithm {
+                //     signature: SigAlgo::Rsa,
+                //     hash: HashAlgo::Sha256,
+                // },
+                // SignatureAndHashAlgorithm {
+                //     signature: SigAlgo::Rsa,
+                //     hash: HashAlgo::Sha384,
+                // },
+                // SignatureAndHashAlgorithm {
+                //     signature: SigAlgo::Rsa,
+                //     hash: HashAlgo::Sha512,
+                // },
             ]),
             session_store: self.session_store,
             certificates: self.certificates.unwrap_or(Certificates::new()),

@@ -1,13 +1,15 @@
 use log::{debug, info, trace};
 use rand::prelude::SliceRandom;
+use rand::seq::IteratorRandom;
 use rsa::{RsaPublicKey, pkcs8::DecodePublicKey};
 use std::collections::HashSet;
+use x509_parser::{prelude::FromDer, x509::X509Name};
 
 use crate::alert::TlsAlertDesc;
 use crate::ciphersuite::{CipherSuiteId, KeyExchangeType};
 use crate::extensions::{
     ExtendedMasterSecretExt, ExtensionType, HashAlgo, MaxFragmentLenExt, MaxFragmentLength,
-    RenegotiationInfoExt, ServerNameExt, SessionTicketExt, SigAlgo, SignatureAlgorithmsExt,
+    RenegotiationInfoExt, ServerNameExt, SessionTicketExt, SignatureAlgorithmsExt,
     SignatureAndHashAlgorithm, sign, verify,
 };
 use crate::messages::{
@@ -594,37 +596,61 @@ impl HandleRecord<TlsState> for AwaitServerHelloDone {
 
         let mut actions = vec![];
 
-        let mut chosen_sig_algo = SigAlgo::Rsa;
+        let mut verify_cert = None;
         let mut chosen_hash_algo = HashAlgo::Sha1;
-        let mut send_verify = false;
         if let Some(cert_request) = &self.client_certificate_request {
-            let client_certificate = match &ctx.config.certificates.primary() {
-                None => TlsHandshake::Certificates(Certificate::empty()),
-                Some(value) => {
-                    let possible_signature_algorithms = cert_request
-                        .supported_signature_algorithms
-                        .iter()
-                        .filter(|x| x.signature == value.cert_signature_algorithm)
-                        .collect::<Vec<_>>();
-                    if let Some(algo) =
-                        possible_signature_algorithms.choose(&mut rand::thread_rng())
-                    {
-                        println!("Picked CertificateRequest SA: {:?}", algo);
-                        chosen_sig_algo = algo.signature;
-                        chosen_hash_algo = algo.hash;
-                    }
-                    if cert_request
-                        .certificate_authorities
-                        .contains(&value.distinguised_name_der)
-                    {
-                        println!("Found DN match");
-                        send_verify = true;
-                        TlsHandshake::Certificates(Certificate::new(value.certificate_der.clone()))
-                    } else {
-                        TlsHandshake::Certificates(Certificate::empty())
-                    }
-                }
-            };
+            let sig_set: HashSet<_> = cert_request
+                .supported_signature_algorithms
+                .iter()
+                .map(|item| item.signature)
+                .collect();
+
+            let dn_set: HashSet<_> = cert_request
+                .certificate_authorities
+                .iter()
+                .map(|item| item.clone())
+                .collect();
+
+            let suitable_certs = ctx
+                .config
+                .certificates
+                .certificates()
+                .into_iter()
+                .filter(|cert| sig_set.contains(&cert.cert_signature_algorithm))
+                .collect::<Vec<_>>();
+
+            let suitable_certs = suitable_certs
+                .into_iter()
+                .filter(|cert| dn_set.is_empty() || dn_set.contains(&cert.distinguished_name_der))
+                .collect::<Vec<_>>();
+
+            let client_certificate = TlsHandshake::Certificates(
+                suitable_certs
+                    .choose(&mut rand::thread_rng())
+                    .map(|cert| {
+                        println!("{:?}", cert_request.supported_signature_algorithms);
+                        let signature_algorithm = cert_request
+                            .supported_signature_algorithms
+                            .iter()
+                            .filter(|x| x.signature == cert.cert_signature_algorithm)
+                            .choose(&mut rand::thread_rng())
+                            .unwrap();
+
+                        trace!("Chose signature algorithm: {:?}", signature_algorithm);
+                        trace!(
+                            "Distinguished name: {}",
+                            X509Name::from_der(&cert.distinguished_name_der).unwrap().1
+                        );
+                        verify_cert = Some((*cert).clone());
+                        chosen_hash_algo = signature_algorithm.hash;
+
+                        Certificate::new(cert.certificate_der.clone())
+                    })
+                    .unwrap_or_else(|| {
+                        trace!("No client ceritificate matches certificate request");
+                        Certificate::empty()
+                    }),
+            );
 
             client_certificate.write_to(&mut self.handshakes);
             actions.push(TlsAction::SendHandshakeMsg(client_certificate));
@@ -680,27 +706,25 @@ impl HandleRecord<TlsState> for AwaitServerHelloDone {
             self.negotiated_extensions.extended_master_secret,
         );
 
-        if send_verify {
+        if let Some(cert) = verify_cert {
             if let Some(_) = &self.client_certificate_request {
-                if let Some(value) = &ctx.config.certificates.primary() {
-                    let signature = sign(
-                        chosen_sig_algo,
-                        chosen_hash_algo,
-                        &value.private_key_der,
-                        &self.handshakes,
-                    )
-                    .unwrap();
-                    let certificate_verify = TlsHandshake::CertificateVerify(CertificateVerify {
-                        signed: DigitallySigned {
-                            hash_algorithm: chosen_hash_algo,
-                            signature_algorithm: chosen_sig_algo,
-                            signature: signature.try_into().unwrap(),
-                        },
-                    });
-                    certificate_verify.write_to(&mut self.handshakes);
-                    actions.push(TlsAction::SendHandshakeMsg(certificate_verify));
-                    info!("Sent CertificateVerify");
-                }
+                let signature = sign(
+                    cert.cert_signature_algorithm,
+                    chosen_hash_algo,
+                    &cert.private_key_der,
+                    &self.handshakes,
+                )
+                .unwrap();
+                let certificate_verify = TlsHandshake::CertificateVerify(CertificateVerify {
+                    signed: DigitallySigned {
+                        hash_algorithm: chosen_hash_algo,
+                        signature_algorithm: cert.cert_signature_algorithm,
+                        signature: signature.try_into().unwrap(),
+                    },
+                });
+                certificate_verify.write_to(&mut self.handshakes);
+                actions.push(TlsAction::SendHandshakeMsg(certificate_verify));
+                info!("Sent CertificateVerify");
             }
         }
 

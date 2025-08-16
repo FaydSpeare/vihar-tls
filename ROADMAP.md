@@ -1,11 +1,6 @@
 ## TODO
 
-- Use CertificateRequest contents to decide what to send
-
 - Fix bad decryption overflow panics
-
-- Specify all certs paths (dsa, rsa, ecdsa etc) for server, and then use them depending on sig algo chosen
-- server: Allow DSA cert
 
 - Check server certificate chain against local root certificates?
 

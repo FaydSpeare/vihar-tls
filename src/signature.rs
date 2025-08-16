@@ -10,7 +10,6 @@ use num_bigint::{BigUint, RandBigInt};
 use num_traits::{FromBytes, One};
 use rsa::{
     Pkcs1v15Encrypt, RsaPrivateKey, RsaPublicKey,
-    pkcs1::DecodeRsaPrivateKey,
     pkcs1v15::{Signature, SigningKey, VerifyingKey},
     rand_core::{OsRng, RngCore},
     signature::SignatureEncoding,

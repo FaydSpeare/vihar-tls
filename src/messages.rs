@@ -561,14 +561,10 @@ pub struct CertificateRequest {
 
 impl CertificateRequest {
     pub fn new(signature_algorithms: &[SignatureAndHashAlgorithm]) -> Self {
-        let v = vec![
-            48, 20, 49, 18, 48, 16, 6, 3, 85, 4, 3, 12, 9, 108, 111, 99, 97, 108, 104, 111, 115,
-            116,
-        ];
         Self {
             certificate_types: vec![ClientCertificateType::RsaSign].try_into().unwrap(),
             supported_signature_algorithms: signature_algorithms.to_vec().try_into().unwrap(),
-            certificate_authorities: vec![v.try_into().unwrap()].try_into().unwrap(),
+            certificate_authorities: vec![].try_into().unwrap(),
         }
     }
 }
