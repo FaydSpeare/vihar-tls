@@ -16,6 +16,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = TlsConfigBuilder::new()
         .with_cipher_suites(
             [
+                pcs!(3, CipherSuiteId::RsaWithAes256GcmSha384),
                 pcs!(3, CipherSuiteId::DheRsaWithAes128CbcSha),
                 pcs!(2, CipherSuiteId::RsaWithAes128CbcSha),
                 pcs!(1, CipherSuiteId::RsaWithAes128CbcSha256),
@@ -33,6 +34,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             renegotiation: RenegotiationPolicy::None,
             max_fragment_length_negotiation: MaxFragmentLengthNegotiationPolicy::Reject,
             client_auth: ClientAuthPolicy::OptionalAuth,
+            verify_server: false,
         })
         .build();
 

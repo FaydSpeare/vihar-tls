@@ -342,9 +342,11 @@ impl HandleRecord<TlsState> for AwaitServerCertificate {
             chain.push(x.to_vec());
         }
 
-        if let Err(e) = validate_certificate_chain(chain, ctx.config.server_name.clone().unwrap()) {
-            error!("{:?}", e);
-            return close_connection(TlsAlertDesc::BadCertificate);
+        if ctx.config.policy.verify_server {
+            if let Err(e) = validate_certificate_chain(chain, ctx.config.server_name.clone().unwrap()) {
+                error!("{:?}", e);
+                return close_connection(TlsAlertDesc::BadCertificate);
+            }
         }
 
         let cipher_suite = CipherSuite::from(self.selected_cipher_suite_id);

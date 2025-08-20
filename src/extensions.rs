@@ -185,6 +185,15 @@ impl Extensions {
         set
     }
 
+    pub fn includes_server_name(&self) -> bool {
+        match &self.list {
+            None => false,
+            Some(extensions) => extensions
+                .iter()
+                .any(|x| matches!(x, Extension::ServerName(_))),
+        }
+    }
+
     pub fn includes_secure_renegotiation(&self) -> bool {
         match &self.list {
             None => false,
@@ -597,6 +606,9 @@ pub struct ServerNameExt {
 }
 
 impl ServerNameExt {
+    pub fn empty() -> Self {
+        Self { list: None }
+    }
     pub fn new(host_name: &str) -> Self {
         let host_name = ServerName::HostName(host_name.as_bytes().to_vec().try_into().unwrap());
         Self {

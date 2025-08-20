@@ -83,6 +83,7 @@ fn start_abbr_handshake(client_hello: ClientHello, session: SessionInfo) -> Hand
         client_hello.extensions.includes_secure_renegotiation(),
         client_hello.extensions.includes_extended_master_secret(),
         false,
+        client_hello.extensions.includes_server_name(),
         None,
         session.max_fragment_len,
     );
@@ -187,6 +188,7 @@ fn start_full_handshake(
         client_hello.extensions.includes_secure_renegotiation(),
         client_hello.extensions.includes_extended_master_secret(),
         issue_session_ticket,
+        client_hello.extensions.includes_server_name(),
         renegotiation_info,
         max_fragment_length,
     );

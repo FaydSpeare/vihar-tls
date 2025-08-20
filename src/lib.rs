@@ -73,6 +73,8 @@ pub struct TlsPolicy {
     pub max_fragment_length_negotiation: MaxFragmentLengthNegotiationPolicy,
 
     pub client_auth: ClientAuthPolicy,
+
+    pub verify_server: bool,
 }
 
 impl Default for TlsPolicy {
@@ -82,6 +84,7 @@ impl Default for TlsPolicy {
             renegotiation: RenegotiationPolicy::OnlySecure,
             max_fragment_length_negotiation: MaxFragmentLengthNegotiationPolicy::Support,
             client_auth: ClientAuthPolicy::NoAuth,
+            verify_server: false,
         }
     }
 }

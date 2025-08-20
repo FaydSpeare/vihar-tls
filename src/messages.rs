@@ -11,7 +11,7 @@ use crate::encoding::{
 use crate::errors::{DecodingError, InvalidEncodingError};
 use crate::extensions::{
     ExtendedMasterSecretExt, Extension, Extensions, HashAlgo, MaxFragmentLenExt,
-    RenegotiationInfoExt, SessionTicketExt, SigAlgo, SignatureAlgorithm, sign,
+    RenegotiationInfoExt, ServerNameExt, SessionTicketExt, SigAlgo, SignatureAlgorithm, sign,
 };
 use crate::session_ticket::{ClientIdentity, StatePlaintext};
 use crate::storage::StekInfo;
@@ -216,6 +216,7 @@ impl ServerHello {
         with_renegotiation_info: bool,
         with_extended_master_secret: bool,
         with_session_ticket: bool,
+        with_server_name: bool,
         renegotiation_info: Option<Vec<u8>>,
         max_fragment_len: Option<MaxFragmentLength>,
     ) -> Self {
@@ -238,6 +239,10 @@ impl ServerHello {
 
         if with_session_ticket {
             extensions.push(SessionTicketExt::new().into());
+        }
+
+        if with_server_name {
+            extensions.push(ServerNameExt::empty().into());
         }
 
         Self {
