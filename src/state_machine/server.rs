@@ -514,10 +514,8 @@ impl HandleRecord<TlsState> for AwaitClientCertificate {
 
         info!("Received ClientCertificate");
 
-        if ctx.config.policy.client_auth == ClientAuthPolicy::MandatoryAuth {
-            if certificate.list.is_empty() {
-                return close_connection(TlsAlertDesc::HandshakeFailure);
-            }
+        if ctx.config.policy.client_auth == ClientAuthPolicy::MandatoryAuth && certificate.list.is_empty() {
+            return close_connection(TlsAlertDesc::HandshakeFailure);
         }
 
         handshake.write_to(&mut self.handshakes);
@@ -763,7 +761,7 @@ impl HandleRecord<TlsState> for AwaitClientFinished {
                 utils::get_unix_time(),
                 self.negotiated_extensions.max_fragment_length,
                 self.negotiated_extensions.extended_master_secret,
-                &ctx.stek.as_ref().unwrap(),
+                ctx.stek.as_ref().unwrap(),
             );
             let new_session_ticket = TlsHandshake::NewSessionTicket(new_session_ticket);
             new_session_ticket.write_to(&mut self.handshakes);
@@ -834,16 +832,16 @@ impl HandleRecord<TlsState> for ServerEstablished {
         // Add options to simply ignore client renegotiation or simply send a warning.
         match ctx.config.policy.renegotiation {
             RenegotiationPolicy::None => {
-                return close_connection(TlsAlertDesc::NoRenegotiation);
+                close_connection(TlsAlertDesc::NoRenegotiation)
             }
             RenegotiationPolicy::OnlyLegacy => {
                 if client_hello.extensions.includes_secure_renegotiation() {
                     return close_connection(TlsAlertDesc::HandshakeFailure);
                 }
-                return AwaitClientHello {
+                AwaitClientHello {
                     previous_verify_data: None,
                 }
-                .handle(ctx, event);
+                .handle(ctx, event)
             }
             RenegotiationPolicy::OnlySecure => {
                 if let Some(info) = client_hello.extensions.get_renegotiation_info() {
@@ -859,7 +857,7 @@ impl HandleRecord<TlsState> for ServerEstablished {
                     }
                     .handle(ctx, event);
                 }
-                return close_connection(TlsAlertDesc::NoRenegotiation);
+                close_connection(TlsAlertDesc::NoRenegotiation)
             }
         }
     }

@@ -60,7 +60,7 @@ pub fn hmac(key: &[u8], message: &[u8], hash_algo: HmacHashAlgo) -> Vec<u8> {
     let tmp = [&utils::xor_bytes(&ipad, &k), message].concat();
     let right: &[u8] = &hash_fn(&tmp);
     let left = &utils::xor_bytes(&opad, &k) as &[u8];
-    return hash_fn(&[left, right].concat()).to_vec();
+    hash_fn(&[left, right].concat()).to_vec()
 }
 
 fn p_hash(secret: &[u8], seed: &[u8], len: usize, hash_algo: HmacHashAlgo) -> Vec<u8> {

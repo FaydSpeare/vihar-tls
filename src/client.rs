@@ -38,6 +38,12 @@ pub struct Certificates {
     pub dsa: Option<CertificateAndPrivateKey>,
 }
 
+impl Default for Certificates {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Certificates {
     pub fn new() -> Self {
         Self {
@@ -52,8 +58,8 @@ impl Certificates {
 
     pub fn certificates(&self) -> Vec<&CertificateAndPrivateKey> {
         let mut certs = vec![];
-        self.rsa.as_ref().map(|v| certs.push(v));
-        self.dsa.as_ref().map(|v| certs.push(v));
+        if let Some(v) = self.rsa.as_ref() { certs.push(v) }
+        if let Some(v) = self.dsa.as_ref() { certs.push(v) }
         certs
     }
 
@@ -95,6 +101,12 @@ pub struct TlsConfigBuilder {
     pub server_name: Option<String>,
     pub policy: Option<TlsPolicy>,
     pub max_fragment_length: Option<MaxFragmentLength>,
+}
+
+impl Default for TlsConfigBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TlsConfigBuilder {
@@ -151,7 +163,7 @@ impl TlsConfigBuilder {
                 },
             ]),
             session_store: self.session_store,
-            certificates: self.certificates.unwrap_or(Certificates::new()),
+            certificates: self.certificates.unwrap_or_default(),
             server_name: self.server_name,
             policy: self.policy.unwrap_or_default(),
             max_fragment_length: self.max_fragment_length,

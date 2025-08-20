@@ -696,6 +696,7 @@ pub struct NewSessionTicket {
 }
 
 impl NewSessionTicket {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         protocol_version: ProtocolVersion,
         cipher_suite: CipherSuiteId,
@@ -803,9 +804,8 @@ impl TlsHandshake {
     }
 
     pub fn validate(&self, policy: &TlsPolicy) -> Result<(), TlsAlert> {
-        match self {
-            Self::ClientHello(hello) => hello.extensions.validate(policy)?,
-            _ => {}
+        if let Self::ClientHello(hello) = self {
+            hello.extensions.validate(policy)?
         }
         Ok(())
     }

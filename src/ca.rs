@@ -64,17 +64,17 @@ pub fn verify_certificate_signature(
     cert: &X509Certificate,
     issuing_cert: &X509Certificate,
 ) -> Result<(), CertificateError> {
-    let signature_algorithm = signature_algorithm_from_oid(&cert.signature_algorithm.oid());
+    let signature_algorithm = signature_algorithm_from_oid(cert.signature_algorithm.oid());
     trace!("Used Signature Algorithm: {:?}", signature_algorithm);
 
     let verified = verify(
         signature_algorithm.signature,
         signature_algorithm.hash,
-        &issuing_cert.subject_pki.raw,
+        issuing_cert.subject_pki.raw,
         cert.tbs_certificate.as_ref(),
         cert.signature_value.as_ref(),
     )
-    .map_err(|e| CertificateError::SignatureVerificationFailed(e))?;
+    .map_err(CertificateError::SignatureVerificationFailed)?;
 
     if !verified {
         return Err(CertificateError::InvalidSignature);
@@ -112,20 +112,19 @@ pub fn validate_certificate_chain(
     chain: Vec<Vec<u8>>,
     server_name: String,
 ) -> Result<(), CertificateError> {
-    let mut intermediate_count = 0;
 
     if chain.is_empty() {
         return Err(CertificateError::EmptyCertificateChain);
     }
 
-    let first_cert = X509Certificate::from_der(&chain.first().unwrap())
+    let first_cert = X509Certificate::from_der(chain.first().unwrap())
         .unwrap()
         .1;
     if !first_cert.validity().is_valid() {
         return Err(CertificateError::BadCertificateValidity);
     }
 
-    for window in chain.windows(2) {
+    for (intermediate_count, window) in chain.windows(2).enumerate() {
         let curr = X509Certificate::from_der(&window[0]).unwrap().1;
         let next = X509Certificate::from_der(&window[1]).unwrap().1;
 
@@ -143,7 +142,7 @@ pub fn validate_certificate_chain(
         }
 
         if let Some(max_path_len) = constraints.value.path_len_constraint {
-            if intermediate_count > max_path_len {
+            if intermediate_count > max_path_len as usize {
                 return Err(CertificateError::ViolatedPathLengthConstraint);
             }
         }
@@ -152,11 +151,10 @@ pub fn validate_certificate_chain(
             return Err(CertificateError::BadCertificateValidity);
         }
 
-        intermediate_count += 1;
         verify_certificate_signature(&curr, &next)?;
     }
 
-    let last_cert = X509Certificate::from_der(&chain.last().unwrap()).unwrap().1;
+    let last_cert = X509Certificate::from_der(chain.last().unwrap()).unwrap().1;
     let mut found_root = false;
 
     for root_der in load_native_certs() {
@@ -195,5 +193,5 @@ pub fn validate_certificate_chain(
         }
     }
 
-    return Err(CertificateError::BadServerName);
+    Err(CertificateError::BadServerName)
 }

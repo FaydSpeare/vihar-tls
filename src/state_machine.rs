@@ -166,10 +166,10 @@ impl TlsStateMachine {
     }
 
     pub fn is_established(&self) -> bool {
-        match self.state.as_ref().unwrap() {
-            TlsState::ClientEstablished(_) | TlsState::ServerEstablished(_) => true,
-            _ => false,
-        }
+        matches!(
+            self.state.as_ref().unwrap(),
+            TlsState::ClientEstablished(_) | TlsState::ServerEstablished(_)
+        )
     }
 
     pub fn established_session_id(&self) -> Option<Vec<u8>> {

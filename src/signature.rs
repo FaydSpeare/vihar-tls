@@ -49,7 +49,7 @@ pub fn get_dhe_pre_master_secret(
 ) -> (Vec<u8>, Vec<u8>) {
     let p = &BigUint::from_be_bytes(p);
     let g = &BigUint::from_be_bytes(g);
-    let server_public_key = &BigUint::from_be_bytes(&server_public_key);
+    let server_public_key = &BigUint::from_be_bytes(server_public_key);
 
     let mut rng = rand::thread_rng();
     let one = BigUint::one();
@@ -65,13 +65,13 @@ pub fn rsa_verify<D: Digest + AssociatedOid>(
     message: &[u8],
     signature: &[u8],
 ) -> Result<bool, String> {
-    let public_key = RsaPublicKey::from_public_key_der(&key_der)
+    let public_key = RsaPublicKey::from_public_key_der(key_der)
         .map_err(|e| format!("Failed to parse rsa public key: {e}"))?;
     let verifying_key = VerifyingKey::<D>::new(public_key);
     let signature = &Signature::try_from(signature)
         .map_err(|e| format!("Failed to parse rsa signature: {e}"))?;
     let message = D::new_with_prefix(message);
-    Ok(verifying_key.verify_digest(message, &signature).is_ok())
+    Ok(verifying_key.verify_digest(message, signature).is_ok())
 }
 
 pub fn dsa_verify<D: Digest>(
@@ -91,14 +91,14 @@ pub fn dsa_sign<D: Digest + BlockSizeUser + FixedOutputReset>(
     key_der: &[u8],
     data: &[u8],
 ) -> Result<Vec<u8>, String> {
-    let key = DsaSigningKey::from_pkcs8_der(&key_der)
+    let key = DsaSigningKey::from_pkcs8_der(key_der)
         .map_err(|e| format!("Failed to parse dsa private key: {e}"))?;
     let data = D::new_with_prefix(data);
     Ok(key.sign_digest(data).to_vec())
 }
 
 pub fn rsa_sign<D: Digest + AssociatedOid>(key_der: &[u8], data: &[u8]) -> Result<Vec<u8>, String> {
-    let key = RsaPrivateKey::from_pkcs8_der(&key_der)
+    let key = RsaPrivateKey::from_pkcs8_der(key_der)
         .map_err(|e| format!("Failed to parse rsa private key: {e}"))?;
     let signing_key = SigningKey::<D>::new(key.clone());
     let data = D::new_with_prefix(data);

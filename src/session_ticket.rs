@@ -63,7 +63,7 @@ impl SessionTicket {
         // TODO: check padding
 
         let mut reader = Reader::new(&plaintext);
-        Ok(StatePlaintext::read_from(&mut reader)?)
+        StatePlaintext::read_from(&mut reader)
     }
 }
 
@@ -109,7 +109,7 @@ impl StatePlaintext {
         let mut plaintext = self.get_encoding();
 
         let pad_len = 16 - plaintext.len() % 16;
-        plaintext.extend(std::iter::repeat(pad_len as u8).take(pad_len));
+        plaintext.extend(std::iter::repeat_n(pad_len as u8, pad_len));
 
         let iv: [u8; 16] = utils::get_random_bytes(16).try_into().unwrap();
         let ciphertext = encrypt_aes_cbc::<Aes128>(&plaintext, &stek.enc_key, &iv);

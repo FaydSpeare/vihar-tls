@@ -207,7 +207,7 @@ impl<'a, L: VecLen, T: TlsCodable> TlsListIter<'a, L, T> {
     }
 }
 
-impl<'a, L: VecLen, T: TlsCodable> Iterator for TlsListIter<'a, L, T> {
+impl<L: VecLen, T: TlsCodable> Iterator for TlsListIter<'_, L, T> {
     type Item = Result<T, DecodingError>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -359,7 +359,7 @@ impl<'a, L: VecLen> LengthPrefixWriter<'a, L> {
     }
 }
 
-impl<'a, L: VecLen> Drop for LengthPrefixWriter<'a, L> {
+impl<L: VecLen> Drop for LengthPrefixWriter<'_, L> {
     fn drop(&mut self) {
         debug_assert!(
             self.finalized,
@@ -368,14 +368,14 @@ impl<'a, L: VecLen> Drop for LengthPrefixWriter<'a, L> {
     }
 }
 
-impl<'a, L: VecLen> Deref for LengthPrefixWriter<'a, L> {
+impl<L: VecLen> Deref for LengthPrefixWriter<'_, L> {
     type Target = Vec<u8>;
     fn deref(&self) -> &Self::Target {
         self.buf
     }
 }
 
-impl<'a, L: VecLen> DerefMut for LengthPrefixWriter<'a, L> {
+impl<L: VecLen> DerefMut for LengthPrefixWriter<'_, L> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.buf
     }

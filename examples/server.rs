@@ -1,5 +1,4 @@
 use std::{net::TcpListener, thread::sleep, time::Duration};
-use webpki_root_certs::TLS_SERVER_ROOT_CERTS;
 
 use vihar_tls::{
     ClientAuthPolicy, MaxFragmentLengthNegotiationPolicy, RenegotiationPolicy, TlsPolicy,

@@ -22,7 +22,7 @@ tls_codable_enum! {
         SessionTicket = 0x0023,
         ExtendedMasterSecret = 0x0017,
         ServerName = 0x0000,
-        ALPN = 0x0010,
+        Alpn = 0x0010,
         MaxFragmentLen = 0x0001,
     }
 }
@@ -33,7 +33,7 @@ pub enum Extension {
     RenegotiationInfo(RenegotiationInfoExt),
     SessionTicket(SessionTicketExt),
     ExtendedMasterSecret(ExtendedMasterSecretExt),
-    ALPN(ALPNExt),
+    Alpn(AlpnExt),
     ServerName(ServerNameExt),
     MaxFragmentLen(MaxFragmentLenExt),
     Unknown(u16, Vec<u8>),
@@ -46,7 +46,7 @@ impl Extension {
             Self::RenegotiationInfo(_) => ExtensionType::RenegotiationInfo,
             Self::SessionTicket(_) => ExtensionType::SessionTicket,
             Self::ExtendedMasterSecret(_) => ExtensionType::ExtendedMasterSecret,
-            Self::ALPN(_) => ExtensionType::ALPN,
+            Self::Alpn(_) => ExtensionType::Alpn,
             Self::ServerName(_) => ExtensionType::ServerName,
             Self::MaxFragmentLen(_) => ExtensionType::MaxFragmentLen,
             Self::Unknown(x, _) => ExtensionType::Unknown(*x),
@@ -63,11 +63,11 @@ impl TlsCodable for Extension {
             Self::SignatureAlgorithms(ext) => ext.write_to(&mut writer),
             Self::SessionTicket(ext) => ext.write_to(&mut writer),
             Self::ExtendedMasterSecret(ext) => ext.write_to(&mut writer),
-            Self::ALPN(ext) => ext.write_to(&mut writer),
+            Self::Alpn(ext) => ext.write_to(&mut writer),
             Self::ServerName(ext) => ext.write_to(&mut writer),
             Self::MaxFragmentLen(ext) => ext.write_to(&mut writer),
             Self::Unknown(_, ext_bytes) => {
-                writer.extend_from_slice(&ext_bytes);
+                writer.extend_from_slice(ext_bytes);
             }
         };
         writer.finalize_length_prefix();
@@ -88,7 +88,7 @@ impl TlsCodable for Extension {
             ExtensionType::ExtendedMasterSecret => {
                 ExtendedMasterSecretExt::read_from(&mut subreader)?.into()
             }
-            ExtensionType::ALPN => ALPNExt::read_from(&mut subreader)?.into(),
+            ExtensionType::Alpn => AlpnExt::read_from(&mut subreader)?.into(),
             ExtensionType::ServerName => ServerNameExt::read_from(&mut subreader)?.into(),
             ExtensionType::MaxFragmentLen => MaxFragmentLenExt::read_from(&mut subreader)?.into(),
             ExtensionType::Unknown(x) => {
@@ -124,9 +124,9 @@ impl From<ExtendedMasterSecretExt> for Extension {
     }
 }
 
-impl From<ALPNExt> for Extension {
-    fn from(value: ALPNExt) -> Self {
-        Self::ALPN(value)
+impl From<AlpnExt> for Extension {
+    fn from(value: AlpnExt) -> Self {
+        Self::Alpn(value)
     }
 }
 
@@ -149,7 +149,7 @@ pub struct Extensions {
 
 impl Extensions {
     pub fn new(extensions: Vec<Extension>) -> Result<Self, DecodingError> {
-        if extensions.len() == 0 {
+        if extensions.is_empty() {
             return Ok(Self::empty());
         }
         Ok(Self {
@@ -307,7 +307,7 @@ impl RenegotiationInfoExt {
 impl TlsCodable for RenegotiationInfoExt {
     fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
         let renegotiation_info = LengthPrefixedVec::<u8, u8, MaybeEmpty>::read_from(reader)?;
-        if renegotiation_info.len() == 0 {
+        if renegotiation_info.is_empty() {
             return Ok(Self::IndicateSupport);
         }
         Ok(Self::Renegotiation(renegotiation_info.reconstrain()?))
@@ -327,6 +327,12 @@ pub enum SessionTicketExt {
     Resumption(Vec<u8>),
 }
 
+impl Default for SessionTicketExt {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SessionTicketExt {
     pub fn new() -> Self {
         Self::Empty
@@ -340,7 +346,7 @@ impl SessionTicketExt {
 impl TlsCodable for SessionTicketExt {
     fn write_to(&self, bytes: &mut Vec<u8>) {
         if let Self::Resumption(ticket) = self {
-            bytes.extend_from_slice(&ticket);
+            bytes.extend_from_slice(ticket);
         }
     }
     fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
@@ -506,11 +512,11 @@ type ProtocolName = LengthPrefixedVec<u8, u8, NonEmpty>;
 type ProtocolList = LengthPrefixedVec<u16, ProtocolName, NonEmpty>;
 
 #[derive(Debug, Clone)]
-pub struct ALPNExt {
+pub struct AlpnExt {
     protocols: ProtocolList,
 }
 
-impl ALPNExt {
+impl AlpnExt {
     pub fn new(names: Vec<String>) -> Result<Self, DecodingError> {
         let mut protocols = vec![];
         for name in names {
@@ -522,7 +528,7 @@ impl ALPNExt {
     }
 }
 
-impl TlsCodable for ALPNExt {
+impl TlsCodable for AlpnExt {
     fn write_to(&self, bytes: &mut Vec<u8>) {
         self.protocols.write_to(bytes);
     }

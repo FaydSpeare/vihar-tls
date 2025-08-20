@@ -186,7 +186,7 @@ impl SecureConnState {
         bytes.push(u8::from(content_type));
         bytes.extend([3, 3]);
         bytes.extend((fragment.len() as u16).to_be_bytes());
-        bytes.extend_from_slice(&fragment);
+        bytes.extend_from_slice(fragment);
 
         let expected_mac = self.params.mac_algorithm.mac(&self.mac_key, &bytes);
         if actual_mac != expected_mac {
@@ -197,7 +197,7 @@ impl SecureConnState {
         Ok(TlsCompressed {
             content_type,
             version,
-            fragment: fragment.to_vec().try_into().unwrap(),
+            fragment: fragment.to_vec(),
         })
     }
 
@@ -228,7 +228,7 @@ impl SecureConnState {
         Ok(TlsCompressed {
             content_type,
             version,
-            fragment: fragment.try_into().unwrap(),
+            fragment
         })
     }
 
@@ -370,6 +370,12 @@ impl ConnState {
 pub struct ConnStates {
     pub read: ConnState,
     pub write: ConnState,
+}
+
+impl Default for ConnStates {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ConnStates {
@@ -550,7 +556,7 @@ impl<T: Read + Write> TlsConnection<T> {
 
         let msg: TlsMessage = msg.into();
         let content_type = msg.content_type();
-        for bytes in Fragmenter::new(msg.encode(), self.max_fragment_len).into_iter() {
+        for bytes in Fragmenter::new(msg.encode(), self.max_fragment_len) {
             let plaintext = TlsPlaintext::new(content_type, bytes.to_vec())?;
             let ciphertext = self.conn_states.write.encrypt(plaintext)?;
             self.send_bytes(&ciphertext.get_encoding())?;
@@ -647,7 +653,7 @@ impl<T: Read + Write> TlsConnection<T> {
 
     pub fn read(&mut self) -> TlsResult<Vec<u8>> {
         self.check_connection_not_closed()?;
-
+        #[allow(clippy::never_loop)]
         loop {
             let msg = self.next_message()?;
             match msg {

@@ -120,7 +120,7 @@ impl HandleRecord<TlsState> for AwaitClientInitiateState {
         let client_random = client_hello.random.as_bytes();
         let client_extension_set = client_hello.extensions.extension_type_set();
         let handshake = TlsHandshake::ClientHello(client_hello);
-        return Ok((
+        Ok((
             AwaitServerHello {
                 handshakes: handshake.get_encoding(),
                 client_random,
@@ -131,7 +131,7 @@ impl HandleRecord<TlsState> for AwaitClientInitiateState {
             }
             .into(),
             vec![TlsAction::SendHandshakeMsg(handshake)],
-        ));
+        ))
     }
 }
 
@@ -164,7 +164,7 @@ impl HandleRecord<TlsState> for AwaitServerHello {
             };
 
             let expected = [previous_verify_data.client, previous_verify_data.server].concat();
-            if !(renegotiation_info == expected) {
+            if renegotiation_info != expected {
                 return close_connection(TlsAlertDesc::HandshakeFailure);
             }
         }
@@ -306,7 +306,7 @@ impl HandleRecord<TlsState> for AwaitServerHello {
         // Boring... no session resumption, we're doing a full handshake.
         let cipher_suite = CipherSuite::from(server_hello.cipher_suite);
         debug!("Selected CipherSuite: {}", cipher_suite.params().name);
-        return Ok((
+        Ok((
             AwaitServerCertificate {
                 session_id: server_hello.session_id.clone(),
                 handshakes: self.handshakes,
@@ -317,7 +317,7 @@ impl HandleRecord<TlsState> for AwaitServerHello {
             }
             .into(),
             actions,
-        ));
+        ))
     }
 }
 
@@ -368,7 +368,7 @@ impl HandleRecord<TlsState> for AwaitServerCertificate {
             _ => unimplemented!(),
         }
 
-        return Ok((
+        Ok((
             AwaitServerHelloDoneOrCertificateRequest {
                 session_id: self.session_id,
                 handshakes: self.handshakes,
@@ -381,7 +381,7 @@ impl HandleRecord<TlsState> for AwaitServerCertificate {
             }
             .into(),
             vec![],
-        ));
+        ))
     }
 }
 
@@ -404,7 +404,7 @@ impl HandleRecord<TlsState> for AwaitServerKeyExchangeOrCertificateRequest {
                 handshake @ TlsHandshake::CertificateRequest(certificate_request),
             )) => {
                 handshake.write_to(&mut self.handshakes);
-                return Ok((
+                Ok((
                     AwaitServerKeyExchange {
                         session_id: self.session_id,
                         handshakes: self.handshakes,
@@ -414,17 +414,17 @@ impl HandleRecord<TlsState> for AwaitServerKeyExchangeOrCertificateRequest {
                         negotiated_extensions: self.negotiated_extensions,
                         server_certificate_der: self.server_certificate_der,
                         client_certificate_request: Some(CertificateRequestParams::new(
-                            &certificate_request,
+                            certificate_request,
                         )),
                     }
                     .into(),
                     vec![],
-                ));
+                ))
             }
             TlsEvent::IncomingMessage(TlsMessage::Handshake(TlsHandshake::ServerKeyExchange(
                 _,
             ))) => {
-                return AwaitServerKeyExchange {
+                AwaitServerKeyExchange {
                     session_id: self.session_id,
                     handshakes: self.handshakes,
                     client_random: self.client_random,
@@ -434,9 +434,9 @@ impl HandleRecord<TlsState> for AwaitServerKeyExchangeOrCertificateRequest {
                     server_certificate_der: self.server_certificate_der,
                     client_certificate_request: None,
                 }
-                .handle(ctx, event);
+                .handle(ctx, event)
             }
-            _ => return close_with_unexpected_message(),
+            _ => close_with_unexpected_message(),
         }
     }
 }
@@ -548,7 +548,7 @@ impl HandleRecord<TlsState> for AwaitServerHelloDoneOrCertificateRequest {
                 handshake @ TlsHandshake::CertificateRequest(certificate_request),
             )) => {
                 handshake.write_to(&mut self.handshakes);
-                return Ok((
+                Ok((
                     AwaitServerHelloDone {
                         session_id: self.session_id,
                         handshakes: self.handshakes,
@@ -559,15 +559,15 @@ impl HandleRecord<TlsState> for AwaitServerHelloDoneOrCertificateRequest {
                         server_certificate_der: self.server_certificate_der,
                         secrets: self.secrets,
                         client_certificate_request: Some(CertificateRequestParams::new(
-                            &certificate_request,
+                            certificate_request,
                         )),
                     }
                     .into(),
                     vec![],
-                ));
+                ))
             }
             TlsEvent::IncomingMessage(TlsMessage::Handshake(TlsHandshake::ServerHelloDone)) => {
-                return AwaitServerHelloDone {
+                AwaitServerHelloDone {
                     session_id: self.session_id,
                     handshakes: self.handshakes,
                     client_random: self.client_random,
@@ -578,9 +578,9 @@ impl HandleRecord<TlsState> for AwaitServerHelloDoneOrCertificateRequest {
                     secrets: self.secrets,
                     client_certificate_request: None,
                 }
-                .handle(ctx, event);
+                .handle(ctx, event)
             }
-            _ => return close_with_unexpected_message(),
+            _ => close_with_unexpected_message(),
         }
     }
 }
@@ -618,8 +618,7 @@ impl HandleRecord<TlsState> for AwaitServerHelloDone {
 
             let dn_set: HashSet<_> = cert_request
                 .certificate_authorities
-                .iter()
-                .map(|item| item.clone())
+                .iter().cloned()
                 .collect();
 
             let suitable_certs = ctx
@@ -718,7 +717,7 @@ impl HandleRecord<TlsState> for AwaitServerHelloDone {
         );
 
         if let Some(cert) = verify_cert {
-            if let Some(_) = &self.client_certificate_request {
+            if self.client_certificate_request.is_some() {
                 let signature = sign(
                     cert.cert_signature_algorithm,
                     chosen_hash_algo,
@@ -810,7 +809,7 @@ impl HandleRecord<TlsState> for AwaitNewSessionTicket {
         info!("Received NewSessionTicket");
         handshake.write_to(&mut self.handshakes);
 
-        return Ok((
+        Ok((
             AwaitServerChangeCipher {
                 session_id: self.session_id,
                 session_ticket: Some(new_session_ticket.ticket.to_vec()),
@@ -821,7 +820,7 @@ impl HandleRecord<TlsState> for AwaitNewSessionTicket {
             }
             .into(),
             vec![],
-        ));
+        ))
     }
 }
 
@@ -894,7 +893,7 @@ impl HandleRecord<TlsState> for AwaitNewSessionTicketOrCertificate {
             );
         }
 
-        return close_with_unexpected_message();
+        close_with_unexpected_message()
     }
 }
 
@@ -1062,7 +1061,7 @@ impl HandleRecord<TlsState> for AwaitServerFinished {
             ));
         }
 
-        return Ok((
+        Ok((
             ClientEstablished {
                 session_id: self.session_id,
                 supported_extensions: self.negotiated_extensions,
@@ -1071,7 +1070,7 @@ impl HandleRecord<TlsState> for AwaitServerFinished {
             }
             .into(),
             actions,
-        ));
+        ))
     }
 }
 
@@ -1101,7 +1100,7 @@ impl HandleRecord<TlsState> for ExpectNewSessionTicketAbbr {
             ),
         );
 
-        return Ok((
+        Ok((
             ExpectServerChangeCipherAbbr {
                 session_id: self.session_id,
                 handshakes: self.handshakes,
@@ -1110,7 +1109,7 @@ impl HandleRecord<TlsState> for ExpectNewSessionTicketAbbr {
             }
             .into(),
             vec![action],
-        ));
+        ))
     }
 }
 

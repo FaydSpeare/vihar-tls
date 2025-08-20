@@ -2,6 +2,7 @@ use x509_parser::asn1_rs::Oid;
 
 use crate::extensions::{HashAlgo, SigAlgo, SignatureAlgorithm};
 
+#[allow(dead_code)]
 pub fn signature_type_from_oid(oid: &Oid) -> SigAlgo {
     match oid.to_id_string().as_str() {
         "1.2.840.113549.1.1.1" => SigAlgo::Rsa,

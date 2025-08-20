@@ -67,6 +67,12 @@ pub struct StekInfo {
     pub mac_key: [u8; 32],
 }
 
+impl Default for StekInfo {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl StekInfo {
     pub fn new() -> Self {
         Self {

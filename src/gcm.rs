@@ -10,7 +10,7 @@ pub fn encrypt_aes_cbc<C: KeyInit + BlockEncrypt + BlockSizeUser>(
 ) -> Vec<u8> {
     let mut ciphertext = Vec::<u8>::new();
     let mut state = iv.to_vec();
-    let cipher = C::new(&GenericArray::from_slice(key));
+    let cipher = C::new(GenericArray::from_slice(key));
 
     assert!(plaintext.len() % C::block_size() == 0);
     for pt_block in plaintext.chunks_exact(C::block_size()) {
@@ -30,7 +30,7 @@ pub fn decrypt_aes_cbc<C: KeyInit + BlockDecrypt>(
 ) -> Vec<u8> {
     let mut plaintext = Vec::<u8>::new();
     let mut state = iv;
-    let cipher = C::new(&GenericArray::from_slice(key));
+    let cipher = C::new(GenericArray::from_slice(key));
 
     assert!(ciphertext.len() % C::block_size() == 0);
     for ct_block in ciphertext.chunks_exact(C::block_size()) {
@@ -45,7 +45,7 @@ pub fn decrypt_aes_cbc<C: KeyInit + BlockDecrypt>(
 }
 
 fn encrypt_aes_block<C: BlockEncrypt + KeyInit>(key: &[u8], plaintext: &[u8]) -> [u8; 16] {
-    let aes = C::new(&GenericArray::from_slice(key));
+    let aes = C::new(GenericArray::from_slice(key));
     let mut block = GenericArray::clone_from_slice(plaintext);
     aes.encrypt_block(&mut block);
     block.to_vec().try_into().unwrap()
@@ -136,7 +136,7 @@ pub fn encrypt_aes_gcm<C: BlockEncrypt + KeyInit>(
     let h = u128::from_be_bytes(encrypt_aes_block::<C>(key, &0u128.to_be_bytes()));
     let counter_start = if iv.len() == 12 {
         u128::from_be_bytes(
-            [&iv[..], &1u32.to_be_bytes()[..]]
+            [iv, &1u32.to_be_bytes()[..]]
                 .concat()
                 .try_into()
                 .unwrap(),
@@ -146,7 +146,7 @@ pub fn encrypt_aes_gcm<C: BlockEncrypt + KeyInit>(
     };
     let keystream = generate_keystream::<C>(key, counter_start + 1, plaintext.len());
 
-    let ciphertext = utils::xor_bytes(&plaintext, &keystream);
+    let ciphertext = utils::xor_bytes(plaintext, &keystream);
     let auth_tag = utils::xor_bytes(
         &encrypt_aes_block::<C>(key, &counter_start.to_be_bytes()),
         &g_hash(h, aad, &ciphertext),
@@ -165,7 +165,7 @@ pub fn decrypt_aes_gcm<C: BlockEncrypt + KeyInit>(
     let h = u128::from_be_bytes(encrypt_aes_block::<C>(key, &0u128.to_be_bytes()));
     let counter_start = if iv.len() == 12 {
         u128::from_be_bytes(
-            [&iv[..], &1u32.to_be_bytes()[..]]
+            [iv, &1u32.to_be_bytes()[..]]
                 .concat()
                 .try_into()
                 .unwrap(),
@@ -175,10 +175,10 @@ pub fn decrypt_aes_gcm<C: BlockEncrypt + KeyInit>(
     };
     let keystream = generate_keystream::<C>(key, counter_start + 1, ciphertext.len());
 
-    let plaintext = utils::xor_bytes(&ciphertext, &keystream);
+    let plaintext = utils::xor_bytes(ciphertext, &keystream);
     let calculated_tag = utils::xor_bytes(
         &encrypt_aes_block::<C>(key, &counter_start.to_be_bytes()),
-        &g_hash(h, aad, &ciphertext),
+        &g_hash(h, aad, ciphertext),
     );
 
     if tag != calculated_tag {

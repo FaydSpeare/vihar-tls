@@ -79,7 +79,7 @@ impl RecordLayer {
                     match TlsHandshake::read_from(&mut reader) {
                         Ok(handshake) => {
                             // Validation of handshake, which may return errors
-                            handshake.validate(&policy)?;
+                            handshake.validate(policy)?;
 
                             self.handshake_buffer.drain(..reader.bytes_consumed());
                             return Ok(TlsMessage::Handshake(handshake));
