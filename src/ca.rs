@@ -4,6 +4,8 @@ use security_framework::trust_settings::{Domain, TrustSettings};
 use thiserror::Error;
 use x509_parser::prelude::{FromDer, GeneralName, X509Certificate};
 
+
+#[cfg(target_os = "macos")]
 pub fn load_native_certs() -> Vec<Vec<u8>> {
     let mut cert_ders = vec![];
     for domain in &[Domain::User, Domain::Admin, Domain::System] {
@@ -13,6 +15,16 @@ pub fn load_native_certs() -> Vec<Vec<u8>> {
         }
     }
     cert_ders
+}
+
+#[cfg(target_os = "linux")]
+pub fn load_native_certs() -> Vec<Vec<u8>> {
+    unimplemented!();
+}
+
+#[cfg(target_os = "windows")]
+pub fn load_native_certs() -> Vec<Vec<u8>> {
+    unimplemented!();
 }
 
 #[derive(Debug, Error)]
@@ -53,6 +65,7 @@ pub fn verify_certificate_signature(
     issuing_cert: &X509Certificate,
 ) -> Result<(), CertificateError> {
     let signature_algorithm = signature_algorithm_from_oid(&cert.signature_algorithm.oid());
+    trace!("Used Signature Algorithm: {:?}", signature_algorithm);
 
     let verified = verify(
         signature_algorithm.signature,

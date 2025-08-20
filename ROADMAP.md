@@ -1,8 +1,8 @@
 ## TODO
 
-- Fix bad decryption overflow panics
+- Native root certs for linux and windows
 
-- Check server certificate chain against local root certificates?
+- Fix bad decryption overflow panics
 
 - HelloRequest
 - Need to finished reading before starting client.renegotiate
@@ -38,5 +38,6 @@
 
 === Questions ===
 what to do about all the try_into().unwraps() when creating length prefixed vectors
+unchecked function?
 
-challenges.re bug when sending server name ext
+- Config to allow empty ServerName response
