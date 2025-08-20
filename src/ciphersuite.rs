@@ -434,4 +434,78 @@ define_cipher_suites! {
         kx  = KeyExchangeAlgorithm::DheRsa,
         prf = PrfAlgorithm::Sha256,
     },
+
+    // Galois Counter Mode
+    RSA_WITH_AES_128_GCM_SHA256 = 0x009c {
+        mac = MacAlgorithm::HmacSha256,
+        enc = EncAlgorithm::Aes128Gcm,
+        kx  = KeyExchangeAlgorithm::Rsa,
+        prf = PrfAlgorithm::Sha256,
+    },
+    RSA_WITH_AES_256_GCM_SHA384 = 0x009d {
+        mac = MacAlgorithm::HmacSha256,
+        enc = EncAlgorithm::Aes256Gcm,
+        kx  = KeyExchangeAlgorithm::Rsa,
+        prf = PrfAlgorithm::Sha384,
+    },
+    DHE_RSA_WITH_AES_128_GCM_SHA256 = 0x009e {
+        mac = MacAlgorithm::HmacSha256,
+        enc = EncAlgorithm::Aes128Gcm,
+        kx  = KeyExchangeAlgorithm::DheRsa,
+        prf = PrfAlgorithm::Sha256,
+    },
+    DHE_RSA_WITH_AES_256_GCM_SHA384 = 0x009f {
+        mac = MacAlgorithm::HmacSha256,
+        enc = EncAlgorithm::Aes256Gcm,
+        kx  = KeyExchangeAlgorithm::DheRsa,
+        prf = PrfAlgorithm::Sha384,
+    },
+    DH_RSA_WITH_AES_128_GCM_SHA256 = 0x00a0 {
+        mac = MacAlgorithm::HmacSha256,
+        enc = EncAlgorithm::Aes128Gcm,
+        kx  = KeyExchangeAlgorithm::DhRsa,
+        prf = PrfAlgorithm::Sha256,
+    },
+    DH_RSA_WITH_AES_256_GCM_SHA384 = 0x00a1 {
+        mac = MacAlgorithm::HmacSha256,
+        enc = EncAlgorithm::Aes256Gcm,
+        kx  = KeyExchangeAlgorithm::DhRsa,
+        prf = PrfAlgorithm::Sha384,
+    },
+    DHE_DSS_WITH_AES_128_GCM_SHA256 = 0x00a2 {
+        mac = MacAlgorithm::HmacSha256,
+        enc = EncAlgorithm::Aes128Gcm,
+        kx  = KeyExchangeAlgorithm::DheDss,
+        prf = PrfAlgorithm::Sha256,
+    },
+    DHE_DSS_WITH_AES_256_GCM_SHA384 = 0x00a3 {
+        mac = MacAlgorithm::HmacSha256,
+        enc = EncAlgorithm::Aes256Gcm,
+        kx  = KeyExchangeAlgorithm::DheDss,
+        prf = PrfAlgorithm::Sha384,
+    },
+    DH_DSS_WITH_AES_128_GCM_SHA256 = 0x00a5 {
+        mac = MacAlgorithm::HmacSha256,
+        enc = EncAlgorithm::Aes128Gcm,
+        kx  = KeyExchangeAlgorithm::DhDss,
+        prf = PrfAlgorithm::Sha256,
+    },
+    DH_DSS_WITH_AES_256_GCM_SHA384 = 0x00a4 {
+        mac = MacAlgorithm::HmacSha256,
+        enc = EncAlgorithm::Aes256Gcm,
+        kx  = KeyExchangeAlgorithm::DhDss,
+        prf = PrfAlgorithm::Sha384,
+    },
+    DH_anon_WITH_AES_128_GCM_SHA256 = 0x00a6 {
+        mac = MacAlgorithm::HmacSha256,
+        enc = EncAlgorithm::Aes128Gcm,
+        kx  = KeyExchangeAlgorithm::DhAnon,
+        prf = PrfAlgorithm::Sha256,
+    },
+    DH_anon_WITH_AES_256_GCM_SHA384 = 0x00a7 {
+        mac = MacAlgorithm::HmacSha256,
+        enc = EncAlgorithm::Aes256Gcm,
+        kx  = KeyExchangeAlgorithm::DhAnon,
+        prf = PrfAlgorithm::Sha384,
+    },
 }
