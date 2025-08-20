@@ -11,7 +11,7 @@ use crate::encoding::{
 use crate::errors::{DecodingError, InvalidEncodingError};
 use crate::extensions::{
     ExtendedMasterSecretExt, Extension, Extensions, HashAlgo, MaxFragmentLenExt,
-    RenegotiationInfoExt, SessionTicketExt, SigAlgo, SignatureAndHashAlgorithm, sign,
+    RenegotiationInfoExt, SessionTicketExt, SigAlgo, SignatureAlgorithm, sign,
 };
 use crate::session_ticket::{ClientIdentity, StatePlaintext};
 use crate::storage::StekInfo;
@@ -550,7 +550,7 @@ tls_codable_enum! {
 type CertificateTypes = LengthPrefixedVec<u8, ClientCertificateType, NonEmpty>;
 type DistinguishedName = LengthPrefixedVec<u16, u8, NonEmpty>;
 type CertificateAuthorities = LengthPrefixedVec<u16, DistinguishedName, MaybeEmpty>;
-type SupportedSignatureAlgorithms = LengthPrefixedVec<u16, SignatureAndHashAlgorithm, MaybeEmpty>;
+type SupportedSignatureAlgorithms = LengthPrefixedVec<u16, SignatureAlgorithm, MaybeEmpty>;
 
 #[derive(Debug, Clone)]
 pub struct CertificateRequest {
@@ -560,7 +560,7 @@ pub struct CertificateRequest {
 }
 
 impl CertificateRequest {
-    pub fn new(signature_algorithms: &[SignatureAndHashAlgorithm]) -> Self {
+    pub fn new(signature_algorithms: &[SignatureAlgorithm]) -> Self {
         Self {
             certificate_types: vec![ClientCertificateType::RsaSign].try_into().unwrap(),
             supported_signature_algorithms: signature_algorithms.to_vec().try_into().unwrap(),
@@ -705,7 +705,7 @@ impl NewSessionTicket {
         timestamp: u32,
         max_fragment_length: Option<MaxFragmentLength>,
         extended_master_secret: bool,
-        stek: &StekInfo
+        stek: &StekInfo,
     ) -> Self {
         let session_ticket = StatePlaintext {
             timestamp,

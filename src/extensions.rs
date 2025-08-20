@@ -252,7 +252,7 @@ impl Extensions {
         }
     }
 
-    pub fn get_signature_algorithms(&self) -> Option<Vec<SignatureAndHashAlgorithm>> {
+    pub fn get_signature_algorithms(&self) -> Option<Vec<SignatureAlgorithm>> {
         match &self.list {
             None => None,
             Some(extensions) => extensions.iter().find_map(|ext| {
@@ -440,12 +440,21 @@ tls_codable_enum! {
 }
 
 #[derive(Debug, Clone)]
-pub struct SignatureAndHashAlgorithm {
+pub struct SignatureAlgorithm {
     pub hash: HashAlgo,
     pub signature: SigAlgo,
 }
 
-impl TlsCodable for SignatureAndHashAlgorithm {
+impl SignatureAlgorithm {
+    pub fn rsa_with(hash: HashAlgo) -> Self {
+        Self {
+            signature: SigAlgo::Rsa,
+            hash,
+        }
+    }
+}
+
+impl TlsCodable for SignatureAlgorithm {
     fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
         Ok(Self {
             hash: HashAlgo::read_from(reader)?,
@@ -461,7 +470,7 @@ impl TlsCodable for SignatureAndHashAlgorithm {
 
 #[derive(Debug, Clone)]
 pub struct SignatureAlgorithmsExt {
-    algorithms: LengthPrefixedVec<u16, SignatureAndHashAlgorithm, NonEmpty>,
+    algorithms: LengthPrefixedVec<u16, SignatureAlgorithm, NonEmpty>,
 }
 
 impl TlsCodable for SignatureAlgorithmsExt {
@@ -470,7 +479,7 @@ impl TlsCodable for SignatureAlgorithmsExt {
 
         let mut algorithms = vec![];
         for _ in 0..algorithm_count {
-            algorithms.push(SignatureAndHashAlgorithm {
+            algorithms.push(SignatureAlgorithm {
                 hash: HashAlgo::read_from(reader)?,
                 signature: SigAlgo::read_from(reader)?,
             });
@@ -486,7 +495,7 @@ impl TlsCodable for SignatureAlgorithmsExt {
 }
 
 impl SignatureAlgorithmsExt {
-    pub fn new(signature_algorithms: &[SignatureAndHashAlgorithm]) -> Self {
+    pub fn new(signature_algorithms: &[SignatureAlgorithm]) -> Self {
         Self {
             algorithms: signature_algorithms.to_vec().try_into().unwrap(),
         }
@@ -524,7 +533,6 @@ impl TlsCodable for ALPNExt {
 }
 
 type HostName = LengthPrefixedVec<u16, u8, NonEmpty>;
-type ServerNameList = LengthPrefixedVec<u16, ServerName, NonEmpty>;
 type UnknownName = LengthPrefixedVec<u16, u8, MaybeEmpty>;
 
 tls_codable_enum! {
@@ -563,7 +571,8 @@ impl TlsCodable for ServerName {
     }
 
     fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
-        Ok(match NameType::read_from(reader)? {
+        let name_type = NameType::read_from(reader)?;
+        Ok(match name_type {
             NameType::HostName => Self::HostName(HostName::read_from(reader)?),
             NameType::Unknown(name_type) => {
                 Self::Unknown(name_type, UnknownName::read_from(reader)?)
@@ -572,43 +581,49 @@ impl TlsCodable for ServerName {
     }
 }
 
+type ServerNameList = LengthPrefixedVec<u16, ServerName, NonEmpty>;
+
 #[derive(Debug, Clone)]
 pub struct ServerNameExt {
-    list: ServerNameList,
+
+    // Some servers respond with an empty SNI extension
+    list: Option<ServerNameList>,
 }
 
 impl ServerNameExt {
     pub fn new(host_name: &str) -> Self {
         let host_name = ServerName::HostName(host_name.as_bytes().to_vec().try_into().unwrap());
         Self {
-            list: vec![
-                host_name.clone(),
-                // ServerName::Unknown(1, vec![1, 2, 3].try_into().unwrap()),
-            ]
-            .try_into()
-            .unwrap(),
+            list: Some(
+                vec![
+                    host_name.clone(),
+                    // ServerName::Unknown(1, vec![1, 2, 3].try_into().unwrap()),
+                ]
+                .try_into()
+                .unwrap(),
+            ),
         }
     }
 
     pub fn validate(&self, policy: &TlsPolicy) -> Result<(), TlsAlert> {
         let mut seen = HashSet::new();
 
-        // Duplicate server names are not allowed
-        if !self
-            .list
-            .iter()
-            .all(|server_name| seen.insert(server_name.name_type()))
-        {
-            return Err(TlsAlert::fatal(TlsAlertDesc::DecodeError));
-        }
-
-        if let UnrecognisedServerNamePolicy::Alert(level) = policy.unrecognised_server_name {
-            if self
-                .list
+        if let Some(list) = &self.list {
+            // Duplicate server names are not allowed
+            if !list
                 .iter()
-                .any(|server_name| matches!(server_name, ServerName::Unknown(_, _)))
+                .all(|server_name| seen.insert(server_name.name_type()))
             {
-                return Err(TlsAlert::new(level, TlsAlertDesc::UnrecognisedName));
+                return Err(TlsAlert::fatal(TlsAlertDesc::DecodeError));
+            }
+
+            if let UnrecognisedServerNamePolicy::Alert(level) = policy.unrecognised_server_name {
+                if list
+                    .iter()
+                    .any(|server_name| matches!(server_name, ServerName::Unknown(_, _)))
+                {
+                    return Err(TlsAlert::new(level, TlsAlertDesc::UnrecognisedName));
+                }
             }
         }
         Ok(())
@@ -637,13 +652,17 @@ impl ServerNameExt {
 //
 impl TlsCodable for ServerNameExt {
     fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
+        if reader.is_consumed() {
+            return Ok(Self { list: None });
+        }
         let list = ServerNameList::read_from(reader)?;
-
-        Ok(Self { list })
+        Ok(Self { list: Some(list) })
     }
 
     fn write_to(&self, bytes: &mut Vec<u8>) {
-        self.list.write_to(bytes);
+        if let Some(list) = &self.list {
+            list.write_to(bytes);
+        }
     }
 }
 

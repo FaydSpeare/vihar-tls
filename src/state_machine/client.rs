@@ -1,4 +1,4 @@
-use log::{debug, info, trace};
+use log::{debug, error, info, trace};
 use rand::prelude::SliceRandom;
 use rand::seq::IteratorRandom;
 use rsa::{RsaPublicKey, pkcs8::DecodePublicKey};
@@ -6,11 +6,12 @@ use std::collections::HashSet;
 use x509_parser::{prelude::FromDer, x509::X509Name};
 
 use crate::alert::TlsAlertDesc;
+use crate::ca::validate_certificate_chain;
 use crate::ciphersuite::{CipherSuiteId, KeyExchangeType};
 use crate::extensions::{
     ExtendedMasterSecretExt, ExtensionType, HashAlgo, MaxFragmentLenExt, MaxFragmentLength,
-    RenegotiationInfoExt, ServerNameExt, SessionTicketExt, SignatureAlgorithmsExt,
-    SignatureAndHashAlgorithm, sign, verify,
+    RenegotiationInfoExt, ServerNameExt, SessionTicketExt, SignatureAlgorithm,
+    SignatureAlgorithmsExt, sign, verify,
 };
 use crate::messages::{
     Certificate, CertificateRequest, CertificateVerify, ClientHello, DigitallySigned,
@@ -331,10 +332,20 @@ pub struct AwaitServerCertificate {
 }
 
 impl HandleRecord<TlsState> for AwaitServerCertificate {
-    fn handle(mut self, _ctx: &mut TlsContext, event: TlsEvent) -> HandleResult<TlsState> {
+    fn handle(mut self, ctx: &mut TlsContext, event: TlsEvent) -> HandleResult<TlsState> {
         let (handshake, certs) = require_handshake_msg!(event, TlsHandshake::Certificates);
 
         handshake.write_to(&mut self.handshakes);
+
+        let mut chain = vec![];
+        for x in certs.list.iter() {
+            chain.push(x.to_vec());
+        }
+
+        if let Err(e) = validate_certificate_chain(chain, ctx.config.server_name.clone().unwrap()) {
+            error!("{:?}", e);
+            return close_connection(TlsAlertDesc::BadCertificate);
+        }
 
         let cipher_suite = CipherSuite::from(self.selected_cipher_suite_id);
         match cipher_suite.params().key_exchange_algorithm.kx_type() {
@@ -432,7 +443,7 @@ impl HandleRecord<TlsState> for AwaitServerKeyExchangeOrCertificateRequest {
 
 #[derive(Debug)]
 struct CertificateRequestParams {
-    supported_signature_algorithms: Vec<SignatureAndHashAlgorithm>,
+    supported_signature_algorithms: Vec<SignatureAlgorithm>,
     certificate_authorities: Vec<Vec<u8>>,
 }
 

@@ -12,7 +12,7 @@ use crate::{
     TlsPolicy, TlsResult,
     ciphersuite::CipherSuiteId,
     connection::TlsConnection,
-    extensions::{HashAlgo, MaxFragmentLength, SigAlgo, SignatureAndHashAlgorithm},
+    extensions::{HashAlgo, MaxFragmentLength, SigAlgo, SignatureAlgorithm},
     state_machine::TlsEntity,
     storage::{SessionStorage, SledSessionStore},
     utils,
@@ -121,30 +121,34 @@ impl TlsConfigBuilder {
                 pcs!(1, RsaAes256CbcSha256),
             ])),
             signature_algorithms: Box::new([
-                SignatureAndHashAlgorithm {
-                    signature: SigAlgo::Dsa,
-                    hash: HashAlgo::Sha512,
-                },
                 // SignatureAndHashAlgorithm {
-                //     signature: SigAlgo::Rsa,
+                //     signature: SigAlgo::Ecdsa,
                 //     hash: HashAlgo::Sha1,
                 // },
                 // SignatureAndHashAlgorithm {
-                //     signature: SigAlgo::Rsa,
-                //     hash: HashAlgo::Sha224,
-                // },
-                // SignatureAndHashAlgorithm {
-                //     signature: SigAlgo::Rsa,
+                //     signature: SigAlgo::Ecdsa,
                 //     hash: HashAlgo::Sha256,
                 // },
-                // SignatureAndHashAlgorithm {
-                //     signature: SigAlgo::Rsa,
-                //     hash: HashAlgo::Sha384,
-                // },
-                // SignatureAndHashAlgorithm {
-                //     signature: SigAlgo::Rsa,
-                //     hash: HashAlgo::Sha512,
-                // },
+                SignatureAlgorithm {
+                    signature: SigAlgo::Rsa,
+                    hash: HashAlgo::Sha1,
+                },
+                SignatureAlgorithm {
+                    signature: SigAlgo::Rsa,
+                    hash: HashAlgo::Sha224,
+                },
+                SignatureAlgorithm {
+                    signature: SigAlgo::Rsa,
+                    hash: HashAlgo::Sha256,
+                },
+                SignatureAlgorithm {
+                    signature: SigAlgo::Rsa,
+                    hash: HashAlgo::Sha384,
+                },
+                SignatureAlgorithm {
+                    signature: SigAlgo::Rsa,
+                    hash: HashAlgo::Sha512,
+                },
             ]),
             session_store: self.session_store,
             certificates: self.certificates.unwrap_or(Certificates::new()),
@@ -185,7 +189,7 @@ impl TlsConfigBuilder {
     }
 }
 
-fn oid_to_key_type(oid: &Oid) -> SigAlgo {
+pub fn oid_to_key_type(oid: &Oid) -> SigAlgo {
     match oid.to_id_string().as_str() {
         "1.2.840.113549.1.1.1" => SigAlgo::Rsa,
         "1.2.840.10040.4.1" => SigAlgo::Dsa,
@@ -196,7 +200,7 @@ fn oid_to_key_type(oid: &Oid) -> SigAlgo {
 #[derive(Debug)]
 pub struct TlsConfig {
     pub cipher_suites: Box<[PrioritisedCipherSuite]>,
-    pub signature_algorithms: Box<[SignatureAndHashAlgorithm]>,
+    pub signature_algorithms: Box<[SignatureAlgorithm]>,
     pub session_store: Option<Box<dyn SessionStorage>>,
     pub certificates: Certificates,
     pub server_name: Option<String>,

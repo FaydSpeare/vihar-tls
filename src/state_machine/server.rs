@@ -7,7 +7,7 @@ use crate::alert::TlsAlertDesc;
 use crate::ciphersuite::{CipherSuiteId, KeyExchangeType};
 use crate::client::PrioritisedCipherSuite;
 use crate::encoding::Reader;
-use crate::extensions::{HashAlgo, SignatureAndHashAlgorithm, verify};
+use crate::extensions::{HashAlgo, SignatureAlgorithm, verify};
 use crate::messages::{
     Certificate, CertificateRequest, ClientHello, ClientKeyExchangeInner, NewSessionTicket,
     ProtocolVersion, ServerDHParams, ServerHello, ServerKeyExchange, SessionId,
@@ -153,7 +153,7 @@ fn start_full_handshake(
     let cipher_suite = CipherSuite::from(selected_cipher_suite);
     debug!("Selected CipherSuite {}", cipher_suite.params().name);
 
-    let backup = SignatureAndHashAlgorithm {
+    let backup = SignatureAlgorithm {
         hash: HashAlgo::Sha1,
         signature: cipher_suite
             .params()
@@ -864,3 +864,21 @@ impl HandleRecord<TlsState> for ServerEstablished {
         }
     }
 }
+
+// #[derive(Debug)]
+// pub struct HelloRequested {
+//     pub session_id: SessionId,
+//     #[allow(unused)]
+//     negotiated_extensions: NegotiatedExtensions,
+//     pub server_verify_data: Vec<u8>,
+//     pub client_verify_data: Vec<u8>,
+// }
+// 
+// impl HandleRecord<TlsState> for ServerEstablished {
+//     fn handle(self, ctx: &mut TlsContext, event: TlsEvent) -> HandleResult<TlsState> {
+//         if let TlsEvent::IncomingMessage(TlsMessage::ApplicationData(data)) = event {
+//             println!("{:?}", String::from_utf8_lossy(data));
+//             return Ok((self.into(), vec![]));
+//         }
+//     }
+// }

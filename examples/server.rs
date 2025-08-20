@@ -1,4 +1,5 @@
 use std::{net::TcpListener, thread::sleep, time::Duration};
+use webpki_root_certs::TLS_SERVER_ROOT_CERTS;
 
 use vihar_tls::{
     ClientAuthPolicy, MaxFragmentLengthNegotiationPolicy, RenegotiationPolicy, TlsPolicy,
@@ -11,6 +12,7 @@ use vihar_tls::{
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
+
 
     let config = TlsConfigBuilder::new()
         .with_cipher_suites(
