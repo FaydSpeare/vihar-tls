@@ -426,9 +426,7 @@ mod tests {
     fn test_list_data_too_long() -> Result<(), DecodingError> {
         let data = vec![4, 0, 1, 2, 3, 4];
         let mut reader = Reader::new(&data);
-        let result = LengthPrefixedVec::<u8, u8, NonEmpty>::read_from(&mut reader)?;
-        println!("{:?}", result);
-
+        let _result = LengthPrefixedVec::<u8, u8, NonEmpty>::read_from(&mut reader)?;
         Ok(())
     }
 }

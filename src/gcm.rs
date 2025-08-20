@@ -135,12 +135,7 @@ pub fn encrypt_aes_gcm<C: BlockEncrypt + KeyInit>(
 ) -> Vec<u8> {
     let h = u128::from_be_bytes(encrypt_aes_block::<C>(key, &0u128.to_be_bytes()));
     let counter_start = if iv.len() == 12 {
-        u128::from_be_bytes(
-            [iv, &1u32.to_be_bytes()[..]]
-                .concat()
-                .try_into()
-                .unwrap(),
-        )
+        u128::from_be_bytes([iv, &1u32.to_be_bytes()[..]].concat().try_into().unwrap())
     } else {
         u128::from_be_bytes(g_hash(h, b"", iv).try_into().unwrap())
     };
@@ -164,12 +159,7 @@ pub fn decrypt_aes_gcm<C: BlockEncrypt + KeyInit>(
     let (ciphertext, tag) = ciphertext.split_at(ciphertext.len() - 16);
     let h = u128::from_be_bytes(encrypt_aes_block::<C>(key, &0u128.to_be_bytes()));
     let counter_start = if iv.len() == 12 {
-        u128::from_be_bytes(
-            [iv, &1u32.to_be_bytes()[..]]
-                .concat()
-                .try_into()
-                .unwrap(),
-        )
+        u128::from_be_bytes([iv, &1u32.to_be_bytes()[..]].concat().try_into().unwrap())
     } else {
         u128::from_be_bytes(g_hash(h, b"", iv).try_into().unwrap())
     };
@@ -185,4 +175,26 @@ pub fn decrypt_aes_gcm<C: BlockEncrypt + KeyInit>(
         return Err("invalid tag".into());
     }
     Ok(plaintext)
+}
+
+#[cfg(test)]
+mod tests {
+    use aes::Aes128;
+
+    use super::*;
+
+    #[test]
+    fn test_gcm() {
+        let key = utils::hex_to_bytes("feffe9928665731c6d6a8f9467308308");
+        let iv = utils::hex_to_bytes("cafebabefacedbaddecaf888");
+        let aad = utils::hex_to_bytes("feedfacedeadbeeffeedfacedeadbeefabaddad2");
+        let plaintext = utils::hex_to_bytes(
+            "d9313225f88406e5a55909c5aff5269a86a7a9531534f7da2e4c303d8a318a721c3c0c95956809532fcf0e2449a6b525b16aedf5aa0de657ba637b39",
+        );
+        let expected = utils::hex_to_bytes(
+            "42831ec2217774244b7221b784d0d49ce3aa212f2c02a4e035c17e2329aca12e21d514b25466931c7d8f6a5aac84aa051ba30b396a0aac973d58e0915bc94fbc3221a5db94fae95ae7121a47",
+        );
+        let output = encrypt_aes_gcm::<Aes128>(&key, &iv, &plaintext, &aad);
+        assert_eq!(output, expected);
+    }
 }
