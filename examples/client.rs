@@ -1,6 +1,10 @@
 use std::{net::TcpStream, thread::sleep, time::Duration};
 
-use vihar_tls::client::{Certificates, TlsClient, TlsConfigBuilder};
+use vihar_tls::{
+    ciphersuite::CipherSuiteId,
+    client::{Certificates, TlsClient, TlsConfigBuilder},
+    pcs,
+};
 
 fn parse_host_port() -> (String, String) {
     let mut args = std::env::args().skip(1); // skip program name
@@ -17,7 +21,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut client = TlsClient::new(
         TlsConfigBuilder::new()
             //.with_max_fragment_length(MaxFragmentLength::Len1024)
-            //.with_cipher_suites([pcs!(2, CipherSuiteId::RsaAes128CbcSha)].into())
+            .with_cipher_suites([pcs!(2, CipherSuiteId::RsaWithAes256GcmSha384)].into())
             .with_certificates(
                 Certificates::new()
                     .with_rsa("testing/rsacert.pem", "testing/rsakey.pem")

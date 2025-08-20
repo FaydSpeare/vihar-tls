@@ -317,7 +317,7 @@ macro_rules! define_cipher_suites {
 
 define_cipher_suites! {
 
-    // Group 1
+    // RFC5246 Group 1
     NULL_WITH_NULL_NULL = 0x0000 {
         mac = MacAlgorithm::Null,
         enc = EncAlgorithm::Null,
@@ -385,7 +385,43 @@ define_cipher_suites! {
         prf = PrfAlgorithm::Sha256,
     },
 
-    // Group 2
+    // RFC5246 Group 2
+    DH_DSS_WITH_3DES_EDE_CBC_SHA = 0x000d {
+        mac = MacAlgorithm::HmacSha1,
+        enc = EncAlgorithm::ThreeDesEdeCbc,
+        kx  = KeyExchangeAlgorithm::DhDss,
+        prf = PrfAlgorithm::Sha256,
+    },
+    DH_RSA_WITH_3DES_EDE_CBC_SHA = 0x0010 {
+        mac = MacAlgorithm::HmacSha1,
+        enc = EncAlgorithm::ThreeDesEdeCbc,
+        kx  = KeyExchangeAlgorithm::DhRsa,
+        prf = PrfAlgorithm::Sha256,
+    },
+    DHE_DSS_WITH_3DES_EDE_CBC_SHA = 0x0013 {
+        mac = MacAlgorithm::HmacSha1,
+        enc = EncAlgorithm::ThreeDesEdeCbc,
+        kx  = KeyExchangeAlgorithm::DheDss,
+        prf = PrfAlgorithm::Sha256,
+    },
+    DHE_RSA_WITH_3DES_EDE_CBC_SHA = 0x0016 {
+        mac = MacAlgorithm::HmacSha1,
+        enc = EncAlgorithm::ThreeDesEdeCbc,
+        kx  = KeyExchangeAlgorithm::DheRsa,
+        prf = PrfAlgorithm::Sha256,
+    },
+    DH_DSS_WITH_AES_128_CBC_SHA = 0x0030 {
+        mac = MacAlgorithm::HmacSha1,
+        enc = EncAlgorithm::Aes128Cbc,
+        kx  = KeyExchangeAlgorithm::DhDss,
+        prf = PrfAlgorithm::Sha256,
+    },
+    DH_RSA_WITH_AES_128_CBC_SHA = 0x0031 {
+        mac = MacAlgorithm::HmacSha1,
+        enc = EncAlgorithm::Aes128Cbc,
+        kx  = KeyExchangeAlgorithm::DhRsa,
+        prf = PrfAlgorithm::Sha256,
+    },
     DHE_DSS_WITH_AES_128_CBC_SHA = 0x0032 {
         mac = MacAlgorithm::HmacSha1,
         enc = EncAlgorithm::Aes128Cbc,
@@ -396,6 +432,18 @@ define_cipher_suites! {
         mac = MacAlgorithm::HmacSha1,
         enc = EncAlgorithm::Aes128Cbc,
         kx  = KeyExchangeAlgorithm::DheRsa,
+        prf = PrfAlgorithm::Sha256,
+    },
+    DH_DSS_WITH_AES_256_CBC_SHA = 0x0036 {
+        mac = MacAlgorithm::HmacSha1,
+        enc = EncAlgorithm::Aes256Cbc,
+        kx  = KeyExchangeAlgorithm::DhDss,
+        prf = PrfAlgorithm::Sha256,
+    },
+    DH_RSA_WITH_AES_256_CBC_SHA = 0x0037 {
+        mac = MacAlgorithm::HmacSha1,
+        enc = EncAlgorithm::Aes256Cbc,
+        kx  = KeyExchangeAlgorithm::DhRsa,
         prf = PrfAlgorithm::Sha256,
     },
     DHE_DSS_WITH_AES_256_CBC_SHA = 0x0038 {
@@ -410,6 +458,18 @@ define_cipher_suites! {
         kx  = KeyExchangeAlgorithm::DheRsa,
         prf = PrfAlgorithm::Sha256,
     },
+    DH_DSS_WITH_AES_128_CBC_SHA256 = 0x003e {
+        mac = MacAlgorithm::HmacSha256,
+        enc = EncAlgorithm::Aes128Cbc,
+        kx  = KeyExchangeAlgorithm::DhDss,
+        prf = PrfAlgorithm::Sha256,
+    },
+    DH_RSA_WITH_AES_128_CBC_SHA256 = 0x003f {
+        mac = MacAlgorithm::HmacSha256,
+        enc = EncAlgorithm::Aes128Cbc,
+        kx  = KeyExchangeAlgorithm::DhRsa,
+        prf = PrfAlgorithm::Sha256,
+    },
     DHE_DSS_WITH_AES_128_CBC_SHA256 = 0x0040 {
         mac = MacAlgorithm::HmacSha256,
         enc = EncAlgorithm::Aes128Cbc,
@@ -420,6 +480,18 @@ define_cipher_suites! {
         mac = MacAlgorithm::HmacSha256,
         enc = EncAlgorithm::Aes128Cbc,
         kx  = KeyExchangeAlgorithm::DheRsa,
+        prf = PrfAlgorithm::Sha256,
+    },
+    DH_DSS_WITH_AES_256_CBC_SHA256 = 0x0068 {
+        mac = MacAlgorithm::HmacSha256,
+        enc = EncAlgorithm::Aes256Cbc,
+        kx  = KeyExchangeAlgorithm::DhDss,
+        prf = PrfAlgorithm::Sha256,
+    },
+    DH_RSA_WITH_AES_256_CBC_SHA256 = 0x0069 {
+        mac = MacAlgorithm::HmacSha256,
+        enc = EncAlgorithm::Aes256Cbc,
+        kx  = KeyExchangeAlgorithm::DhRsa,
         prf = PrfAlgorithm::Sha256,
     },
     DHE_DSS_WITH_AES_256_CBC_SHA256 = 0x006a {
@@ -435,7 +507,45 @@ define_cipher_suites! {
         prf = PrfAlgorithm::Sha256,
     },
 
-    // Galois Counter Mode
+    // RFC5246 Group 3
+    DH_anon_WITH_RC4_128_MD5 = 0x0018 {
+        mac = MacAlgorithm::HmacMd5,
+        enc = EncAlgorithm::Rc4128,
+        kx  = KeyExchangeAlgorithm::DhAnon,
+        prf = PrfAlgorithm::Sha256,
+    },
+    DH_anon_WITH_3DES_EDE_CBC_SHA = 0x001b {
+        mac = MacAlgorithm::HmacSha1,
+        enc = EncAlgorithm::ThreeDesEdeCbc,
+        kx  = KeyExchangeAlgorithm::DhAnon,
+        prf = PrfAlgorithm::Sha256,
+    },
+    DH_anon_WITH_AES_128_CBC_SHA = 0x0034 {
+        mac = MacAlgorithm::HmacSha1,
+        enc = EncAlgorithm::Aes128Cbc,
+        kx  = KeyExchangeAlgorithm::DhAnon,
+        prf = PrfAlgorithm::Sha256,
+    },
+    DH_anon_WITH_AES_256_CBC_SHA = 0x003a {
+        mac = MacAlgorithm::HmacSha1,
+        enc = EncAlgorithm::Aes256Cbc,
+        kx  = KeyExchangeAlgorithm::DhAnon,
+        prf = PrfAlgorithm::Sha256,
+    },
+    DH_anon_WITH_AES_128_CBC_SHA256 = 0x006c {
+        mac = MacAlgorithm::HmacSha256,
+        enc = EncAlgorithm::Aes128Cbc,
+        kx  = KeyExchangeAlgorithm::DhAnon,
+        prf = PrfAlgorithm::Sha256,
+    },
+    DH_anon_WITH_AES_256_CBC_SHA256 = 0x006d {
+        mac = MacAlgorithm::HmacSha256,
+        enc = EncAlgorithm::Aes256Cbc,
+        kx  = KeyExchangeAlgorithm::DhAnon,
+        prf = PrfAlgorithm::Sha256,
+    },
+
+    // RFC5288 Galois Counter Mode
     RSA_WITH_AES_128_GCM_SHA256 = 0x009c {
         mac = MacAlgorithm::HmacSha256,
         enc = EncAlgorithm::Aes128Gcm,

@@ -277,6 +277,7 @@ impl SecureConnState {
         &self,
         compressed: TlsCompressed,
     ) -> Result<TlsCiphertext, DecodingError> {
+        println!("yes this is happening");
         let implicit: [u8; 4] = self.write_iv.clone().try_into().unwrap();
         let explicit = utils::get_random_bytes(self.params.enc_algorithm.record_iv_length());
         let nonce = [&implicit[..], &explicit[..]].concat();
@@ -287,6 +288,9 @@ impl SecureConnState {
         aad.push(u8::from(compressed.content_type));
         aad.extend([compressed.version.major, compressed.version.minor]);
         aad.extend((compressed.fragment.len() as u16).to_be_bytes());
+
+        println!("{:?}", self.params.enc_algorithm);
+
         let aead_ciphertext = self.params.enc_algorithm.encrypt(
             &compressed.fragment,
             &self.enc_key,
