@@ -6,7 +6,7 @@ use crate::{
     errors::TlsError,
     messages::{TlsCiphertext, TlsContentType, TlsHandshake, TlsMessage},
 };
-use log::trace;
+use log::{error, trace};
 
 pub struct RecordLayer {
     buffer: Vec<u8>,
@@ -87,7 +87,12 @@ impl RecordLayer {
                         Err(e) => trace!("Handshake parsing failed: {e}"),
                     }
                 }
-                TlsContentType::Unknown(x) => unimplemented!("Unknown content type: {x}"),
+                TlsContentType::Unknown(x) => {
+                    error!("Received unknown record type: {x}");
+                    return Err(TlsError::Alert(TlsAlert::fatal(
+                        TlsAlertDesc::UnexpectedMessage,
+                    )));
+                }
             }
         }
     }

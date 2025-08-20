@@ -1,7 +1,7 @@
 use crate::alert::{TlsAlert, TlsAlertDesc};
 use crate::ciphersuite::{
-    CipherSuite, CipherSuiteId, CipherSuiteMethods, CipherType, CompressionMethod, EncAlgorithm,
-    MacAlgorithm, PrfAlgorithm,
+    CipherSuite, CipherSuiteId, CipherType, CompressionMethod, EncAlgorithm, MacAlgorithm,
+    PrfAlgorithm,
 };
 use crate::client::TlsConfig;
 use crate::encoding::TlsCodable;
@@ -47,15 +47,15 @@ impl SecurityParams {
         master_secret: [u8; 48],
         cipher_suite_id: CipherSuiteId,
     ) -> Self {
-        let ciphersuite = CipherSuite::from(cipher_suite_id);
+        let suite = CipherSuite::from(cipher_suite_id);
         Self {
             cipher_suite_id,
             client_random,
             server_random,
             master_secret,
-            enc_algorithm: ciphersuite.params().enc_algorithm,
-            mac_algorithm: ciphersuite.params().mac_algorithm,
-            prf_algorithm: ciphersuite.params().prf_algorithm,
+            enc_algorithm: suite.enc_algorithm(),
+            mac_algorithm: suite.mac_algorithm(),
+            prf_algorithm: suite.prf_algorithm(),
             compression_algorithm: CompressionMethod::Null,
         }
     }
@@ -228,7 +228,7 @@ impl SecureConnState {
         Ok(TlsCompressed {
             content_type,
             version,
-            fragment
+            fragment,
         })
     }
 

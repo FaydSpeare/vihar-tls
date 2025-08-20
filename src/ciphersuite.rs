@@ -6,7 +6,7 @@ use crate::{
     prf::{HmacHashAlgo, hmac, prf_sha256, prf_sha384},
 };
 use aes::{Aes128, Aes256};
-use enum_dispatch::enum_dispatch;
+use paste::paste;
 use sha2::{Digest, Sha256, Sha384};
 
 tls_codable_enum! {
@@ -18,7 +18,8 @@ tls_codable_enum! {
 
 #[derive(Debug, Copy, Clone)]
 pub enum MacAlgorithm {
-    None,
+    Null,
+    HmacMd5,
     HmacSha1,
     HmacSha256,
 }
@@ -26,9 +27,10 @@ pub enum MacAlgorithm {
 impl MacAlgorithm {
     pub fn mac_length(&self) -> usize {
         match self {
-            Self::None => 0,
+            Self::Null => 0,
             Self::HmacSha1 => 20,
             Self::HmacSha256 => 32,
+            _ => unimplemented!(),
         }
     }
 
@@ -40,13 +42,14 @@ impl MacAlgorithm {
         match self {
             Self::HmacSha1 => hmac(key, seed, HmacHashAlgo::Sha1),
             Self::HmacSha256 => hmac(key, seed, HmacHashAlgo::Sha256),
-            _ => unreachable!(),
+            _ => unimplemented!(),
         }
     }
 }
 
 #[derive(Debug, Copy, Clone)]
 pub enum PrfAlgorithm {
+    Null,
     Sha256,
     Sha384,
 }
@@ -56,6 +59,7 @@ impl PrfAlgorithm {
         match self {
             Self::Sha256 => prf_sha256(secret, label, seed, len),
             Self::Sha384 => prf_sha384(secret, label, seed, len),
+            _ => unimplemented!(),
         }
     }
 
@@ -63,6 +67,7 @@ impl PrfAlgorithm {
         match self {
             Self::Sha256 => Sha256::digest(data).to_vec(),
             Self::Sha384 => Sha384::digest(data).to_vec(),
+            _ => unimplemented!(),
         }
     }
 }
@@ -76,10 +81,13 @@ pub enum CipherType {
 
 #[derive(Debug, Copy, Clone)]
 pub enum EncAlgorithm {
+    Null,
     Aes128Cbc,
     Aes256Cbc,
     Aes128Gcm,
     Aes256Gcm,
+    ThreeDesEdeCbc,
+    Rc4128,
 }
 
 impl EncAlgorithm {
@@ -89,6 +97,7 @@ impl EncAlgorithm {
             Self::Aes256Cbc => 32,
             Self::Aes128Gcm => 16,
             Self::Aes256Gcm => 32,
+            _ => unimplemented!(),
         }
     }
 
@@ -98,6 +107,7 @@ impl EncAlgorithm {
             Self::Aes256Cbc => 16,
             Self::Aes128Gcm => 16,
             Self::Aes256Gcm => 16,
+            _ => unimplemented!(),
         }
     }
 
@@ -105,7 +115,8 @@ impl EncAlgorithm {
         match self {
             Self::Aes128Gcm => 8,
             Self::Aes256Gcm => 8,
-            _ => self.block_length(),
+            Self::Aes128Cbc | Self::Aes256Cbc => self.block_length(),
+            _ => unimplemented!(),
         }
     }
 
@@ -113,7 +124,8 @@ impl EncAlgorithm {
         match self {
             Self::Aes128Gcm => 4,
             Self::Aes256Gcm => 4,
-            _ => 0,
+            Self::Aes128Cbc | Self::Aes256Cbc => 0,
+            _ => unimplemented!(),
         }
     }
 
@@ -123,6 +135,7 @@ impl EncAlgorithm {
             Self::Aes256Cbc => CipherType::Block,
             Self::Aes128Gcm => CipherType::Aead,
             Self::Aes256Gcm => CipherType::Aead,
+            _ => unimplemented!(),
         }
     }
 
@@ -148,6 +161,7 @@ impl EncAlgorithm {
                 ciphertext,
                 aad.expect("GCM missing additional data"),
             )?,
+            _ => unimplemented!(),
         })
     }
 
@@ -167,6 +181,7 @@ impl EncAlgorithm {
                 plaintext,
                 aad.expect("GCM missing additional data"),
             ),
+            _ => unimplemented!(),
         }
     }
 }
@@ -179,17 +194,22 @@ pub enum KeyExchangeType {
 
 #[derive(Debug, Clone)]
 pub enum KeyExchangeAlgorithm {
+    Null,
     Rsa,
     DheRsa,
     DheDss,
     EcdheRsa,
+    DhAnon,
+    DhDss,
+    DhRsa,
 }
 
 impl KeyExchangeAlgorithm {
-    pub fn signature_algorithm(&self) -> SigAlgo {
+    pub fn signature_type(&self) -> SigAlgo {
         match self {
             Self::Rsa | Self::DheRsa | Self::EcdheRsa => SigAlgo::Rsa,
             Self::DheDss => SigAlgo::Dsa,
+            _ => unimplemented!(),
         }
     }
     pub fn kx_type(&self) -> KeyExchangeType {
@@ -197,300 +217,221 @@ impl KeyExchangeAlgorithm {
             Self::Rsa => KeyExchangeType::Rsa,
             Self::DheDss | Self::DheRsa => KeyExchangeType::Dhe,
             Self::EcdheRsa => KeyExchangeType::Ecdhe,
+            _ => unimplemented!(),
         }
     }
 }
 
-#[allow(dead_code)]
-#[derive(Debug)]
-pub struct CipherSuiteParams {
-    pub name: &'static str,
-    pub mac_algorithm: MacAlgorithm,
-    pub enc_algorithm: EncAlgorithm,
-    pub key_exchange_algorithm: KeyExchangeAlgorithm,
-    pub prf_algorithm: PrfAlgorithm,
-}
+macro_rules! define_cipher_suites {
+    (
+        $(
+            $name:ident = $id:literal {
+                mac = $mac:path,
+                enc = $enc:path,
+                kx  = $kx:path,
+                prf = $prf:path,
+            }
+        ),* $(,)?
+    ) => {
+        paste! {
 
-tls_codable_enum! {
-    #[repr(u16)]
-    pub enum CipherSuiteId {
-        RsaAes128CbcSha = 0x002f,
-        RsaAes128CbcSha256 = 0x003c,
-        RsaAes256CbcSha = 0x0035,
-        RsaAes256CbcSha256 = 0x003d,
-        DheRsaAes128CbcSha = 0x0033,
-        DheRsaAes128CbcSha256 = 0x0067,
-        DheDssAes128CbcSha = 0x0032,
-        RsaAes128GcmSha256 = 0x009c,
-        RsaAes256GcmSha384 = 0x009d,
-        DheRsaAes128GcmSha256 = 0x009e,
-        EcdheRsaAes128CbcSha = 0xc013
-    }
-}
+            tls_codable_enum! {
+                #[repr(u16)]
+                pub enum CipherSuiteId {
+                    $(
+                        [< $name:camel >] = $id,
+                    )*
+                }
+            }
 
-#[enum_dispatch]
-#[derive(Debug)]
-pub enum CipherSuite {
-    RsaAes128CbcSha,
-    RsaAes128CbcSha256,
-    RsaAes256CbcSha,
-    RsaAes256CbcSha256,
-    DheRsaAes128CbcSha,
-    DheRsaAes128CbcSha256,
-    DheDssAes128CbcSha,
-    RsaAes128GcmSha256,
-    RsaAes256GcmSha384,
-    DheRsaAes128GcmSha256,
-    EcdheRsaAes128CbcSha,
-    Unknown,
-}
+            pub enum CipherSuite {
+                $(
+                    [< $name:camel >],
+                )*
+            }
 
-impl From<CipherSuiteId> for CipherSuite {
-    fn from(value: CipherSuiteId) -> CipherSuite {
-        match value {
-            CipherSuiteId::RsaAes128CbcSha => RsaAes128CbcSha.into(),
-            CipherSuiteId::RsaAes128CbcSha256 => RsaAes128CbcSha256.into(),
-            CipherSuiteId::RsaAes256CbcSha => RsaAes256CbcSha.into(),
-            CipherSuiteId::RsaAes256CbcSha256 => RsaAes256CbcSha256.into(),
-            CipherSuiteId::DheRsaAes128CbcSha => DheRsaAes128CbcSha.into(),
-            CipherSuiteId::DheRsaAes128CbcSha256 => DheRsaAes128CbcSha256.into(),
-            CipherSuiteId::DheDssAes128CbcSha => DheDssAes128CbcSha.into(),
-            CipherSuiteId::RsaAes128GcmSha256 => RsaAes128GcmSha256.into(),
-            CipherSuiteId::RsaAes256GcmSha384 => RsaAes256GcmSha384.into(),
-            CipherSuiteId::DheRsaAes128GcmSha256 => DheRsaAes128GcmSha256.into(),
-            CipherSuiteId::EcdheRsaAes128CbcSha => EcdheRsaAes128CbcSha.into(),
-            _ => Unknown.into(),
+            impl CipherSuite {
+                pub fn id(&self) -> CipherSuiteId {
+                    match self {
+                        $(
+                            Self::[< $name:camel >] => CipherSuiteId::[< $name:camel >],
+                        )*
+                    }
+                }
+
+                pub fn name(&self) -> &'static str {
+                    match self {
+                        $(
+                            Self::[< $name:camel >] => stringify!($name),
+                        )*
+                    }
+                }
+
+                pub fn enc_algorithm(&self) -> EncAlgorithm {
+                    match self {
+                        $(
+                            Self::[< $name:camel >] => $enc,
+                        )*
+                    }
+                }
+
+                pub fn mac_algorithm(&self) -> MacAlgorithm {
+                    match self {
+                        $(
+                            Self::[< $name:camel >] => $mac,
+                        )*
+                    }
+                }
+
+                pub fn kx_algorithm(&self) -> KeyExchangeAlgorithm {
+                    match self {
+                        $(
+                            Self::[< $name:camel >] => $kx,
+                        )*
+                    }
+                }
+
+                pub fn prf_algorithm(&self) -> PrfAlgorithm {
+                    match self {
+                        $(
+                            Self::[< $name:camel >] => $prf,
+                        )*
+                    }
+                }
+
+            }
+
+            impl From<CipherSuiteId> for CipherSuite {
+                fn from(value: CipherSuiteId) -> CipherSuite {
+                    match value {
+                        $(
+                            CipherSuiteId::[< $name:camel >] => CipherSuite::[< $name:camel >],
+                        )*
+                        CipherSuiteId::Unknown(_) => panic!()
+                    }
+                }
+            }
         }
     }
 }
 
-#[derive(Debug)]
-pub struct Unknown;
+define_cipher_suites! {
 
-impl CipherSuiteMethods for Unknown {
-    fn encode(&self) -> u16 {
-        unimplemented!()
-    }
+    // Group 1
+    NULL_WITH_NULL_NULL = 0x0000 {
+        mac = MacAlgorithm::Null,
+        enc = EncAlgorithm::Null,
+        kx  = KeyExchangeAlgorithm::Null,
+        prf = PrfAlgorithm::Sha256,
+    },
+    RSA_WITH_NULL_MD5 = 0x0001 {
+        mac = MacAlgorithm::HmacMd5,
+        enc = EncAlgorithm::Null,
+        kx  = KeyExchangeAlgorithm::Rsa,
+        prf = PrfAlgorithm::Sha256,
+    },
+    RSA_WITH_NULL_SHA = 0x0002 {
+        mac = MacAlgorithm::HmacSha1,
+        enc = EncAlgorithm::Null,
+        kx  = KeyExchangeAlgorithm::Rsa,
+        prf = PrfAlgorithm::Sha256,
+    },
+    RSA_WITH_NULL_SHA256 = 0x003b {
+        mac = MacAlgorithm::HmacSha256,
+        enc = EncAlgorithm::Null,
+        kx  = KeyExchangeAlgorithm::Rsa,
+        prf = PrfAlgorithm::Sha256,
+    },
+    RSA_WITH_RC4_128_MD5 = 0x0004 {
+        mac = MacAlgorithm::HmacMd5,
+        enc = EncAlgorithm::Rc4128,
+        kx  = KeyExchangeAlgorithm::Rsa,
+        prf = PrfAlgorithm::Sha256,
+    },
+    RSA_WITH_RC4_128_SHA = 0x0005 {
+        mac = MacAlgorithm::HmacSha1,
+        enc = EncAlgorithm::Rc4128,
+        kx  = KeyExchangeAlgorithm::Rsa,
+        prf = PrfAlgorithm::Sha256,
+    },
+    RSA_WITH_3DES_EDE_CBC_SHA = 0x000a {
+        mac = MacAlgorithm::HmacSha1,
+        enc = EncAlgorithm::ThreeDesEdeCbc,
+        kx  = KeyExchangeAlgorithm::Rsa,
+        prf = PrfAlgorithm::Sha256,
+    },
+    RSA_WITH_AES_128_CBC_SHA = 0x002f {
+        mac = MacAlgorithm::HmacSha1,
+        enc = EncAlgorithm::Aes128Cbc,
+        kx  = KeyExchangeAlgorithm::Rsa,
+        prf = PrfAlgorithm::Sha256,
+    },
+    RSA_WITH_AES_256_CBC_SHA = 0x0035 {
+        mac = MacAlgorithm::HmacSha1,
+        enc = EncAlgorithm::Aes256Cbc,
+        kx  = KeyExchangeAlgorithm::Rsa,
+        prf = PrfAlgorithm::Sha256,
+    },
+    RSA_WITH_AES_128_CBC_SHA256 = 0x003c {
+        mac = MacAlgorithm::HmacSha256,
+        enc = EncAlgorithm::Aes128Cbc,
+        kx  = KeyExchangeAlgorithm::Rsa,
+        prf = PrfAlgorithm::Sha256,
+    },
+    RSA_WITH_AES_256_CBC_SHA256 = 0x003d {
+        mac = MacAlgorithm::HmacSha256,
+        enc = EncAlgorithm::Aes256Cbc,
+        kx  = KeyExchangeAlgorithm::Rsa,
+        prf = PrfAlgorithm::Sha256,
+    },
 
-    fn params(&self) -> CipherSuiteParams {
-        CipherSuiteParams {
-            name: "UNKNOWN",
-            mac_algorithm: MacAlgorithm::HmacSha1,
-            enc_algorithm: EncAlgorithm::Aes128Cbc,
-            key_exchange_algorithm: KeyExchangeAlgorithm::Rsa,
-            prf_algorithm: PrfAlgorithm::Sha256,
-        }
-    }
-}
-
-#[enum_dispatch(CipherSuite)]
-pub trait CipherSuiteMethods: Debug {
-    fn encode(&self) -> u16;
-    fn params(&self) -> CipherSuiteParams;
-}
-
-#[derive(Debug)]
-pub struct RsaAes128CbcSha;
-
-impl CipherSuiteMethods for RsaAes128CbcSha {
-    fn encode(&self) -> u16 {
-        CipherSuiteId::RsaAes128CbcSha.into()
-    }
-
-    fn params(&self) -> CipherSuiteParams {
-        CipherSuiteParams {
-            name: "TLS_RSA_WITH_AES_128_CBC_SHA",
-            mac_algorithm: MacAlgorithm::HmacSha1,
-            enc_algorithm: EncAlgorithm::Aes128Cbc,
-            key_exchange_algorithm: KeyExchangeAlgorithm::Rsa,
-            prf_algorithm: PrfAlgorithm::Sha256,
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct RsaAes256CbcSha;
-
-impl CipherSuiteMethods for RsaAes256CbcSha {
-    fn encode(&self) -> u16 {
-        CipherSuiteId::RsaAes256CbcSha.into()
-    }
-    fn params(&self) -> CipherSuiteParams {
-        CipherSuiteParams {
-            name: "TLS_RSA_WITH_AES_256_CBC_SHA",
-            mac_algorithm: MacAlgorithm::HmacSha1,
-            enc_algorithm: EncAlgorithm::Aes256Cbc,
-            key_exchange_algorithm: KeyExchangeAlgorithm::Rsa,
-            prf_algorithm: PrfAlgorithm::Sha256,
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct RsaAes128CbcSha256;
-
-impl CipherSuiteMethods for RsaAes128CbcSha256 {
-    fn encode(&self) -> u16 {
-        CipherSuiteId::RsaAes128CbcSha256.into()
-    }
-    fn params(&self) -> CipherSuiteParams {
-        CipherSuiteParams {
-            name: "TLS_RSA_WITH_AES_128_CBC_SHA256",
-            mac_algorithm: MacAlgorithm::HmacSha256,
-            enc_algorithm: EncAlgorithm::Aes128Cbc,
-            key_exchange_algorithm: KeyExchangeAlgorithm::Rsa,
-            prf_algorithm: PrfAlgorithm::Sha256,
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct RsaAes256CbcSha256;
-
-impl CipherSuiteMethods for RsaAes256CbcSha256 {
-    fn encode(&self) -> u16 {
-        CipherSuiteId::RsaAes256CbcSha256.into()
-    }
-    fn params(&self) -> CipherSuiteParams {
-        CipherSuiteParams {
-            name: "TLS_RSA_WITH_AES_256_CBC_SHA256",
-            mac_algorithm: MacAlgorithm::HmacSha256,
-            enc_algorithm: EncAlgorithm::Aes256Cbc,
-            key_exchange_algorithm: KeyExchangeAlgorithm::Rsa,
-            prf_algorithm: PrfAlgorithm::Sha256,
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct DheRsaAes128CbcSha;
-
-impl CipherSuiteMethods for DheRsaAes128CbcSha {
-    fn encode(&self) -> u16 {
-        CipherSuiteId::DheRsaAes128CbcSha.into()
-    }
-
-    fn params(&self) -> CipherSuiteParams {
-        CipherSuiteParams {
-            name: "TLS_DHE_RSA_WITH_AES_128_CBC_SHA",
-            mac_algorithm: MacAlgorithm::HmacSha1,
-            enc_algorithm: EncAlgorithm::Aes128Cbc,
-            key_exchange_algorithm: KeyExchangeAlgorithm::DheRsa,
-            prf_algorithm: PrfAlgorithm::Sha256,
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct DheRsaAes128CbcSha256;
-
-impl CipherSuiteMethods for DheRsaAes128CbcSha256 {
-    fn encode(&self) -> u16 {
-        CipherSuiteId::DheRsaAes128CbcSha256.into()
-    }
-
-    fn params(&self) -> CipherSuiteParams {
-        CipherSuiteParams {
-            name: "TLS_DHE_RSA_WITH_AES_128_CBC_SHA256",
-            mac_algorithm: MacAlgorithm::HmacSha256,
-            enc_algorithm: EncAlgorithm::Aes128Cbc,
-            key_exchange_algorithm: KeyExchangeAlgorithm::DheRsa,
-            prf_algorithm: PrfAlgorithm::Sha256,
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct DheDssAes128CbcSha;
-
-impl CipherSuiteMethods for DheDssAes128CbcSha {
-    fn encode(&self) -> u16 {
-        CipherSuiteId::DheDssAes128CbcSha.into()
-    }
-
-    fn params(&self) -> CipherSuiteParams {
-        CipherSuiteParams {
-            name: "TLS_DHE_DSS_WITH_AES_128_CBC_SHA",
-            mac_algorithm: MacAlgorithm::HmacSha1,
-            enc_algorithm: EncAlgorithm::Aes128Cbc,
-            key_exchange_algorithm: KeyExchangeAlgorithm::DheDss,
-            prf_algorithm: PrfAlgorithm::Sha256,
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct RsaAes128GcmSha256;
-
-impl CipherSuiteMethods for RsaAes128GcmSha256 {
-    fn encode(&self) -> u16 {
-        CipherSuiteId::RsaAes128GcmSha256.into()
-    }
-
-    fn params(&self) -> CipherSuiteParams {
-        CipherSuiteParams {
-            name: "TLS_RSA_WITH_AES_128_GCM_SHA256",
-            mac_algorithm: MacAlgorithm::None,
-            enc_algorithm: EncAlgorithm::Aes128Gcm,
-            key_exchange_algorithm: KeyExchangeAlgorithm::Rsa,
-            prf_algorithm: PrfAlgorithm::Sha256,
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct RsaAes256GcmSha384;
-
-impl CipherSuiteMethods for RsaAes256GcmSha384 {
-    fn encode(&self) -> u16 {
-        CipherSuiteId::RsaAes256GcmSha384.into()
-    }
-
-    fn params(&self) -> CipherSuiteParams {
-        CipherSuiteParams {
-            name: "TLS_RSA_WITH_AES_256_GCM_SHA384",
-            mac_algorithm: MacAlgorithm::None,
-            enc_algorithm: EncAlgorithm::Aes256Gcm,
-            key_exchange_algorithm: KeyExchangeAlgorithm::Rsa,
-            prf_algorithm: PrfAlgorithm::Sha384,
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct DheRsaAes128GcmSha256;
-
-impl CipherSuiteMethods for DheRsaAes128GcmSha256 {
-    fn encode(&self) -> u16 {
-        CipherSuiteId::DheRsaAes128GcmSha256.into()
-    }
-
-    fn params(&self) -> CipherSuiteParams {
-        CipherSuiteParams {
-            name: "TLS_DHE_RSA_WITH_AES_128_GCM_SHA256",
-            mac_algorithm: MacAlgorithm::None,
-            enc_algorithm: EncAlgorithm::Aes128Gcm,
-            key_exchange_algorithm: KeyExchangeAlgorithm::DheRsa,
-            prf_algorithm: PrfAlgorithm::Sha256,
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct EcdheRsaAes128CbcSha;
-
-impl CipherSuiteMethods for EcdheRsaAes128CbcSha {
-    fn encode(&self) -> u16 {
-        CipherSuiteId::EcdheRsaAes128CbcSha.into()
-    }
-
-    fn params(&self) -> CipherSuiteParams {
-        CipherSuiteParams {
-            name: "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA",
-            mac_algorithm: MacAlgorithm::HmacSha1,
-            enc_algorithm: EncAlgorithm::Aes128Cbc,
-            key_exchange_algorithm: KeyExchangeAlgorithm::EcdheRsa,
-            prf_algorithm: PrfAlgorithm::Sha256,
-        }
-    }
+    // Group 2
+    DHE_DSS_WITH_AES_128_CBC_SHA = 0x0032 {
+        mac = MacAlgorithm::HmacSha1,
+        enc = EncAlgorithm::Aes128Cbc,
+        kx  = KeyExchangeAlgorithm::DheDss,
+        prf = PrfAlgorithm::Sha256,
+    },
+    DHE_RSA_WITH_AES_128_CBC_SHA = 0x0033 {
+        mac = MacAlgorithm::HmacSha1,
+        enc = EncAlgorithm::Aes128Cbc,
+        kx  = KeyExchangeAlgorithm::DheRsa,
+        prf = PrfAlgorithm::Sha256,
+    },
+    DHE_DSS_WITH_AES_256_CBC_SHA = 0x0038 {
+        mac = MacAlgorithm::HmacSha1,
+        enc = EncAlgorithm::Aes256Cbc,
+        kx  = KeyExchangeAlgorithm::DheDss,
+        prf = PrfAlgorithm::Sha256,
+    },
+    DHE_RSA_WITH_AES_256_CBC_SHA = 0x0039 {
+        mac = MacAlgorithm::HmacSha1,
+        enc = EncAlgorithm::Aes256Cbc,
+        kx  = KeyExchangeAlgorithm::DheRsa,
+        prf = PrfAlgorithm::Sha256,
+    },
+    DHE_DSS_WITH_AES_128_CBC_SHA256 = 0x0040 {
+        mac = MacAlgorithm::HmacSha256,
+        enc = EncAlgorithm::Aes128Cbc,
+        kx  = KeyExchangeAlgorithm::DheDss,
+        prf = PrfAlgorithm::Sha256,
+    },
+    DHE_RSA_WITH_AES_128_CBC_SHA256 = 0x0067 {
+        mac = MacAlgorithm::HmacSha256,
+        enc = EncAlgorithm::Aes128Cbc,
+        kx  = KeyExchangeAlgorithm::DheRsa,
+        prf = PrfAlgorithm::Sha256,
+    },
+    DHE_DSS_WITH_AES_256_CBC_SHA256 = 0x006a {
+        mac = MacAlgorithm::HmacSha256,
+        enc = EncAlgorithm::Aes256Cbc,
+        kx  = KeyExchangeAlgorithm::DheDss,
+        prf = PrfAlgorithm::Sha256,
+    },
+    DHE_RSA_WITH_AES_256_CBC_SHA256 = 0x006b {
+        mac = MacAlgorithm::HmacSha256,
+        enc = EncAlgorithm::Aes256Cbc,
+        kx  = KeyExchangeAlgorithm::DheRsa,
+        prf = PrfAlgorithm::Sha256,
+    },
 }

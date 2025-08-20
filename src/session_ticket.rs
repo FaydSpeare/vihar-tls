@@ -173,7 +173,7 @@ mod tests {
     fn test_session_ticket_encryption() -> Result<(), Box<dyn std::error::Error>> {
         let state = StatePlaintext {
             protocol_version: ProtocolVersion::tls12(),
-            cipher_suite: CipherSuiteId::RsaAes128CbcSha,
+            cipher_suite: CipherSuiteId::RsaWithAes128CbcSha,
             compression_method: CompressionMethod::Null,
             master_secret: [0; 48],
             client_identity: ClientIdentity::Anonymous,

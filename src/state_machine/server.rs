@@ -22,7 +22,7 @@ use crate::storage::SessionInfo;
 use crate::{ClientAuthPolicy, MaxFragmentLengthNegotiationPolicy, RenegotiationPolicy, utils};
 use crate::{
     alert::TlsAlert,
-    ciphersuite::{CipherSuite, CipherSuiteMethods},
+    ciphersuite::CipherSuite,
     connection::{ConnState, SecureConnState, SecurityParams},
     encoding::TlsCodable,
     messages::{Finished, TlsHandshake, TlsMessage},
@@ -139,7 +139,7 @@ fn start_full_handshake(
     let suites: Vec<_> = client_hello
         .cipher_suites
         .iter()
-        .map(|x| CipherSuite::from(*x).params().name)
+        .map(|x| CipherSuite::from(*x).name())
         .filter(|x| *x != "UNKNOWN")
         .collect();
     debug!("CipherSuites: {:#?}", suites);
@@ -151,14 +151,11 @@ fn start_full_handshake(
     };
 
     let cipher_suite = CipherSuite::from(selected_cipher_suite);
-    debug!("Selected CipherSuite {}", cipher_suite.params().name);
+    debug!("Selected CipherSuite {}", cipher_suite.name());
 
     let backup = SignatureAlgorithm {
         hash: HashAlgo::Sha1,
-        signature: cipher_suite
-            .params()
-            .key_exchange_algorithm
-            .signature_algorithm(),
+        signature: cipher_suite.kx_algorithm().signature_type(),
     };
     let signature_algorithm = match client_hello.extensions.get_signature_algorithms() {
         None => backup,
@@ -229,7 +226,7 @@ fn start_full_handshake(
 
     let mut server_private_key = None;
     let cipher_suite = CipherSuite::from(selected_cipher_suite);
-    if let KeyExchangeType::Dhe = cipher_suite.params().key_exchange_algorithm.kx_type() {
+    if let KeyExchangeType::Dhe = cipher_suite.kx_algorithm().kx_type() {
         let (p, g, private_key, public_key) = generate_dh_keypair();
         server_private_key = Some(private_key);
 
@@ -514,7 +511,9 @@ impl HandleRecord<TlsState> for AwaitClientCertificate {
 
         info!("Received ClientCertificate");
 
-        if ctx.config.policy.client_auth == ClientAuthPolicy::MandatoryAuth && certificate.list.is_empty() {
+        if ctx.config.policy.client_auth == ClientAuthPolicy::MandatoryAuth
+            && certificate.list.is_empty()
+        {
             return close_connection(TlsAlertDesc::HandshakeFailure);
         }
 
@@ -569,9 +568,7 @@ impl HandleRecord<TlsState> for AwaitClientKeyExchange {
         info!("Received ClientKeyExchange");
         handshake.write_to(&mut self.handshakes);
 
-        let kx_algo = CipherSuite::from(self.selected_cipher_suite)
-            .params()
-            .key_exchange_algorithm;
+        let kx_algo = CipherSuite::from(self.selected_cipher_suite).kx_algorithm();
         let client_kx = client_kx.resolve(kx_algo);
 
         let pre_master_secret = match client_kx {
@@ -602,7 +599,7 @@ impl HandleRecord<TlsState> for AwaitClientKeyExchange {
             &self.client_random,
             &self.server_random,
             &pre_master_secret,
-            ciphersuite.params().prf_algorithm,
+            ciphersuite.prf_algorithm(),
             self.supported_extensions.extended_master_secret,
         );
 
@@ -831,9 +828,7 @@ impl HandleRecord<TlsState> for ServerEstablished {
         // TODO:
         // Add options to simply ignore client renegotiation or simply send a warning.
         match ctx.config.policy.renegotiation {
-            RenegotiationPolicy::None => {
-                close_connection(TlsAlertDesc::NoRenegotiation)
-            }
+            RenegotiationPolicy::None => close_connection(TlsAlertDesc::NoRenegotiation),
             RenegotiationPolicy::OnlyLegacy => {
                 if client_hello.extensions.includes_secure_renegotiation() {
                     return close_connection(TlsAlertDesc::HandshakeFailure);
@@ -871,7 +866,7 @@ impl HandleRecord<TlsState> for ServerEstablished {
 //     pub server_verify_data: Vec<u8>,
 //     pub client_verify_data: Vec<u8>,
 // }
-// 
+//
 // impl HandleRecord<TlsState> for ServerEstablished {
 //     fn handle(self, ctx: &mut TlsContext, event: TlsEvent) -> HandleResult<TlsState> {
 //         if let TlsEvent::IncomingMessage(TlsMessage::ApplicationData(data)) = event {

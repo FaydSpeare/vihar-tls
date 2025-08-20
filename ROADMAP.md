@@ -18,7 +18,7 @@
     - no server certificate
     - server key exchange
 
-- Hmac Md5, sha384, sha512
+- Hmac Md5
 
 - add DN client auth config
 

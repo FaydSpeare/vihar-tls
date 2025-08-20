@@ -27,7 +27,7 @@ use crate::state_machine::{
 use crate::storage::SessionInfo;
 use crate::{
     alert::TlsAlert,
-    ciphersuite::{CipherSuite, CipherSuiteMethods},
+    ciphersuite::CipherSuite,
     connection::{ConnState, SecureConnState, SecurityParams},
     encoding::TlsCodable,
     messages::{ClientKeyExchange, Finished, TlsHandshake, TlsMessage},
@@ -305,7 +305,7 @@ impl HandleRecord<TlsState> for AwaitServerHello {
 
         // Boring... no session resumption, we're doing a full handshake.
         let cipher_suite = CipherSuite::from(server_hello.cipher_suite);
-        debug!("Selected CipherSuite: {}", cipher_suite.params().name);
+        debug!("Selected CipherSuite: {}", cipher_suite.name());
         Ok((
             AwaitServerCertificate {
                 session_id: server_hello.session_id.clone(),
@@ -348,7 +348,7 @@ impl HandleRecord<TlsState> for AwaitServerCertificate {
         }
 
         let cipher_suite = CipherSuite::from(self.selected_cipher_suite_id);
-        match cipher_suite.params().key_exchange_algorithm.kx_type() {
+        match cipher_suite.kx_algorithm().kx_type() {
             KeyExchangeType::Dhe => {
                 return Ok((
                     AwaitServerKeyExchangeOrCertificateRequest {
@@ -423,19 +423,17 @@ impl HandleRecord<TlsState> for AwaitServerKeyExchangeOrCertificateRequest {
             }
             TlsEvent::IncomingMessage(TlsMessage::Handshake(TlsHandshake::ServerKeyExchange(
                 _,
-            ))) => {
-                AwaitServerKeyExchange {
-                    session_id: self.session_id,
-                    handshakes: self.handshakes,
-                    client_random: self.client_random,
-                    server_random: self.server_random,
-                    selected_cipher_suite_id: self.selected_cipher_suite_id,
-                    negotiated_extensions: self.negotiated_extensions,
-                    server_certificate_der: self.server_certificate_der,
-                    client_certificate_request: None,
-                }
-                .handle(ctx, event)
+            ))) => AwaitServerKeyExchange {
+                session_id: self.session_id,
+                handshakes: self.handshakes,
+                client_random: self.client_random,
+                server_random: self.server_random,
+                selected_cipher_suite_id: self.selected_cipher_suite_id,
+                negotiated_extensions: self.negotiated_extensions,
+                server_certificate_der: self.server_certificate_der,
+                client_certificate_request: None,
             }
+            .handle(ctx, event),
             _ => close_with_unexpected_message(),
         }
     }
@@ -618,7 +616,8 @@ impl HandleRecord<TlsState> for AwaitServerHelloDone {
 
             let dn_set: HashSet<_> = cert_request
                 .certificate_authorities
-                .iter().cloned()
+                .iter()
+                .cloned()
                 .collect();
 
             let suitable_certs = ctx
@@ -668,11 +667,7 @@ impl HandleRecord<TlsState> for AwaitServerHelloDone {
         }
 
         let ciphersuite = CipherSuite::from(self.selected_cipher_suite_id);
-        let (pre_master_secret, client_kx) = match ciphersuite
-            .params()
-            .key_exchange_algorithm
-            .kx_type()
-        {
+        let (pre_master_secret, client_kx) = match ciphersuite.kx_algorithm().kx_type() {
             KeyExchangeType::Rsa => {
                 let Ok(server_public_key_der) = public_key_from_cert(&self.server_certificate_der)
                 else {
@@ -712,7 +707,7 @@ impl HandleRecord<TlsState> for AwaitServerHelloDone {
             &self.client_random,
             &self.server_random,
             &pre_master_secret,
-            ciphersuite.params().prf_algorithm,
+            ciphersuite.prf_algorithm(),
             self.negotiated_extensions.extended_master_secret,
         );
 

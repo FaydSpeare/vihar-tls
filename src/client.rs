@@ -125,12 +125,12 @@ impl TlsConfigBuilder {
         use crate::ciphersuite::CipherSuiteId::*;
         TlsConfig {
             cipher_suites: self.cipher_suites.unwrap_or(Box::new([
-                pcs!(4, RsaAes128GcmSha256),
-                pcs!(3, RsaAes256GcmSha384),
-                pcs!(2, RsaAes128CbcSha),
-                pcs!(1, RsaAes128CbcSha256),
-                pcs!(1, RsaAes256CbcSha),
-                pcs!(1, RsaAes256CbcSha256),
+                // pcs!(4, RsaWithAes128GcmSha256),
+                // pcs!(3, RsaWithAes256GcmSha384),
+                pcs!(2, RsaWithAes128CbcSha),
+                pcs!(1, RsaWithAes128CbcSha256),
+                pcs!(1, RsaWithAes256CbcSha),
+                pcs!(1, RsaWithAes256CbcSha256),
             ])),
             signature_algorithms: Box::new([
                 // SignatureAndHashAlgorithm {
