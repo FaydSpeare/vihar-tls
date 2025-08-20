@@ -15,7 +15,7 @@ use crate::state_machine::{
 use crate::{TlsResult, utils};
 use log::{debug, info, trace};
 use std::io::{Read, Write};
-use std::sync::Arc;
+use std::rc::Rc;
 use std::time::Instant;
 
 #[derive(Debug, Clone)]
@@ -393,7 +393,7 @@ pub struct TlsConnection<T: Read + Write> {
     pub handshake_state_machine: TlsStateMachine,
     conn_states: ConnStates,
     record_layer: RecordLayer,
-    config: Arc<TlsConfig>,
+    config: Rc<TlsConfig>,
     side: TlsEntity,
     is_closed: bool,
     max_fragment_len: usize,
@@ -404,7 +404,7 @@ impl<T: Read + Write> TlsConnection<T> {
         self.handshake_state_machine.is_established()
     }
 
-    pub fn new(side: TlsEntity, stream: T, config: Arc<TlsConfig>) -> Self {
+    pub fn new(side: TlsEntity, stream: T, config: Rc<TlsConfig>) -> Self {
         Self {
             side,
             stream,

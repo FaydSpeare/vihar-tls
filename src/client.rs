@@ -1,6 +1,5 @@
 use std::{
-    io::{Read, Write},
-    sync::Arc,
+    io::{Read, Write}, rc::Rc
 };
 
 use x509_parser::{
@@ -221,13 +220,13 @@ pub struct TlsConfig {
 }
 
 pub struct TlsClient<T: Read + Write> {
-    config: Arc<TlsConfig>,
+    config: Rc<TlsConfig>,
     connection: TlsConnection<T>,
 }
 
 impl<T: Read + Write> TlsClient<T> {
     pub fn new(config: TlsConfig, stream: T) -> Self {
-        let config = Arc::new(config);
+        let config = Rc::new(config);
         Self {
             connection: TlsConnection::new(TlsEntity::Client, stream, config.clone()),
             config,

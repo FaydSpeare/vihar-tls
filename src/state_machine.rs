@@ -24,7 +24,7 @@ use server::{
     AwaitClientChangeCipherAbbr, AwaitClientFinished, AwaitClientFinishedAbbr, AwaitClientHello,
     AwaitClientKeyExchange, AwaitSessionValidation, AwaitStekInfo, ServerEstablished,
 };
-use std::sync::Arc;
+use std::rc::Rc;
 
 mod client;
 mod server;
@@ -100,7 +100,7 @@ pub enum TlsAction {
 #[derive(Debug, Clone)]
 pub struct TlsContext {
     pub side: TlsEntity,
-    pub config: Arc<TlsConfig>,
+    pub config: Rc<TlsConfig>,
     pub stek: Option<StekInfo>,
 }
 
@@ -139,7 +139,7 @@ impl TlsStateMachine {
         Ok(actions)
     }
 
-    pub fn new(side: TlsEntity, config: Arc<TlsConfig>) -> Self {
+    pub fn new(side: TlsEntity, config: Rc<TlsConfig>) -> Self {
         let state: TlsState = match side {
             TlsEntity::Client => AwaitClientInitiateState {
                 previous_verify_data: None,
