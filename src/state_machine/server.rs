@@ -192,24 +192,28 @@ fn start_full_handshake(
     let server_hello: TlsHandshake = server_hello.into();
     server_hello.write_to(&mut handshakes);
 
-    let certificate: TlsHandshake = Certificate::new(
-        ctx.config
-            .certificates
-            .primary()
-            .as_ref()
-            .expect("Server certificate not configured")
-            .certificate_der
-            .clone(),
-    )
-    .into();
-    certificate.write_to(&mut handshakes);
     let mut actions = vec![];
-    actions.extend([
-        TlsAction::SendHandshakeMsg(server_hello),
-        TlsAction::SendHandshakeMsg(certificate),
-    ]);
+    actions.push(TlsAction::SendHandshakeMsg(server_hello));
+
+    let cipher_suite = CipherSuite::from(selected_cipher_suite);
     info!("Sent ServerHello");
-    info!("Sent Certificate");
+
+    if cipher_suite.kx_algorithm().mandates_server_certificate() {
+        let certificate: TlsHandshake = Certificate::new(
+            ctx.config
+                .certificates
+                .primary()
+                .as_ref()
+                .expect("Server certificate not configured")
+                .certificate_der
+                .clone(),
+        )
+        .into();
+        certificate.write_to(&mut handshakes);
+
+        actions.push(TlsAction::SendHandshakeMsg(certificate));
+        info!("Sent Certificate");
+    }
 
     let private_key_der = ctx
         .config
@@ -221,7 +225,6 @@ fn start_full_handshake(
         .clone();
 
     let mut server_private_key = None;
-    let cipher_suite = CipherSuite::from(selected_cipher_suite);
     if let KeyExchangeType::Dhe = cipher_suite.kx_algorithm().kx_type() {
         let (p, g, private_key, public_key) = generate_dh_keypair();
         server_private_key = Some(private_key);

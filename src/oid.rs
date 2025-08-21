@@ -1,6 +1,9 @@
-use x509_parser::asn1_rs::Oid;
-
 use crate::extensions::{HashAlgo, SigAlgo, SignatureAlgorithm};
+use num_bigint::BigUint;
+use x509_parser::{
+    asn1_rs::{FromDer, Integer, Oid},
+    prelude::X509Certificate,
+};
 
 #[allow(dead_code)]
 pub fn signature_type_from_oid(oid: &Oid) -> SigAlgo {
@@ -31,4 +34,14 @@ pub fn signature_algorithm_from_oid(oid: &Oid) -> SignatureAlgorithm {
         // ("2.16.840.1.101.3.4.3.2", "dsa-with-sha256"),
         x => unimplemented!("{x}"),
     }
+}
+
+pub fn extract_dh_params(cert: &X509Certificate) -> (BigUint, BigUint) {
+    let spki = cert.public_key();
+    let bytes = spki.algorithm.parameters.as_ref().unwrap().as_bytes();
+    let (bytes, p_int) = Integer::from_der(bytes.as_ref()).expect("parsing failed");
+    let (_, g_int) = Integer::from_der(bytes).expect("parsing failed");
+    let p = BigUint::from_bytes_be(p_int.as_ref());
+    let g = BigUint::from_bytes_be(g_int.as_ref());
+    (p, g)
 }

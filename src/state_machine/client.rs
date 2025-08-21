@@ -699,6 +699,8 @@ impl HandleRecord<TlsState> for AwaitServerHelloDone {
                 (pms, ClientKeyExchange::new_dhe(&client_public_key))
             }
             KeyExchangeType::Ecdhe => unimplemented!(),
+            KeyExchangeType::Dh => unimplemented!(),
+            KeyExchangeType::Null => unimplemented!(),
         };
 
         let client_kx = TlsHandshake::ClientKeyExchange(client_kx);

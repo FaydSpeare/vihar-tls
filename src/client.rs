@@ -1,7 +1,10 @@
 use std::{
-    io::{Read, Write}, rc::Rc
+    io::{Read, Write},
+    rc::Rc,
 };
 
+use asn1_rs::{Any, Integer, Sequence, ToDer};
+use num_bigint::BigUint;
 use x509_parser::{
     asn1_rs::Oid,
     prelude::{FromDer, X509Certificate},
@@ -57,8 +60,12 @@ impl Certificates {
 
     pub fn certificates(&self) -> Vec<&CertificateAndPrivateKey> {
         let mut certs = vec![];
-        if let Some(v) = self.rsa.as_ref() { certs.push(v) }
-        if let Some(v) = self.dsa.as_ref() { certs.push(v) }
+        if let Some(v) = self.rsa.as_ref() {
+            certs.push(v)
+        }
+        if let Some(v) = self.dsa.as_ref() {
+            certs.push(v)
+        }
         certs
     }
 
@@ -67,6 +74,7 @@ impl Certificates {
         let certificate = X509Certificate::from_der(&certificate_der)
             .expect("Failed to parse certificate")
             .1;
+
         let distinguished_name_der = certificate.issuer().as_raw().to_vec();
         let cert_signature_algorithm =
             oid_to_key_type(&certificate.subject_pki.algorithm.algorithm);

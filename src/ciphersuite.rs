@@ -296,10 +296,12 @@ impl EncryptionType {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum KeyExchangeType {
+    Null,
     Rsa,
     Dhe,
+    Dh,
     Ecdhe,
 }
 
@@ -325,10 +327,17 @@ impl KeyExchangeAlgorithm {
     }
     pub fn kx_type(&self) -> KeyExchangeType {
         match self {
+            Self::Null => KeyExchangeType::Null,
             Self::Rsa => KeyExchangeType::Rsa,
             Self::DheDss | Self::DheRsa => KeyExchangeType::Dhe,
+            Self::DhDss | Self::DhRsa | Self::DhAnon => KeyExchangeType::Dh,
             Self::EcdheRsa => KeyExchangeType::Ecdhe,
-            _ => unimplemented!(),
+        }
+    }
+    pub fn mandates_server_certificate(&self) -> bool {
+        match self {
+            Self::Null => true,
+            _ => self.kx_type() == KeyExchangeType::Dh,
         }
     }
 }

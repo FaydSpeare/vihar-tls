@@ -30,14 +30,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_session_store("server-sdb")
         .with_certificates(
             Certificates::new()
-                .with_rsa("testing/rsacert.pem", "testing/rsakey.pem")
+                .with_rsa("dhcert.pem", "testing/rsakey.pem")
+                //.with_rsa("testing/rsacert.pem", "testing/rsakey.pem")
                 .with_dsa("testing/dsacert.pem", "testing/dsakey.pem"),
         )
         .with_policy(TlsPolicy {
             unrecognised_server_name: UnrecognisedServerNamePolicy::Ignore,
             renegotiation: RenegotiationPolicy::None,
             max_fragment_length_negotiation: MaxFragmentLengthNegotiationPolicy::Reject,
-            client_auth: ClientAuthPolicy::OptionalAuth,
+            client_auth: ClientAuthPolicy::NoAuth,
             verify_server: false,
         })
         .build();

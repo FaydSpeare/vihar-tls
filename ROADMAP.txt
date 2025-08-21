@@ -34,3 +34,5 @@ what to do about all the try_into().unwraps() when creating length prefixed vect
 unchecked function?
 
 - Config to allow empty ServerName response
+
+https://security.stackexchange.com/questions/44251/openssl-generate-different-types-of-self-signed-certificate/82868#82868
