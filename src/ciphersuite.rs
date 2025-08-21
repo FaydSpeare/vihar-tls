@@ -322,6 +322,7 @@ impl KeyExchangeAlgorithm {
         match self {
             Self::Rsa | Self::DheRsa | Self::DhRsa => SigAlgo::Rsa,
             Self::DheDss => SigAlgo::Dsa,
+            Self::DhAnon => SigAlgo::Rsa, // TODO REMOVE THIS TMP FIX
             _ => unimplemented!(),
         }
     }

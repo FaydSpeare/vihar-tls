@@ -1,16 +1,15 @@
-use asn1_rs::Integer;
 use log::{debug, error, info, trace};
 use num_bigint::BigUint;
 use rand::prelude::SliceRandom;
 use rand::seq::IteratorRandom;
 use rsa::{RsaPublicKey, pkcs8::DecodePublicKey};
 use std::collections::HashSet;
-use x509_parser::prelude::X509Certificate;
+use x509_parser::parse_x509_certificate;
 use x509_parser::{prelude::FromDer, x509::X509Name};
 
 use crate::alert::TlsAlertDesc;
 use crate::ca::validate_certificate_chain;
-use crate::ciphersuite::{CipherSuiteId, KeyExchangeType};
+use crate::ciphersuite::{CipherSuiteId, KeyExchangeAlgorithm, KeyExchangeType};
 use crate::extensions::{
     ExtendedMasterSecretExt, ExtensionType, HashAlgo, MaxFragmentLenExt, MaxFragmentLength,
     RenegotiationInfoExt, ServerNameExt, SessionTicketExt, SignatureAlgorithm,
@@ -18,12 +17,10 @@ use crate::extensions::{
 };
 use crate::messages::{
     Certificate, CertificateRequest, CertificateVerify, ClientHello, DigitallySigned,
-    ServerDHParams, ServerKeyExchange, SessionId,
+    ServerDHParams, ServerKeyExchangeInner, SessionId,
 };
 use crate::oid::extract_dh_params;
-use crate::signature::{
-    get_dhe_pre_master_secret, get_rsa_pre_master_secret, public_key_from_cert,
-};
+use crate::signature::{get_dh_pre_master_secret, get_rsa_pre_master_secret, public_key_from_cert};
 use crate::state_machine::{
     NegotiatedExtensions, SessionResumption, TlsAction, TlsEntity, calculate_master_secret,
     close_connection,
@@ -310,6 +307,24 @@ impl HandleRecord<TlsState> for AwaitServerHello {
         // Boring... no session resumption, we're doing a full handshake.
         let cipher_suite = CipherSuite::from(server_hello.cipher_suite);
         debug!("Selected CipherSuite: {}", cipher_suite.name());
+
+        if !cipher_suite.kx_algorithm().sends_server_certificate() {
+            return Ok((
+                AwaitServerKeyExchange {
+                    session_id: server_hello.session_id.clone(),
+                    handshakes: self.handshakes,
+                    client_random: self.client_random,
+                    server_random: server_hello.random.as_bytes(),
+                    selected_cipher_suite_id: cipher_suite.id(),
+                    negotiated_extensions,
+                    server_certificate_der: None,
+                    client_certificate_request: None,
+                }
+                .into(),
+                vec![],
+            ));
+        }
+
         Ok((
             AwaitServerCertificate {
                 session_id: server_hello.session_id.clone(),
@@ -385,7 +400,7 @@ impl HandleRecord<TlsState> for AwaitServerCertificate {
                 server_random: self.server_random,
                 selected_cipher_suite_id: self.selected_cipher_suite_id,
                 negotiated_extensions: self.negotiated_extensions,
-                server_certificate_der: certs.list[0].to_vec(),
+                server_certificate_der: Some(certs.list[0].to_vec()),
                 secrets: None,
             }
             .into(),
@@ -421,7 +436,7 @@ impl HandleRecord<TlsState> for AwaitServerKeyExchangeOrCertificateRequest {
                         server_random: self.server_random,
                         selected_cipher_suite_id: self.selected_cipher_suite_id,
                         negotiated_extensions: self.negotiated_extensions,
-                        server_certificate_der: self.server_certificate_der,
+                        server_certificate_der: Some(self.server_certificate_der),
                         client_certificate_request: Some(CertificateRequestParams::new(
                             certificate_request,
                         )),
@@ -439,7 +454,7 @@ impl HandleRecord<TlsState> for AwaitServerKeyExchangeOrCertificateRequest {
                 server_random: self.server_random,
                 selected_cipher_suite_id: self.selected_cipher_suite_id,
                 negotiated_extensions: self.negotiated_extensions,
-                server_certificate_der: self.server_certificate_der,
+                server_certificate_der: Some(self.server_certificate_der),
                 client_certificate_request: None,
             }
             .handle(ctx, event),
@@ -475,7 +490,7 @@ pub struct AwaitServerKeyExchange {
     server_random: [u8; 32],
     selected_cipher_suite_id: CipherSuiteId,
     negotiated_extensions: NegotiatedExtensions,
-    server_certificate_der: Vec<u8>,
+    server_certificate_der: Option<Vec<u8>>,
     client_certificate_request: Option<CertificateRequestParams>,
 }
 
@@ -485,35 +500,38 @@ impl HandleRecord<TlsState> for AwaitServerKeyExchange {
 
         info!("Received ServerKeyExchange");
 
-        let Ok(server_public_key_der) = public_key_from_cert(&self.server_certificate_der) else {
-            return close_connection(TlsAlertDesc::IllegalParameter);
+        let cipher_suite = CipherSuite::from(self.selected_cipher_suite_id);
+        let secrets = match server_kx.resolve(cipher_suite.kx_algorithm()) {
+            ServerKeyExchangeInner::Dhe(server_kx) => {
+                let Ok(server_public_key_der) =
+                    public_key_from_cert(&self.server_certificate_der.as_ref().unwrap())
+                else {
+                    return close_connection(TlsAlertDesc::IllegalParameter);
+                };
+                let message = [
+                    self.client_random.as_ref(),
+                    self.server_random.as_ref(),
+                    &server_kx.params.get_encoding(),
+                ]
+                .concat();
+
+                let Ok(verified) = verify(
+                    server_kx.signed_params.signature_algorithm,
+                    server_kx.signed_params.hash_algorithm,
+                    &server_public_key_der,
+                    &message,
+                    &server_kx.signed_params.signature,
+                ) else {
+                    return close_connection(TlsAlertDesc::IllegalParameter);
+                };
+
+                if !verified {
+                    return close_connection(TlsAlertDesc::DecryptError);
+                }
+                server_kx.params.clone()
+            }
+            ServerKeyExchangeInner::DhAnon(params) => params.clone(),
         };
-
-        #[allow(irrefutable_let_patterns)]
-        let ServerKeyExchange::Dhe(server_kx) = server_kx else {
-            unimplemented!()
-        };
-
-        let message = [
-            self.client_random.as_ref(),
-            self.server_random.as_ref(),
-            &server_kx.params.get_encoding(),
-        ]
-        .concat();
-
-        let Ok(verified) = verify(
-            server_kx.signed_params.signature_algorithm,
-            server_kx.signed_params.hash_algorithm,
-            &server_public_key_der,
-            &message,
-            &server_kx.signed_params.signature,
-        ) else {
-            return close_connection(TlsAlertDesc::IllegalParameter);
-        };
-
-        if !verified {
-            return close_connection(TlsAlertDesc::DecryptError);
-        }
 
         handshake.write_to(&mut self.handshakes);
 
@@ -526,7 +544,7 @@ impl HandleRecord<TlsState> for AwaitServerKeyExchange {
                 selected_cipher_suite_id: self.selected_cipher_suite_id,
                 negotiated_extensions: self.negotiated_extensions,
                 server_certificate_der: self.server_certificate_der,
-                secrets: Some(server_kx.params.clone()),
+                secrets: Some(secrets),
                 client_certificate_request: self.client_certificate_request,
             }
             .into(),
@@ -543,7 +561,7 @@ pub struct AwaitServerHelloDoneOrCertificateRequest {
     server_random: [u8; 32],
     selected_cipher_suite_id: CipherSuiteId,
     negotiated_extensions: NegotiatedExtensions,
-    server_certificate_der: Vec<u8>,
+    server_certificate_der: Option<Vec<u8>>,
     secrets: Option<ServerDHParams>,
 }
 
@@ -600,7 +618,7 @@ pub struct AwaitServerHelloDone {
     server_random: [u8; 32],
     selected_cipher_suite_id: CipherSuiteId,
     negotiated_extensions: NegotiatedExtensions,
-    server_certificate_der: Vec<u8>,
+    server_certificate_der: Option<Vec<u8>>,
     secrets: Option<ServerDHParams>,
     client_certificate_request: Option<CertificateRequestParams>,
 }
@@ -676,9 +694,10 @@ impl HandleRecord<TlsState> for AwaitServerHelloDone {
         }
 
         let ciphersuite = CipherSuite::from(self.selected_cipher_suite_id);
-        let (pre_master_secret, client_kx) = match ciphersuite.kx_algorithm().kx_type() {
-            KeyExchangeType::Rsa => {
-                let Ok(server_public_key_der) = public_key_from_cert(&self.server_certificate_der)
+        let (pre_master_secret, client_kx) = match ciphersuite.kx_algorithm() {
+            KeyExchangeAlgorithm::Rsa => {
+                let Ok(server_public_key_der) =
+                    public_key_from_cert(&self.server_certificate_der.unwrap())
                 else {
                     return close_connection(TlsAlertDesc::IllegalParameter);
                 };
@@ -694,34 +713,31 @@ impl HandleRecord<TlsState> for AwaitServerHelloDone {
 
                 (pms, ClientKeyExchange::new_rsa(&enc_pms))
             }
-            KeyExchangeType::Dhe => {
+            KeyExchangeAlgorithm::DheDss
+            | KeyExchangeAlgorithm::DheRsa
+            | KeyExchangeAlgorithm::DhAnon => {
                 let ServerDHParams {
                     p,
                     g,
                     server_public_key,
                 } = self.secrets.as_ref().unwrap();
-                let (pms, client_public_key) = get_dhe_pre_master_secret(p, g, server_public_key);
+
+                let p = BigUint::from_bytes_be(p);
+                let g = BigUint::from_bytes_be(g);
+                let server_public_key = BigUint::from_bytes_be(server_public_key);
+                let (pms, client_public_key) = get_dh_pre_master_secret(&p, &g, &server_public_key);
                 (pms, ClientKeyExchange::new_dhe(&client_public_key))
             }
-            KeyExchangeType::Dh => {
-                let cert = X509Certificate::from_der(&self.server_certificate_der)
+            KeyExchangeAlgorithm::DhDss | KeyExchangeAlgorithm::DhRsa => {
+                let cert = parse_x509_certificate(&self.server_certificate_der.as_ref().unwrap())
                     .unwrap()
                     .1;
-                let (p, g) = extract_dh_params(&cert).unwrap();
-
-                let i = Integer::from_der(&cert.public_key().subject_public_key.data)
-                    .unwrap()
-                    .1;
-
-                let (pms, client_public_key) = get_dhe_pre_master_secret(
-                    &p.to_bytes_be(),
-                    &g.to_bytes_be(),
-                    &i.as_ref(),
-                );
+                let (p, g, public_key) = extract_dh_params(&cert).unwrap();
+                let (pms, client_public_key) = get_dh_pre_master_secret(&p, &g, &public_key);
                 (pms, ClientKeyExchange::new_dhe(&client_public_key))
             }
-            KeyExchangeType::Ecdhe => unimplemented!(),
-            KeyExchangeType::Null => unimplemented!(),
+            KeyExchangeAlgorithm::EcdheRsa => unimplemented!(),
+            KeyExchangeAlgorithm::Null => unimplemented!(),
         };
 
         let client_kx = TlsHandshake::ClientKeyExchange(client_kx);
@@ -737,7 +753,7 @@ impl HandleRecord<TlsState> for AwaitServerHelloDone {
             ciphersuite.prf_algorithm(),
             self.negotiated_extensions.extended_master_secret,
         );
-        println!("MS: {:?}", master_secret);
+        //println!("MS: {:?}", master_secret);
 
         if let Some(cert) = verify_cert {
             if self.client_certificate_request.is_some() {

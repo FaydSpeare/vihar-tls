@@ -7,7 +7,7 @@ use dsa::{
 };
 use lazy_static::lazy_static;
 use num_bigint::{BigUint, RandBigInt};
-use num_traits::{FromBytes, One};
+use num_traits::One;
 use rsa::{
     Pkcs1v15Encrypt, RsaPrivateKey, RsaPublicKey,
     pkcs1v15::{Signature, SigningKey, VerifyingKey},
@@ -55,20 +55,12 @@ pub fn get_dh_params() -> (BigUint, BigUint) {
     (P.clone(), g)
 }
 
-pub fn get_dhe_pre_master_secret(
-    p: &[u8],
-    g: &[u8],
-    server_public_key: &[u8],
+pub fn get_dh_pre_master_secret(
+    p: &BigUint,
+    g: &BigUint,
+    server_public_key: &BigUint,
 ) -> (Vec<u8>, Vec<u8>) {
-    let p = &BigUint::from_be_bytes(p);
-    let g = &BigUint::from_be_bytes(g);
-    let server_public_key = &BigUint::from_be_bytes(server_public_key);
-
-    let mut rng = rand::thread_rng();
-    let one = BigUint::one();
-    let two = &one + &one;
-    let private_key = rng.gen_biguint_range(&two, &(p - &two));
-    let public_key = g.modpow(&private_key, p);
+    let (private_key, public_key) = generate_dh_keypair(p, g);
     let pre_master_secret = server_public_key.modpow(&private_key, p);
     (pre_master_secret.to_bytes_be(), public_key.to_bytes_be())
 }

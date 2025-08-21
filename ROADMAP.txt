@@ -10,11 +10,10 @@
 - Need to finished reading before starting client.renegotiate
 
 - Support 3Des
-- Support Fixed DH, DHanon, Null KX
-- DH anon suites
-    - no server certificate
-    - server key exchange
-- add DN client auth config
+- add DistinguishedName client auth config
+- Fixed DH client auth => implicit CKX
+
+- Clean up all the DH stuff
 
 ==============================================
 
@@ -32,7 +31,5 @@
 === Questions ===
 what to do about all the try_into().unwraps() when creating length prefixed vectors
 unchecked function?
-
-- Config to allow empty ServerName response
 
 https://security.stackexchange.com/questions/44251/openssl-generate-different-types-of-self-signed-certificate/82868#82868

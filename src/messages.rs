@@ -479,12 +479,24 @@ impl TlsCodable for DigitallySigned {
     }
 }
 
+//type ClientKeyExchangeBytes = LengthPrefixedVec<u16, u8, NonEmpty>;
+
+#[derive(Debug, Clone)]
+pub enum ServerKeyExchangeInner {
+    Dhe(DheServerKeyExchange),
+    DhAnon(ServerDHParams),
+}
+
 #[derive(Debug, Clone)]
 pub enum ServerKeyExchange {
-    Dhe(DheServerKeyExchange),
+    Resolved(ServerKeyExchangeInner),
+    Unresolved(Vec<u8>),
 }
 
 impl ServerKeyExchange {
+    pub fn new_dh_anon(params: ServerDHParams) -> Self {
+        Self::Resolved(ServerKeyExchangeInner::DhAnon(params))
+    }
     pub fn new_dhe(
         params: ServerDHParams,
         client_random: [u8; 32],
@@ -495,25 +507,48 @@ impl ServerKeyExchange {
     ) -> Self {
         let data = [&client_random[..], &server_random, &params.get_encoding()].concat();
         let signature = sign(signature_algorithm, hash_algorithm, private_key_der, &data).unwrap();
-        Self::Dhe(DheServerKeyExchange {
+        Self::Resolved(ServerKeyExchangeInner::Dhe(DheServerKeyExchange {
             params,
             signed_params: DigitallySigned {
                 hash_algorithm,
                 signature_algorithm,
                 signature: signature.try_into().unwrap(),
             },
-        })
+        }))
+    }
+
+    pub fn resolve(&self, kx: KeyExchangeAlgorithm) -> ServerKeyExchangeInner {
+        match self {
+            Self::Resolved(x) => x.clone(),
+            Self::Unresolved(bytes) => {
+                let mut reader = Reader::new(bytes);
+                match kx {
+                    KeyExchangeAlgorithm::DhAnon => {
+                        return ServerKeyExchangeInner::DhAnon(
+                            ServerDHParams::read_from(&mut reader).unwrap(),
+                        );
+                    }
+                    _ => {
+                        return ServerKeyExchangeInner::Dhe(
+                            DheServerKeyExchange::read_from(&mut reader).unwrap(),
+                        );
+                    }
+                }
+            }
+        }
     }
 }
 
 impl TlsCodable for ServerKeyExchange {
     fn write_to(&self, bytes: &mut Vec<u8>) {
         match self {
-            Self::Dhe(kx) => kx.write_to(bytes),
+            Self::Resolved(ServerKeyExchangeInner::Dhe(kx)) => kx.write_to(bytes),
+            Self::Resolved(ServerKeyExchangeInner::DhAnon(kx)) => kx.write_to(bytes),
+            Self::Unresolved(x) => bytes.extend_from_slice(&x),
         };
     }
     fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
-        Ok(Self::Dhe(DheServerKeyExchange::read_from(reader)?))
+        Ok(Self::Unresolved(reader.consume_rest().to_vec()))
     }
 }
 
@@ -647,9 +682,12 @@ impl ClientKeyExchange {
                 KeyExchangeAlgorithm::DheRsa
                 | KeyExchangeAlgorithm::DheDss
                 | KeyExchangeAlgorithm::DhRsa
-                | KeyExchangeAlgorithm::DhDss => ClientKeyExchangeInner::ClientDiffieHellmanPublic(
-                    PublicValueEncoding::Explicit(bytes.clone()),
-                ),
+                | KeyExchangeAlgorithm::DhDss
+                | KeyExchangeAlgorithm::DhAnon => {
+                    ClientKeyExchangeInner::ClientDiffieHellmanPublic(
+                        PublicValueEncoding::Explicit(bytes.clone()),
+                    )
+                }
                 KeyExchangeAlgorithm::Rsa => {
                     ClientKeyExchangeInner::EncryptedPreMasterSecret(bytes.clone())
                 }

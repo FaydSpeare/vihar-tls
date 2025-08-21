@@ -1,12 +1,10 @@
 use std::collections::HashMap;
 
-use asn1_rs::Integer;
 use log::{debug, info};
 use num_bigint::BigUint;
-use x509_parser::prelude::{FromDer, X509Certificate};
 
 use crate::alert::TlsAlertDesc;
-use crate::ciphersuite::{CipherSuiteId, KeyExchangeType};
+use crate::ciphersuite::{CipherSuiteId, KeyExchangeAlgorithm};
 use crate::client::PrioritisedCipherSuite;
 use crate::encoding::Reader;
 use crate::extensions::{HashAlgo, SignatureAlgorithm, verify};
@@ -231,56 +229,31 @@ fn start_full_handshake(
         .clone();
 
     let mut server_dh_params = None;
-    match cipher_suite.kx_algorithm().kx_type() {
-        KeyExchangeType::Dh => {
-            // let cert = X509Certificate::from_der(
-            //     &ctx.config.certificates.dh.as_ref().unwrap().certificate_der,
-            // )
-            // .unwrap()
-            // .1;
-
-            // let i = Integer::from_der(&cert.public_key().subject_public_key.data)
-            //     .unwrap()
-            //     .1;
-            // let pubkey = BigUint::from_bytes_be(i.as_ref());
-
-            // let x = "50:35:40:ff:de:19:f5:73:60:8b:f5:70:53:87:8e:\
-            // 68:73:d5:71:61:db:50:62:f2:2f:01:1a:51:0b:5f:\
-            // ce:00:b1:7a:04:81:16:01:19:6c:66:78:b6:c5:6e:\
-            // 1d:28:3c:0d:1f:9a:48:c8:fa:2e:d2:a9:54:01:f1:\
-            // 18:a2:65:00:65:cd:19:90:4f:52:b3:f7:87:2c:a1:\
-            // b1:aa:b8:4a:ac:58:6b:a7:50:ce:d6:6c:96:15:81:\
-            // b3:c8:f9:10:ef:e6:3b:ef:8c:15:cc:81:93:71:10:\
-            // aa:e5:89:cf:3e:bf:5c:c4:90:16:b0:79:fa:33:8d:\
-            // 4f:9e:9f:86:dd:dd:18:b8";
-
-            // let hex_str: String = x.chars().filter(|&c| c != ':').collect();
-            // let b = utils::hex_to_bytes(&hex_str);
-            // let pubkey2 = BigUint::from_bytes_be(&b);
-            // println!("pk {:?}", pubkey);
-            // println!("pk {:?}", pubkey2);
-
+    match cipher_suite.kx_algorithm() {
+        KeyExchangeAlgorithm::DhRsa | KeyExchangeAlgorithm::DhDss => {
             let (p, g, private_key) =
                 deconstruct_dh_key(&ctx.config.certificates.dh.as_ref().unwrap().private_key_der);
-
-            // let x = "41:63:a9:46:9c:d3:97:5f:5e:15:27:80:6e:1f:5f:\
-            // 13:1a:dd:16:84:17:3e:f6:43:8b:a7:cf:24:d5:30:\
-            // 6f:af:7c:dd:94:18:06:e9:b1:84:e1:81:8c:a8:35:\
-            // 64:d7:6a:f6:07:f8:8f:54:97:81:9b:1c:c1:5e:3b:\
-            // 51:37:fa:44:be:c2:ed:e0:1f:d1:3a:13:33:72:09:\
-            // 01:53:01:2f:ad:b0:31:63:a7:f5:c1:38:2e:fb:31:\
-            // 20:96:9f:cc:ee:18:c1:da:a4:53:80:05:81:be:2c:\
-            // a3:39:67:33:be:7f:a8:e5:48:5a:ca:56:9c:e8:b2:\
-            // 97:21:f4:7d:e9:8c:83:0f";
-            // let hex_str: String = x.chars().filter(|&c| c != ':').collect();
-            // let b = utils::hex_to_bytes(&hex_str);
-            // let pubkey2 = BigUint::from_bytes_be(&b);
-
-            // println!("pk {:?}", pubkey2);
-            // println!("pk {:?}", private_key);
             server_dh_params = Some(ServerDhParams { p, g, private_key });
         }
-        KeyExchangeType::Dhe => {
+        KeyExchangeAlgorithm::DhAnon => {
+            let (p, g) = get_dh_params();
+            let (private_key, public_key) = generate_dh_keypair(&p, &g);
+            server_dh_params = Some(ServerDhParams {
+                p: p.clone(),
+                g: g.clone(),
+                private_key,
+            });
+
+            let dh_params = ServerDHParams::new(p, g, public_key);
+            let server_kx = ServerKeyExchange::new_dh_anon(dh_params);
+
+            let server_kx = TlsHandshake::ServerKeyExchange(server_kx);
+            server_kx.write_to(&mut handshakes);
+
+            actions.push(TlsAction::SendHandshakeMsg(server_kx));
+            info!("Sent ServerKeyExchange");
+        }
+        KeyExchangeAlgorithm::DheRsa | KeyExchangeAlgorithm::DheDss => {
             let (p, g) = get_dh_params();
             let (private_key, public_key) = generate_dh_keypair(&p, &g);
             server_dh_params = Some(ServerDhParams {
@@ -673,7 +646,7 @@ impl HandleRecord<TlsState> for AwaitClientKeyExchange {
             ciphersuite.prf_algorithm(),
             self.supported_extensions.extended_master_secret,
         );
-        println!("MS: {:?}", master_secret);
+        //println!("MS: {:?}", master_secret);
 
         let params = SecurityParams::new(
             self.client_random,

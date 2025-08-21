@@ -42,12 +42,17 @@ pub fn deconstruct_dh_key(bytes: &[u8]) -> (BigUint, BigUint, BigUint) {
 
     let p = BigUint::from_bytes_be(p.as_ref());
     let g = BigUint::from_bytes_be(g.as_ref());
-    let private_key = BigUint::from_bytes_be(Integer::from_der(pki.private_key).unwrap().1.as_ref());
+    let private_key =
+        BigUint::from_bytes_be(Integer::from_der(pki.private_key).unwrap().1.as_ref());
     (p, g, private_key)
 }
 
-pub fn extract_dh_params(cert: &X509Certificate) -> Option<(BigUint, BigUint)> {
+pub fn extract_dh_params(cert: &X509Certificate) -> Option<(BigUint, BigUint, BigUint)> {
     let spki = cert.public_key();
+
+    let public_key = Integer::from_der(&spki.subject_public_key.data).unwrap().1;
+    let public_key = BigUint::from_bytes_be(public_key.as_ref());
+
     let Some(bytes) = &spki.algorithm.parameters else {
         return None;
     };
@@ -59,5 +64,5 @@ pub fn extract_dh_params(cert: &X509Certificate) -> Option<(BigUint, BigUint)> {
     };
     let p = BigUint::from_bytes_be(p_int.as_ref());
     let g = BigUint::from_bytes_be(g_int.as_ref());
-    Some((p, g))
+    Some((p, g, public_key))
 }
