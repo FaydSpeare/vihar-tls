@@ -28,6 +28,7 @@ num-bigint = { version="0.4.6", features = ["rand"] }
 num-traits = "0.2.19"
 paste = "1.0.15"
 pem = "3.0.5"
+pkcs8 = "0.10.2"
 rand = "0.8"
 rc4 = "0.1.0"
 rsa = { version = "0.9.8", features = ["sha1", "sha2"] }

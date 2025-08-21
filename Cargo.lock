@@ -1145,6 +1145,7 @@ dependencies = [
  "num-traits",
  "paste",
  "pem",
+ "pkcs8",
  "rand",
  "rc4",
  "rsa",

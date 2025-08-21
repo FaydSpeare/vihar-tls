@@ -1,18 +1,14 @@
-use crate::extensions::{HashAlgo, SigAlgo, SignatureAlgorithm};
+use crate::extensions::{HashAlgo, SignatureAlgorithm};
+use asn1_rs::Sequence;
 use num_bigint::BigUint;
+use pkcs8::{
+    PrivateKeyInfo,
+    der::{Decode, Encode},
+};
 use x509_parser::{
     asn1_rs::{FromDer, Integer, Oid},
     prelude::X509Certificate,
 };
-
-#[allow(dead_code)]
-pub fn signature_type_from_oid(oid: &Oid) -> SigAlgo {
-    match oid.to_id_string().as_str() {
-        "1.2.840.113549.1.1.1" => SigAlgo::Rsa,
-        "1.2.840.10040.4.1" => SigAlgo::Dsa,
-        x => unimplemented!("{x}"),
-    }
-}
 
 pub fn signature_algorithm_from_oid(oid: &Oid) -> SignatureAlgorithm {
     match oid.to_id_string().as_str() {
@@ -36,12 +32,32 @@ pub fn signature_algorithm_from_oid(oid: &Oid) -> SignatureAlgorithm {
     }
 }
 
-pub fn extract_dh_params(cert: &X509Certificate) -> (BigUint, BigUint) {
+pub fn deconstruct_dh_key(bytes: &[u8]) -> (BigUint, BigUint, BigUint) {
+    let pki = PrivateKeyInfo::from_der(bytes).unwrap();
+    let bytes = pki.algorithm.parameters.unwrap().to_der().unwrap();
+    let (_, seq) = Sequence::from_der(&bytes).unwrap();
+    let mut iter = seq.der_iter::<Integer, _>();
+    let p = iter.next().unwrap().unwrap();
+    let g = iter.next().unwrap().unwrap();
+
+    let p = BigUint::from_bytes_be(p.as_ref());
+    let g = BigUint::from_bytes_be(g.as_ref());
+    let private_key = BigUint::from_bytes_be(Integer::from_der(pki.private_key).unwrap().1.as_ref());
+    (p, g, private_key)
+}
+
+pub fn extract_dh_params(cert: &X509Certificate) -> Option<(BigUint, BigUint)> {
     let spki = cert.public_key();
-    let bytes = spki.algorithm.parameters.as_ref().unwrap().as_bytes();
-    let (bytes, p_int) = Integer::from_der(bytes.as_ref()).expect("parsing failed");
-    let (_, g_int) = Integer::from_der(bytes).expect("parsing failed");
+    let Some(bytes) = &spki.algorithm.parameters else {
+        return None;
+    };
+    let Ok((bytes, p_int)) = Integer::from_der(bytes.as_bytes()) else {
+        return None;
+    };
+    let Ok((_, g_int)) = Integer::from_der(bytes) else {
+        return None;
+    };
     let p = BigUint::from_bytes_be(p_int.as_ref());
     let g = BigUint::from_bytes_be(g_int.as_ref());
-    (p, g)
+    Some((p, g))
 }

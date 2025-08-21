@@ -608,9 +608,15 @@ impl TlsCodable for CertificateVerify {
 type ClientKeyExchangeBytes = LengthPrefixedVec<u16, u8, NonEmpty>;
 
 #[derive(Debug, Clone)]
+pub enum PublicValueEncoding {
+    Implicit,
+    Explicit(ClientKeyExchangeBytes),
+}
+
+#[derive(Debug, Clone)]
 pub enum ClientKeyExchangeInner {
     EncryptedPreMasterSecret(ClientKeyExchangeBytes),
-    ClientDiffieHellmanPublic(ClientKeyExchangeBytes),
+    ClientDiffieHellmanPublic(PublicValueEncoding),
 }
 
 #[derive(Debug, Clone)]
@@ -620,9 +626,14 @@ pub enum ClientKeyExchange {
 }
 
 impl ClientKeyExchange {
+    pub fn new_dh() -> Self {
+        Self::Resolved(ClientKeyExchangeInner::ClientDiffieHellmanPublic(
+            PublicValueEncoding::Implicit,
+        ))
+    }
     pub fn new_dhe(bytes: &[u8]) -> Self {
         Self::Resolved(ClientKeyExchangeInner::ClientDiffieHellmanPublic(
-            bytes.to_vec().try_into().unwrap(),
+            PublicValueEncoding::Explicit(bytes.to_vec().try_into().unwrap()),
         ))
     }
     pub fn new_rsa(bytes: &[u8]) -> Self {
@@ -633,10 +644,16 @@ impl ClientKeyExchange {
     pub fn resolve(&self, kx: KeyExchangeAlgorithm) -> ClientKeyExchangeInner {
         match self {
             Self::Unresolved(bytes) => match kx {
-                KeyExchangeAlgorithm::DheRsa | KeyExchangeAlgorithm::DheDss => {
-                    ClientKeyExchangeInner::ClientDiffieHellmanPublic(bytes.clone())
+                KeyExchangeAlgorithm::DheRsa
+                | KeyExchangeAlgorithm::DheDss
+                | KeyExchangeAlgorithm::DhRsa
+                | KeyExchangeAlgorithm::DhDss => ClientKeyExchangeInner::ClientDiffieHellmanPublic(
+                    PublicValueEncoding::Explicit(bytes.clone()),
+                ),
+                KeyExchangeAlgorithm::Rsa => {
+                    ClientKeyExchangeInner::EncryptedPreMasterSecret(bytes.clone())
                 }
-                _ => ClientKeyExchangeInner::EncryptedPreMasterSecret(bytes.clone()),
+                _ => unimplemented!(),
             },
             Self::Resolved(inner) => inner.clone(),
         }
@@ -653,7 +670,12 @@ impl TlsCodable for ClientKeyExchange {
     fn write_to(&self, bytes: &mut Vec<u8>) {
         match self {
             Self::Resolved(inner) => match inner {
-                ClientKeyExchangeInner::ClientDiffieHellmanPublic(value) => value.write_to(bytes),
+                ClientKeyExchangeInner::ClientDiffieHellmanPublic(
+                    PublicValueEncoding::Implicit,
+                ) => {}
+                ClientKeyExchangeInner::ClientDiffieHellmanPublic(
+                    PublicValueEncoding::Explicit(value),
+                ) => value.write_to(bytes),
                 ClientKeyExchangeInner::EncryptedPreMasterSecret(value) => value.write_to(bytes),
             },
             Self::Unresolved(value) => value.write_to(bytes),

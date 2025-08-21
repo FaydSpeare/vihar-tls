@@ -42,6 +42,19 @@ pub fn decrypt_rsa_master_secret(
     Ok(private_key.decrypt(Pkcs1v15Encrypt, enc_pre_master_secret)?)
 }
 
+pub fn generate_dh_keypair(p: &BigUint, g: &BigUint) -> (BigUint, BigUint) {
+    let mut rng = rand::thread_rng();
+    let one = BigUint::one();
+    let private_key = rng.gen_biguint_range(&one, &(p - &one));
+    let public_key = g.modpow(&private_key, p);
+    (private_key, public_key)
+}
+
+pub fn get_dh_params() -> (BigUint, BigUint) {
+    let g = BigUint::from(2u32);
+    (P.clone(), g)
+}
+
 pub fn get_dhe_pre_master_secret(
     p: &[u8],
     g: &[u8],
@@ -106,7 +119,7 @@ pub fn rsa_sign<D: Digest + AssociatedOid>(key_der: &[u8], data: &[u8]) -> Resul
 }
 
 lazy_static! {
-    pub static ref P: BigUint = BigUint::parse_bytes(
+    static ref P: BigUint = BigUint::parse_bytes(
         b"FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD1\
       29024E088A67CC74020BBEA63B139B22514A08798E3404DD\
       EF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245\
@@ -121,14 +134,4 @@ lazy_static! {
         16
     )
     .unwrap();
-}
-
-pub fn generate_dh_keypair() -> (BigUint, BigUint, BigUint, BigUint) {
-    let g = BigUint::from(2u32);
-    let mut rng = rand::thread_rng();
-    // private key: random in [1, p-1)
-    let priv_key = rng.gen_biguint_range(&BigUint::from(1u32), &P);
-    // public key: g^priv_key mod p
-    let pub_key = g.modpow(&priv_key, &P);
-    (P.clone(), g, priv_key, pub_key)
 }

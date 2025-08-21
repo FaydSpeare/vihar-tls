@@ -3,12 +3,7 @@ use std::{
     rc::Rc,
 };
 
-use asn1_rs::{Any, Integer, Sequence, ToDer};
-use num_bigint::BigUint;
-use x509_parser::{
-    asn1_rs::Oid,
-    prelude::{FromDer, X509Certificate},
-};
+use x509_parser::prelude::{FromDer, X509Certificate};
 
 use crate::{
     TlsPolicy, TlsResult,
@@ -30,14 +25,25 @@ pub struct PrioritisedCipherSuite {
 pub struct CertificateAndPrivateKey {
     pub certificate_der: Vec<u8>,
     pub private_key_der: Vec<u8>,
-    pub cert_signature_algorithm: SigAlgo,
+    pub public_key_algorithm: PublicKeyAlgorithm,
     pub distinguished_name_der: Vec<u8>,
+}
+
+impl CertificateAndPrivateKey {
+    pub fn signature_algorithm(&self) -> SigAlgo {
+        match self.public_key_algorithm {
+            PublicKeyAlgorithm::RsaEncryption => SigAlgo::Rsa,
+            PublicKeyAlgorithm::DsaEncryption => SigAlgo::Dsa,
+            _ => unimplemented!(),
+        }
+    }
 }
 
 #[derive(Debug)]
 pub struct Certificates {
     pub rsa: Option<CertificateAndPrivateKey>,
     pub dsa: Option<CertificateAndPrivateKey>,
+    pub dh: Option<CertificateAndPrivateKey>,
 }
 
 impl Default for Certificates {
@@ -51,11 +57,12 @@ impl Certificates {
         Self {
             rsa: None,
             dsa: None,
+            dh: None,
         }
     }
 
     pub fn primary(&self) -> Option<&CertificateAndPrivateKey> {
-        self.rsa.as_ref().or(self.dsa.as_ref())
+        self.rsa.as_ref().or(self.dsa.as_ref()).or(self.dh.as_ref())
     }
 
     pub fn certificates(&self) -> Vec<&CertificateAndPrivateKey> {
@@ -76,8 +83,7 @@ impl Certificates {
             .1;
 
         let distinguished_name_der = certificate.issuer().as_raw().to_vec();
-        let cert_signature_algorithm =
-            oid_to_key_type(&certificate.subject_pki.algorithm.algorithm);
+        let public_key_algorithm = get_public_key_algorithm(&certificate);
 
         let private_key_der =
             utils::read_pem(private_key_path).expect("Failed to read private key");
@@ -85,7 +91,7 @@ impl Certificates {
         CertificateAndPrivateKey {
             certificate_der,
             private_key_der,
-            cert_signature_algorithm,
+            public_key_algorithm,
             distinguished_name_der,
         }
     }
@@ -97,6 +103,11 @@ impl Certificates {
 
     pub fn with_dsa(mut self, certificate_path: &str, private_key_path: &str) -> Self {
         self.dsa = Some(Self::parse(certificate_path, private_key_path));
+        self
+    }
+
+    pub fn with_dh(mut self, certificate_path: &str, private_key_path: &str) -> Self {
+        self.dh = Some(Self::parse(certificate_path, private_key_path));
         self
     }
 }
@@ -208,10 +219,18 @@ impl TlsConfigBuilder {
     }
 }
 
-pub fn oid_to_key_type(oid: &Oid) -> SigAlgo {
-    match oid.to_id_string().as_str() {
-        "1.2.840.113549.1.1.1" => SigAlgo::Rsa,
-        "1.2.840.10040.4.1" => SigAlgo::Dsa,
+#[derive(Debug, Clone)]
+pub enum PublicKeyAlgorithm {
+    DhKeyAgreement,
+    RsaEncryption,
+    DsaEncryption,
+}
+
+pub fn get_public_key_algorithm(cert: &X509Certificate) -> PublicKeyAlgorithm {
+    match cert.subject_pki.algorithm.oid().to_id_string().as_str() {
+        "1.2.840.113549.1.1.1" => PublicKeyAlgorithm::RsaEncryption,
+        "1.2.840.10040.4.1" => PublicKeyAlgorithm::DsaEncryption,
+        "1.2.840.113549.1.3.1" => PublicKeyAlgorithm::DhKeyAgreement,
         x => unimplemented!("{x}"),
     }
 }

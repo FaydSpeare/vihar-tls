@@ -320,7 +320,7 @@ pub enum KeyExchangeAlgorithm {
 impl KeyExchangeAlgorithm {
     pub fn signature_type(&self) -> SigAlgo {
         match self {
-            Self::Rsa | Self::DheRsa | Self::EcdheRsa => SigAlgo::Rsa,
+            Self::Rsa | Self::DheRsa | Self::DhRsa => SigAlgo::Rsa,
             Self::DheDss => SigAlgo::Dsa,
             _ => unimplemented!(),
         }
@@ -334,10 +334,10 @@ impl KeyExchangeAlgorithm {
             Self::EcdheRsa => KeyExchangeType::Ecdhe,
         }
     }
-    pub fn mandates_server_certificate(&self) -> bool {
+    pub fn sends_server_certificate(&self) -> bool {
         match self {
-            Self::Null => true,
-            _ => self.kx_type() == KeyExchangeType::Dh,
+            Self::Null | Self::DhAnon => false,
+            _ => true,
         }
     }
 }

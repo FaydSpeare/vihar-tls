@@ -12,10 +12,11 @@ use vihar_tls::{
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
 
-
     let config = TlsConfigBuilder::new()
         .with_cipher_suites(
             [
+                pcs!(3, CipherSuiteId::DhRsaWithAes128GcmSha256),
+                pcs!(3, CipherSuiteId::DhRsaWithAes128CbcSha),
                 pcs!(3, CipherSuiteId::RsaWithNullMd5),
                 pcs!(3, CipherSuiteId::RsaWithNullSha),
                 pcs!(3, CipherSuiteId::RsaWithAes128GcmSha256),
@@ -30,9 +31,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_session_store("server-sdb")
         .with_certificates(
             Certificates::new()
-                .with_rsa("dhcert.pem", "testing/rsakey.pem")
-                //.with_rsa("testing/rsacert.pem", "testing/rsakey.pem")
-                .with_dsa("testing/dsacert.pem", "testing/dsakey.pem"),
+                // .with_rsa("testing/rsacert.pem", "testing/rsakey.pem")
+                // .with_dsa("testing/dsacert.pem", "testing/dsakey.pem")
+                .with_dh("dh/dhcert.pem", "dh/dhkey.pem"),
         )
         .with_policy(TlsPolicy {
             unrecognised_server_name: UnrecognisedServerNamePolicy::Ignore,

@@ -1,8 +1,11 @@
+use asn1_rs::Integer;
 use log::{debug, error, info, trace};
+use num_bigint::BigUint;
 use rand::prelude::SliceRandom;
 use rand::seq::IteratorRandom;
 use rsa::{RsaPublicKey, pkcs8::DecodePublicKey};
 use std::collections::HashSet;
+use x509_parser::prelude::X509Certificate;
 use x509_parser::{prelude::FromDer, x509::X509Name};
 
 use crate::alert::TlsAlertDesc;
@@ -17,6 +20,7 @@ use crate::messages::{
     Certificate, CertificateRequest, CertificateVerify, ClientHello, DigitallySigned,
     ServerDHParams, ServerKeyExchange, SessionId,
 };
+use crate::oid::extract_dh_params;
 use crate::signature::{
     get_dhe_pre_master_secret, get_rsa_pre_master_secret, public_key_from_cert,
 };
@@ -369,6 +373,7 @@ impl HandleRecord<TlsState> for AwaitServerCertificate {
                 ));
             }
             KeyExchangeType::Rsa => {}
+            KeyExchangeType::Dh => {}
             _ => unimplemented!(),
         }
 
@@ -629,7 +634,7 @@ impl HandleRecord<TlsState> for AwaitServerHelloDone {
                 .certificates
                 .certificates()
                 .into_iter()
-                .filter(|cert| sig_set.contains(&cert.cert_signature_algorithm))
+                .filter(|cert| sig_set.contains(&cert.signature_algorithm()))
                 .collect::<Vec<_>>();
 
             let suitable_certs = suitable_certs
@@ -645,7 +650,7 @@ impl HandleRecord<TlsState> for AwaitServerHelloDone {
                         let signature_algorithm = cert_request
                             .supported_signature_algorithms
                             .iter()
-                            .filter(|x| x.signature == cert.cert_signature_algorithm)
+                            .filter(|x| x.signature == cert.signature_algorithm())
                             .choose(&mut rand::thread_rng())
                             .unwrap();
 
@@ -698,8 +703,24 @@ impl HandleRecord<TlsState> for AwaitServerHelloDone {
                 let (pms, client_public_key) = get_dhe_pre_master_secret(p, g, server_public_key);
                 (pms, ClientKeyExchange::new_dhe(&client_public_key))
             }
+            KeyExchangeType::Dh => {
+                let cert = X509Certificate::from_der(&self.server_certificate_der)
+                    .unwrap()
+                    .1;
+                let (p, g) = extract_dh_params(&cert).unwrap();
+
+                let i = Integer::from_der(&cert.public_key().subject_public_key.data)
+                    .unwrap()
+                    .1;
+
+                let (pms, client_public_key) = get_dhe_pre_master_secret(
+                    &p.to_bytes_be(),
+                    &g.to_bytes_be(),
+                    &i.as_ref(),
+                );
+                (pms, ClientKeyExchange::new_dhe(&client_public_key))
+            }
             KeyExchangeType::Ecdhe => unimplemented!(),
-            KeyExchangeType::Dh => unimplemented!(),
             KeyExchangeType::Null => unimplemented!(),
         };
 
@@ -716,11 +737,12 @@ impl HandleRecord<TlsState> for AwaitServerHelloDone {
             ciphersuite.prf_algorithm(),
             self.negotiated_extensions.extended_master_secret,
         );
+        println!("MS: {:?}", master_secret);
 
         if let Some(cert) = verify_cert {
             if self.client_certificate_request.is_some() {
                 let signature = sign(
-                    cert.cert_signature_algorithm,
+                    cert.signature_algorithm(),
                     chosen_hash_algo,
                     &cert.private_key_der,
                     &self.handshakes,
@@ -729,7 +751,7 @@ impl HandleRecord<TlsState> for AwaitServerHelloDone {
                 let certificate_verify = TlsHandshake::CertificateVerify(CertificateVerify {
                     signed: DigitallySigned {
                         hash_algorithm: chosen_hash_algo,
-                        signature_algorithm: cert.cert_signature_algorithm,
+                        signature_algorithm: cert.signature_algorithm(),
                         signature: signature.try_into().unwrap(),
                     },
                 });
