@@ -16,6 +16,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = TlsConfigBuilder::new()
         .with_cipher_suites(
             [
+                pcs!(3, CipherSuiteId::RsaWithNullMd5),
                 pcs!(3, CipherSuiteId::RsaWithNullSha),
                 pcs!(3, CipherSuiteId::RsaWithAes128GcmSha256),
                 pcs!(3, CipherSuiteId::RsaWithAes256GcmSha384),

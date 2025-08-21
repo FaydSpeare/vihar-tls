@@ -29,17 +29,17 @@ impl ConcreteMac {
     pub fn compute(&self, seed: &[u8]) -> Vec<u8> {
         match self {
             Self::Null => vec![],
+            Self::HmacMd5 { key, .. } => hmac(key, seed, HmacHashAlgo::Md5),
             Self::HmacSha1 { key, .. } => hmac(key, seed, HmacHashAlgo::Sha1),
             Self::HmacSha256 { key, .. } => hmac(key, seed, HmacHashAlgo::Sha256),
-            _ => unimplemented!(),
         }
     }
     pub fn length(&self) -> usize {
         match self {
             Self::Null => 0,
-            Self::HmacSha1 { .. } => 20,
-            Self::HmacSha256 { .. } => 32,
-            _ => unimplemented!(),
+            Self::HmacMd5 { length, .. } => *length,
+            Self::HmacSha1 { length, .. } => *length,
+            Self::HmacSha256 { length, .. } => *length,
         }
     }
 }
@@ -57,18 +57,18 @@ impl MacType {
         let length = self.mac_length();
         match self {
             Self::Null => ConcreteMac::Null,
+            Self::HmacMd5 => ConcreteMac::HmacMd5 { key, length },
             Self::HmacSha1 => ConcreteMac::HmacSha1 { key, length },
             Self::HmacSha256 => ConcreteMac::HmacSha256 { key, length },
-            _ => unimplemented!(),
         }
     }
 
     pub fn mac_length(&self) -> usize {
         match self {
             Self::Null => 0,
+            Self::HmacMd5 => 16,
             Self::HmacSha1 => 20,
             Self::HmacSha256 => 32,
-            _ => unimplemented!(),
         }
     }
 

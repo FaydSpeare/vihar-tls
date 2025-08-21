@@ -1,4 +1,5 @@
 use crate::utils;
+use md5 as Md5;
 use sha1::Sha1;
 use sha2::{Digest, Sha256, Sha384};
 
@@ -16,8 +17,13 @@ fn sha1(bytes: &[u8]) -> Vec<u8> {
     hasher.finalize().to_vec()
 }
 
+fn md5(bytes: &[u8]) -> Vec<u8> {
+    Md5::compute(bytes).to_vec()
+}
+
 #[derive(Debug, Copy, Clone)]
 pub enum HmacHashAlgo {
+    Md5,
     Sha1,
     Sha256,
     Sha384,
@@ -26,6 +32,7 @@ pub enum HmacHashAlgo {
 impl HmacHashAlgo {
     fn hash_fn(&self) -> fn(&[u8]) -> Vec<u8> {
         match self {
+            Self::Md5 => md5,
             Self::Sha1 => sha1,
             Self::Sha256 => sha256,
             Self::Sha384 => sha384,
@@ -33,6 +40,7 @@ impl HmacHashAlgo {
     }
     fn block_size(&self) -> usize {
         match self {
+            Self::Md5 => 64,
             Self::Sha1 => 64,
             Self::Sha256 => 64,
             Self::Sha384 => 128,
