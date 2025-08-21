@@ -20,6 +20,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 pcs!(3, CipherSuiteId::DheRsaWithAes128CbcSha),
                 pcs!(2, CipherSuiteId::RsaWithAes128CbcSha),
                 pcs!(1, CipherSuiteId::RsaWithAes128CbcSha256),
+                pcs!(1, CipherSuiteId::RsaWithRc4128Sha),
             ]
             .into(),
         )

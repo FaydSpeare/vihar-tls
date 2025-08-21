@@ -1,4 +1,4 @@
-use std::fmt::Debug;
+use std::{cell::RefCell, fmt::Debug};
 
 use crate::{
     extensions::SigAlgo,
@@ -7,6 +7,9 @@ use crate::{
 };
 use aes::{Aes128, Aes256};
 use paste::paste;
+use rc4::{
+    KeyInit, Rc4, StreamCipher as Rc4StreamCipher, cipher::SeekNum, cipher::StreamCipherSeek,
+};
 use sha2::{Digest, Sha256, Sha384};
 
 tls_codable_enum! {
@@ -79,6 +82,55 @@ pub enum CipherType {
     Aead,
 }
 
+pub struct StreamCipher(RefCell<Rc4<rc4::consts::U128>>);
+
+impl StreamCipher {
+    pub fn encrypt(&self, plaintext: &[u8]) -> Vec<u8> {
+        let mut buffer = plaintext.to_vec();
+        self.0.borrow_mut().apply_keystream(&mut buffer);
+        buffer
+    }
+}
+
+impl Clone for StreamCipher {
+    fn clone(&self) -> Self {
+        unimplemented!()
+    }
+}
+
+impl std::fmt::Debug for StreamCipher {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Rc4State")
+            .field("inner", &"<hidden>")
+            .finish()
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct BlockCipher(fn(&[u8], &[u8], &[u8]) -> Vec<u8>);
+
+impl BlockCipher {
+    pub fn encrypt(&self, plaintext: &[u8], key: &[u8], iv: &[u8]) -> Vec<u8> {
+        (self.0)(plaintext, key, iv)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct AeadCipher(fn(&[u8], &[u8], &[u8], &[u8]) -> Vec<u8>);
+
+impl AeadCipher {
+    pub fn encrypt(&self, plaintext: &[u8], key: &[u8], iv: &[u8], aad: &[u8]) -> Vec<u8> {
+        (self.0)(plaintext, key, iv, aad)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum Cipher {
+    Block(BlockCipher),
+    Aead(AeadCipher),
+    Stream(StreamCipher),
+}
+
 #[derive(Debug, Copy, Clone)]
 pub enum EncAlgorithm {
     Null,
@@ -91,12 +143,25 @@ pub enum EncAlgorithm {
 }
 
 impl EncAlgorithm {
+    pub fn get_cipher(&self, key: &[u8]) -> Cipher {
+        match self {
+            Self::Aes128Cbc => Cipher::Block(BlockCipher(encrypt_aes_cbc::<Aes128>)),
+            Self::Aes256Cbc => Cipher::Block(BlockCipher(encrypt_aes_cbc::<Aes256>)),
+            Self::Aes128Gcm => Cipher::Aead(AeadCipher(encrypt_aes_gcm::<Aes128>)),
+            Self::Aes256Gcm => Cipher::Aead(AeadCipher(encrypt_aes_gcm::<Aes256>)),
+            Self::Rc4128 => Cipher::Stream(StreamCipher(RefCell::new(
+                Rc4::new_from_slice(key).unwrap(),
+            ))),
+            _ => unimplemented!(),
+        }
+    }
     pub fn key_length(&self) -> usize {
         match self {
             Self::Aes128Cbc => 16,
             Self::Aes256Cbc => 32,
             Self::Aes128Gcm => 16,
             Self::Aes256Gcm => 32,
+            Self::Rc4128 => 16,
             _ => unimplemented!(),
         }
     }
@@ -107,6 +172,7 @@ impl EncAlgorithm {
             Self::Aes256Cbc => 16,
             Self::Aes128Gcm => 16,
             Self::Aes256Gcm => 16,
+            Self::Rc4128 => unreachable!(),
             _ => unimplemented!(),
         }
     }
@@ -116,6 +182,7 @@ impl EncAlgorithm {
             Self::Aes128Gcm => 8,
             Self::Aes256Gcm => 8,
             Self::Aes128Cbc | Self::Aes256Cbc => self.block_length(),
+            Self::Rc4128 => 0,
             _ => unimplemented!(),
         }
     }
@@ -124,7 +191,7 @@ impl EncAlgorithm {
         match self {
             Self::Aes128Gcm => 4,
             Self::Aes256Gcm => 4,
-            Self::Aes128Cbc | Self::Aes256Cbc => 0,
+            Self::Aes128Cbc | Self::Aes256Cbc | Self::Rc4128 => 0,
             _ => unimplemented!(),
         }
     }
@@ -135,6 +202,7 @@ impl EncAlgorithm {
             Self::Aes256Cbc => CipherType::Block,
             Self::Aes128Gcm => CipherType::Aead,
             Self::Aes256Gcm => CipherType::Aead,
+            Self::Rc4128 => CipherType::Stream,
             _ => unimplemented!(),
         }
     }
@@ -164,27 +232,8 @@ impl EncAlgorithm {
             _ => unimplemented!(),
         })
     }
-
-    pub fn encrypt(&self, plaintext: &[u8], key: &[u8], iv: &[u8], aad: Option<&[u8]>) -> Vec<u8> {
-        match self {
-            Self::Aes128Cbc => encrypt_aes_cbc::<Aes128>(plaintext, key, iv),
-            Self::Aes256Cbc => encrypt_aes_cbc::<Aes256>(plaintext, key, iv),
-            Self::Aes128Gcm => encrypt_aes_gcm::<Aes128>(
-                key,
-                iv,
-                plaintext,
-                aad.expect("GCM missing additional data"),
-            ),
-            Self::Aes256Gcm => encrypt_aes_gcm::<Aes256>(
-                key,
-                iv,
-                plaintext,
-                aad.expect("GCM missing additional data"),
-            ),
-            _ => unimplemented!(),
-        }
-    }
 }
+
 #[derive(Debug, Clone)]
 pub enum KeyExchangeType {
     Rsa,

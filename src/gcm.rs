@@ -128,9 +128,9 @@ fn generate_keystream<C: BlockEncrypt + KeyInit>(
 }
 
 pub fn encrypt_aes_gcm<C: BlockEncrypt + KeyInit>(
+    plaintext: &[u8],
     key: &[u8],
     iv: &[u8],
-    plaintext: &[u8],
     aad: &[u8],
 ) -> Vec<u8> {
     let h = u128::from_be_bytes(encrypt_aes_block::<C>(key, &0u128.to_be_bytes()));
@@ -194,7 +194,7 @@ mod tests {
         let expected = utils::hex_to_bytes(
             "42831ec2217774244b7221b784d0d49ce3aa212f2c02a4e035c17e2329aca12e21d514b25466931c7d8f6a5aac84aa051ba30b396a0aac973d58e0915bc94fbc3221a5db94fae95ae7121a47",
         );
-        let output = encrypt_aes_gcm::<Aes128>(&key, &iv, &plaintext, &aad);
+        let output = encrypt_aes_gcm::<Aes128>(&plaintext, &key, &iv, &aad);
         assert_eq!(output, expected);
     }
 }

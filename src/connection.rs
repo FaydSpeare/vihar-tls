@@ -1,7 +1,7 @@
 use crate::alert::{TlsAlert, TlsAlertDesc};
 use crate::ciphersuite::{
-    CipherSuite, CipherSuiteId, CipherType, CompressionMethod, EncAlgorithm, MacAlgorithm,
-    PrfAlgorithm,
+    AeadCipher, BlockCipher, Cipher, CipherSuite, CipherSuiteId, CipherType, CompressionMethod,
+    EncAlgorithm, MacAlgorithm, PrfAlgorithm,
 };
 use crate::client::TlsConfig;
 use crate::encoding::TlsCodable;
@@ -139,6 +139,7 @@ pub struct SecureConnState {
     pub enc_key: Vec<u8>,
     pub write_iv: Vec<u8>,
     pub seq_num: u64,
+    pub cipher: Cipher,
 }
 
 impl SecureConnState {
@@ -149,6 +150,7 @@ impl SecureConnState {
         write_iv: Vec<u8>,
     ) -> Self {
         Self {
+            cipher: params.enc_algorithm.get_cipher(&enc_key),
             params,
             enc_key,
             mac_key,
@@ -233,8 +235,9 @@ impl SecureConnState {
     }
 
     fn encrypt_block_cipher(
-        &self,
+        &mut self,
         compressed: TlsCompressed,
+        cipher: BlockCipher,
     ) -> Result<TlsCiphertext, DecodingError> {
         let mut bytes = Vec::<u8>::new();
         bytes.extend_from_slice(&self.seq_num.to_be_bytes());
@@ -258,10 +261,7 @@ impl SecureConnState {
         to_encrypt.push(padding_len as u8);
 
         let iv = utils::get_random_bytes(self.params.enc_algorithm.record_iv_length());
-        let ciphertext = self
-            .params
-            .enc_algorithm
-            .encrypt(&to_encrypt, &self.enc_key, &iv, None);
+        let ciphertext = cipher.encrypt(&to_encrypt, &self.enc_key, &iv);
 
         let mut fragment = Vec::<u8>::new();
         fragment.extend_from_slice(&iv);
@@ -274,8 +274,9 @@ impl SecureConnState {
     }
 
     fn encrypt_aead_cipher(
-        &self,
+        &mut self,
         compressed: TlsCompressed,
+        cipher: AeadCipher,
     ) -> Result<TlsCiphertext, DecodingError> {
         let implicit: [u8; 4] = self.write_iv.clone().try_into().unwrap();
         let explicit = utils::get_random_bytes(self.params.enc_algorithm.record_iv_length());
@@ -288,13 +289,8 @@ impl SecureConnState {
         aad.extend([compressed.version.major, compressed.version.minor]);
         aad.extend((compressed.fragment.len() as u16).to_be_bytes());
 
-        let aead_ciphertext = self.params.enc_algorithm.encrypt(
-            &compressed.fragment,
-            &self.enc_key,
-            &nonce,
-            Some(&aad),
-        );
-        let fragment = [&explicit, &aead_ciphertext[..]].concat();
+        let ciphertext = cipher.encrypt(&compressed.fragment, &self.enc_key, &nonce, &aad);
+        let fragment = [&explicit, &ciphertext[..]].concat();
         Ok(TlsCiphertext {
             content_type: compressed.content_type,
             version: compressed.version,
@@ -326,10 +322,13 @@ impl SecureConnState {
 
     pub fn encrypt(&mut self, plaintext: TlsPlaintext) -> Result<TlsCiphertext, DecodingError> {
         let compressed = self.compress(plaintext);
-        let ciphertext = match self.params.enc_algorithm.cipher_type() {
-            CipherType::Block => self.encrypt_block_cipher(compressed),
-            CipherType::Aead => self.encrypt_aead_cipher(compressed),
-            CipherType::Stream => unimplemented!(),
+        let ciphertext = match &self.cipher {
+            Cipher::Block(cipher) => self.encrypt_block_cipher(compressed, cipher.clone()),
+            Cipher::Aead(cipher) => self.encrypt_aead_cipher(compressed, cipher.clone()),
+            Cipher::Stream(cipher) => {
+                let _x = cipher.encrypt(&compressed.fragment);
+                unimplemented!();
+            },
         };
         self.seq_num += 1;
         ciphertext
