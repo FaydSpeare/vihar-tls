@@ -242,6 +242,7 @@ impl EncryptionType {
     }
     pub fn key_length(&self) -> usize {
         match self {
+            Self::Null => 0,
             Self::Aes128Cbc => 16,
             Self::Aes256Cbc => 32,
             Self::Aes128Gcm => 16,
@@ -264,6 +265,7 @@ impl EncryptionType {
 
     pub fn record_iv_length(&self) -> usize {
         match self {
+            Self::Null => 0,
             Self::Aes128Gcm => 8,
             Self::Aes256Gcm => 8,
             Self::Aes128Cbc | Self::Aes256Cbc => self.block_length(),
@@ -274,6 +276,7 @@ impl EncryptionType {
 
     pub fn fixed_iv_length(&self) -> usize {
         match self {
+            Self::Null => 0,
             Self::Aes128Gcm => 4,
             Self::Aes256Gcm => 4,
             Self::Aes128Cbc | Self::Aes256Cbc | Self::Rc4128 => 0,
