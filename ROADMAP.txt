@@ -1,5 +1,7 @@
 ## TODO
 
+======== MVP =========
+
 - Native root certs for linux and windows
 
 - Fix bad decryption overflow panics
@@ -7,23 +9,14 @@
 - HelloRequest
 - Need to finished reading before starting client.renegotiate
 
-- =============================================
-
-
-- Support RC4, 3DES, how could you test?
-
-- Fixed DH
-
+- Support 3Des
+- Support Fixed DH, DHanon, Null KX
 - DH anon suites
     - no server certificate
     - server key exchange
-
-- Hmac Md5
-
 - add DN client auth config
 
-- NULL KX, NULL Cipher, NULL Mac
-
+==============================================
 
 - RFC5246 D3 - setting for min and max key sizes
 

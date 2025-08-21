@@ -309,10 +309,10 @@ pub enum KeyExchangeAlgorithm {
     Rsa,
     DheRsa,
     DheDss,
-    EcdheRsa,
     DhAnon,
     DhDss,
     DhRsa,
+    EcdheRsa,
 }
 
 impl KeyExchangeAlgorithm {
