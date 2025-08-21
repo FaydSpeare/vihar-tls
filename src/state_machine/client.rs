@@ -28,7 +28,7 @@ use crate::storage::SessionInfo;
 use crate::{
     alert::TlsAlert,
     ciphersuite::CipherSuite,
-    connection::{ConnState, SecureConnState, SecurityParams},
+    connection::{ConnState, SecurityParams},
     encoding::TlsCodable,
     messages::{ClientKeyExchange, Finished, TlsHandshake, TlsMessage},
 };
@@ -343,7 +343,9 @@ impl HandleRecord<TlsState> for AwaitServerCertificate {
         }
 
         if ctx.config.policy.verify_server {
-            if let Err(e) = validate_certificate_chain(chain, ctx.config.server_name.clone().unwrap()) {
+            if let Err(e) =
+                validate_certificate_chain(chain, ctx.config.server_name.clone().unwrap())
+            {
                 error!("{:?}", e);
                 return close_connection(TlsAlertDesc::BadCertificate);
             }
@@ -741,13 +743,7 @@ impl HandleRecord<TlsState> for AwaitServerHelloDone {
             master_secret,
             self.selected_cipher_suite_id,
         );
-        let keys = params.derive_keys();
-        let write = ConnState::Secure(SecureConnState::new(
-            params.clone(),
-            keys.client_enc_key,
-            keys.client_mac_key,
-            keys.client_write_iv,
-        ));
+        let write = ConnState::new(params.clone(), TlsEntity::Client);
 
         let verify_data = params.client_verify_data(&self.handshakes);
         let client_finished = Finished::new(verify_data.clone());
@@ -987,13 +983,7 @@ impl HandleRecord<TlsState> for AwaitServerChangeCipher {
         };
 
         info!("Received ChangeCipherSpec");
-        let keys = self.params.derive_keys();
-        let read = ConnState::Secure(SecureConnState::new(
-            self.params.clone(),
-            keys.server_enc_key,
-            keys.server_mac_key,
-            keys.server_write_iv,
-        ));
+        let read = ConnState::new(self.params.clone(), TlsEntity::Server);
 
         Ok((
             AwaitServerFinished {
@@ -1125,13 +1115,7 @@ impl HandleRecord<TlsState> for ExpectServerChangeCipherAbbr {
         };
 
         info!("Received ChangeCipherSpec");
-        let keys = self.params.derive_keys();
-        let read = ConnState::Secure(SecureConnState::new(
-            self.params.clone(),
-            keys.server_enc_key,
-            keys.server_mac_key,
-            keys.server_write_iv,
-        ));
+        let read = ConnState::new(self.params.clone(), TlsEntity::Server);
 
         Ok((
             ExpectServerFinishedAbbr {
@@ -1165,13 +1149,7 @@ impl HandleRecord<TlsState> for ExpectServerFinishedAbbr {
         }
         handshake.write_to(&mut self.handshakes);
 
-        let keys = self.params.derive_keys();
-        let write = ConnState::Secure(SecureConnState::new(
-            self.params.clone(),
-            keys.client_enc_key,
-            keys.client_mac_key,
-            keys.client_write_iv,
-        ));
+        let write = ConnState::new(self.params.clone(), TlsEntity::Client);
 
         let client_verify_data = self.params.client_verify_data(&self.handshakes);
         let client_finished = Finished::new(client_verify_data.clone());

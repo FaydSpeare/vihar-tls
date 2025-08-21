@@ -151,9 +151,9 @@ pub fn encrypt_aes_gcm<C: BlockEncrypt + KeyInit>(
 }
 
 pub fn decrypt_aes_gcm<C: BlockEncrypt + KeyInit>(
+    ciphertext: &[u8],
     key: &[u8],
     iv: &[u8],
-    ciphertext: &[u8],
     aad: &[u8],
 ) -> Result<Vec<u8>, String> {
     let (ciphertext, tag) = ciphertext.split_at(ciphertext.len() - 16);

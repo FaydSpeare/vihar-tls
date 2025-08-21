@@ -23,7 +23,7 @@ use crate::{ClientAuthPolicy, MaxFragmentLengthNegotiationPolicy, RenegotiationP
 use crate::{
     alert::TlsAlert,
     ciphersuite::CipherSuite,
-    connection::{ConnState, SecureConnState, SecurityParams},
+    connection::{ConnState, SecurityParams},
     encoding::TlsCodable,
     messages::{Finished, TlsHandshake, TlsMessage},
 };
@@ -99,13 +99,7 @@ fn start_abbr_handshake(client_hello: ClientHello, session: SessionInfo) -> Hand
     let server_hello = TlsHandshake::ServerHello(server_hello);
     server_hello.write_to(&mut handshakes);
 
-    let keys = params.derive_keys();
-    let write = ConnState::Secure(SecureConnState::new(
-        params.clone(),
-        keys.server_enc_key,
-        keys.server_mac_key,
-        keys.server_write_iv,
-    ));
+    let write = ConnState::new(params.clone(), TlsEntity::Server);
 
     let server_verify_data = params.server_verify_data(&handshakes);
     let server_finished = TlsHandshake::Finished(Finished::new(server_verify_data.clone()));
@@ -443,13 +437,7 @@ impl HandleRecord<TlsState> for AwaitClientChangeCipherAbbr {
         };
 
         info!("Received ChangeCipherSpec");
-        let keys = self.params.derive_keys();
-        let read = ConnState::Secure(SecureConnState::new(
-            self.params.clone(),
-            keys.client_enc_key,
-            keys.client_mac_key,
-            keys.client_write_iv,
-        ));
+        let read = ConnState::new(self.params.clone(), TlsEntity::Client);
 
         Ok((
             AwaitClientFinishedAbbr {
@@ -705,13 +693,7 @@ impl HandleRecord<TlsState> for AwaitClientChangeCipher {
         };
 
         info!("Received ChangeCipherSpec");
-        let keys = self.params.derive_keys();
-        let read = ConnState::Secure(SecureConnState::new(
-            self.params.clone(),
-            keys.client_enc_key,
-            keys.client_mac_key,
-            keys.client_write_iv,
-        ));
+        let read = ConnState::new(self.params.clone(), TlsEntity::Client);
 
         Ok((
             AwaitClientFinished {
@@ -768,13 +750,7 @@ impl HandleRecord<TlsState> for AwaitClientFinished {
             info!("Sent NewSessionTicket");
         }
 
-        let keys = self.params.derive_keys();
-        let write = ConnState::Secure(SecureConnState::new(
-            self.params.clone(),
-            keys.server_enc_key,
-            keys.server_mac_key,
-            keys.server_write_iv,
-        ));
+        let write = ConnState::new(self.params.clone(), TlsEntity::Server);
 
         actions.push(TlsAction::ChangeCipherSpec(TlsEntity::Server, write));
 

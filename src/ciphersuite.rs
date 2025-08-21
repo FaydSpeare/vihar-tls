@@ -7,9 +7,7 @@ use crate::{
 };
 use aes::{Aes128, Aes256};
 use paste::paste;
-use rc4::{
-    KeyInit, Rc4, StreamCipher as Rc4StreamCipher, cipher::SeekNum, cipher::StreamCipherSeek,
-};
+use rc4::{KeyInit, Rc4, StreamCipher as Rc4StreamCipher};
 use sha2::{Digest, Sha256, Sha384};
 
 tls_codable_enum! {
@@ -19,15 +17,52 @@ tls_codable_enum! {
     }
 }
 
+#[derive(Debug, Clone)]
+pub enum ConcreteMac {
+    Null,
+    HmacMd5 { key: Vec<u8>, length: usize },
+    HmacSha1 { key: Vec<u8>, length: usize },
+    HmacSha256 { key: Vec<u8>, length: usize },
+}
+
+impl ConcreteMac {
+    pub fn compute(&self, seed: &[u8]) -> Vec<u8> {
+        match self {
+            Self::Null => vec![],
+            Self::HmacSha1 { key, .. } => hmac(key, seed, HmacHashAlgo::Sha1),
+            Self::HmacSha256 { key, .. } => hmac(key, seed, HmacHashAlgo::Sha256),
+            _ => unimplemented!(),
+        }
+    }
+    pub fn length(&self) -> usize {
+        match self {
+            Self::Null => 0,
+            Self::HmacSha1 { .. } => 20,
+            Self::HmacSha256 { .. } => 32,
+            _ => unimplemented!(),
+        }
+    }
+}
+
 #[derive(Debug, Copy, Clone)]
-pub enum MacAlgorithm {
+pub enum MacType {
     Null,
     HmacMd5,
     HmacSha1,
     HmacSha256,
 }
 
-impl MacAlgorithm {
+impl MacType {
+    pub fn concrete(&self, key: Vec<u8>) -> ConcreteMac {
+        let length = self.mac_length();
+        match self {
+            Self::Null => ConcreteMac::Null,
+            Self::HmacSha1 => ConcreteMac::HmacSha1 { key, length },
+            Self::HmacSha256 => ConcreteMac::HmacSha256 { key, length },
+            _ => unimplemented!(),
+        }
+    }
+
     pub fn mac_length(&self) -> usize {
         match self {
             Self::Null => 0,
@@ -39,14 +74,6 @@ impl MacAlgorithm {
 
     pub fn key_length(&self) -> usize {
         self.mac_length()
-    }
-
-    pub fn mac(&self, key: &[u8], seed: &[u8]) -> Vec<u8> {
-        match self {
-            Self::HmacSha1 => hmac(key, seed, HmacHashAlgo::Sha1),
-            Self::HmacSha256 => hmac(key, seed, HmacHashAlgo::Sha256),
-            _ => unimplemented!(),
-        }
     }
 }
 
@@ -82,13 +109,24 @@ pub enum CipherType {
     Aead,
 }
 
-pub struct StreamCipher(RefCell<Rc4<rc4::consts::U128>>);
+pub enum StreamCipher {
+    Null,
+    Rc4(RefCell<Rc4<rc4::consts::U16>>),
+}
 
 impl StreamCipher {
     pub fn encrypt(&self, plaintext: &[u8]) -> Vec<u8> {
-        let mut buffer = plaintext.to_vec();
-        self.0.borrow_mut().apply_keystream(&mut buffer);
-        buffer
+        match self {
+            Self::Null => plaintext.to_vec(),
+            Self::Rc4(rc4) => {
+                let mut buffer = plaintext.to_vec();
+                rc4.borrow_mut().apply_keystream(&mut buffer);
+                buffer
+            }
+        }
+    }
+    pub fn decrypt(&self, ciphertext: &[u8]) -> Vec<u8> {
+        self.encrypt(ciphertext)
     }
 }
 
@@ -107,32 +145,51 @@ impl std::fmt::Debug for StreamCipher {
 }
 
 #[derive(Clone, Debug)]
-pub struct BlockCipher(fn(&[u8], &[u8], &[u8]) -> Vec<u8>);
+pub struct BlockCipher {
+    enc_key: Vec<u8>,
+    encrypt_fn: fn(&[u8], &[u8], &[u8]) -> Vec<u8>,
+    decrypt_fn: fn(&[u8], &[u8], &[u8]) -> Vec<u8>,
+    pub block_length: usize,
+    pub record_iv_length: usize,
+}
 
 impl BlockCipher {
-    pub fn encrypt(&self, plaintext: &[u8], key: &[u8], iv: &[u8]) -> Vec<u8> {
-        (self.0)(plaintext, key, iv)
+    pub fn encrypt(&self, plaintext: &[u8], iv: &[u8]) -> Vec<u8> {
+        (self.encrypt_fn)(plaintext, &self.enc_key, iv)
+    }
+    pub fn decrypt(&self, ciphertext: &[u8], iv: &[u8]) -> Vec<u8> {
+        (self.decrypt_fn)(ciphertext, &self.enc_key, iv)
     }
 }
 
 #[derive(Clone, Debug)]
-pub struct AeadCipher(fn(&[u8], &[u8], &[u8], &[u8]) -> Vec<u8>);
+pub struct AeadCipher {
+    enc_key: Vec<u8>,
+    encrypt_fn: fn(&[u8], &[u8], &[u8], &[u8]) -> Vec<u8>,
+    decrypt_fn: fn(&[u8], &[u8], &[u8], &[u8]) -> Result<Vec<u8>, String>,
+    pub write_iv: Vec<u8>,
+    pub block_length: usize,
+    pub record_iv_length: usize,
+}
 
 impl AeadCipher {
-    pub fn encrypt(&self, plaintext: &[u8], key: &[u8], iv: &[u8], aad: &[u8]) -> Vec<u8> {
-        (self.0)(plaintext, key, iv, aad)
+    pub fn encrypt(&self, plaintext: &[u8], iv: &[u8], aad: &[u8]) -> Vec<u8> {
+        (self.encrypt_fn)(plaintext, &self.enc_key, iv, aad)
+    }
+    pub fn decrypt(&self, ciphertext: &[u8], iv: &[u8], aad: &[u8]) -> Result<Vec<u8>, String> {
+        (self.decrypt_fn)(ciphertext, &self.enc_key, iv, aad)
     }
 }
 
 #[derive(Clone, Debug)]
-pub enum Cipher {
+pub enum ConcreteEncryption {
     Block(BlockCipher),
     Aead(AeadCipher),
     Stream(StreamCipher),
 }
 
 #[derive(Debug, Copy, Clone)]
-pub enum EncAlgorithm {
+pub enum EncryptionType {
     Null,
     Aes128Cbc,
     Aes256Cbc,
@@ -142,15 +199,43 @@ pub enum EncAlgorithm {
     Rc4128,
 }
 
-impl EncAlgorithm {
-    pub fn get_cipher(&self, key: &[u8]) -> Cipher {
+impl EncryptionType {
+    pub fn concrete(&self, enc_key: Vec<u8>, write_iv: Vec<u8>) -> ConcreteEncryption {
+        let record_iv_length = self.record_iv_length();
         match self {
-            Self::Aes128Cbc => Cipher::Block(BlockCipher(encrypt_aes_cbc::<Aes128>)),
-            Self::Aes256Cbc => Cipher::Block(BlockCipher(encrypt_aes_cbc::<Aes256>)),
-            Self::Aes128Gcm => Cipher::Aead(AeadCipher(encrypt_aes_gcm::<Aes128>)),
-            Self::Aes256Gcm => Cipher::Aead(AeadCipher(encrypt_aes_gcm::<Aes256>)),
-            Self::Rc4128 => Cipher::Stream(StreamCipher(RefCell::new(
-                Rc4::new_from_slice(key).unwrap(),
+            Self::Null => ConcreteEncryption::Stream(StreamCipher::Null),
+            Self::Aes128Cbc => ConcreteEncryption::Block(BlockCipher {
+                enc_key,
+                encrypt_fn: encrypt_aes_cbc::<Aes128>,
+                decrypt_fn: decrypt_aes_cbc::<Aes128>,
+                block_length: self.block_length(),
+                record_iv_length,
+            }),
+            Self::Aes256Cbc => ConcreteEncryption::Block(BlockCipher {
+                enc_key,
+                encrypt_fn: encrypt_aes_cbc::<Aes256>,
+                decrypt_fn: decrypt_aes_cbc::<Aes256>,
+                block_length: self.block_length(),
+                record_iv_length,
+            }),
+            Self::Aes128Gcm => ConcreteEncryption::Aead(AeadCipher {
+                enc_key,
+                write_iv,
+                encrypt_fn: encrypt_aes_gcm::<Aes128>,
+                decrypt_fn: decrypt_aes_gcm::<Aes128>,
+                block_length: self.block_length(),
+                record_iv_length,
+            }),
+            Self::Aes256Gcm => ConcreteEncryption::Aead(AeadCipher {
+                enc_key,
+                write_iv,
+                encrypt_fn: encrypt_aes_gcm::<Aes256>,
+                decrypt_fn: decrypt_aes_gcm::<Aes256>,
+                block_length: self.block_length(),
+                record_iv_length,
+            }),
+            Self::Rc4128 => ConcreteEncryption::Stream(StreamCipher::Rc4(RefCell::new(
+                Rc4::new_from_slice(&enc_key).unwrap(),
             ))),
             _ => unimplemented!(),
         }
@@ -205,32 +290,6 @@ impl EncAlgorithm {
             Self::Rc4128 => CipherType::Stream,
             _ => unimplemented!(),
         }
-    }
-
-    pub fn decrypt(
-        &self,
-        ciphertext: &[u8],
-        key: &[u8],
-        iv: &[u8],
-        aad: Option<&[u8]>,
-    ) -> Result<Vec<u8>, String> {
-        Ok(match self {
-            Self::Aes128Cbc => decrypt_aes_cbc::<Aes128>(ciphertext, key, iv),
-            Self::Aes256Cbc => decrypt_aes_cbc::<Aes256>(ciphertext, key, iv),
-            Self::Aes128Gcm => decrypt_aes_gcm::<Aes128>(
-                key,
-                iv,
-                ciphertext,
-                aad.expect("GCM missing additional data"),
-            )?,
-            Self::Aes256Gcm => decrypt_aes_gcm::<Aes256>(
-                key,
-                iv,
-                ciphertext,
-                aad.expect("GCM missing additional data"),
-            )?,
-            _ => unimplemented!(),
-        })
     }
 }
 
@@ -316,7 +375,7 @@ macro_rules! define_cipher_suites {
                     }
                 }
 
-                pub fn enc_algorithm(&self) -> EncAlgorithm {
+                pub fn enc_type(&self) -> EncryptionType {
                     match self {
                         $(
                             Self::[< $name:camel >] => $enc,
@@ -324,7 +383,7 @@ macro_rules! define_cipher_suites {
                     }
                 }
 
-                pub fn mac_algorithm(&self) -> MacAlgorithm {
+                pub fn mac_type(&self) -> MacType {
                     match self {
                         $(
                             Self::[< $name:camel >] => $mac,
@@ -368,302 +427,302 @@ define_cipher_suites! {
 
     // RFC5246 Group 1
     NULL_WITH_NULL_NULL = 0x0000 {
-        mac = MacAlgorithm::Null,
-        enc = EncAlgorithm::Null,
+        mac = MacType::Null,
+        enc = EncryptionType::Null,
         kx  = KeyExchangeAlgorithm::Null,
         prf = PrfAlgorithm::Sha256,
     },
     RSA_WITH_NULL_MD5 = 0x0001 {
-        mac = MacAlgorithm::HmacMd5,
-        enc = EncAlgorithm::Null,
+        mac = MacType::HmacMd5,
+        enc = EncryptionType::Null,
         kx  = KeyExchangeAlgorithm::Rsa,
         prf = PrfAlgorithm::Sha256,
     },
     RSA_WITH_NULL_SHA = 0x0002 {
-        mac = MacAlgorithm::HmacSha1,
-        enc = EncAlgorithm::Null,
+        mac = MacType::HmacSha1,
+        enc = EncryptionType::Null,
         kx  = KeyExchangeAlgorithm::Rsa,
         prf = PrfAlgorithm::Sha256,
     },
     RSA_WITH_NULL_SHA256 = 0x003b {
-        mac = MacAlgorithm::HmacSha256,
-        enc = EncAlgorithm::Null,
+        mac = MacType::HmacSha256,
+        enc = EncryptionType::Null,
         kx  = KeyExchangeAlgorithm::Rsa,
         prf = PrfAlgorithm::Sha256,
     },
     RSA_WITH_RC4_128_MD5 = 0x0004 {
-        mac = MacAlgorithm::HmacMd5,
-        enc = EncAlgorithm::Rc4128,
+        mac = MacType::HmacMd5,
+        enc = EncryptionType::Rc4128,
         kx  = KeyExchangeAlgorithm::Rsa,
         prf = PrfAlgorithm::Sha256,
     },
     RSA_WITH_RC4_128_SHA = 0x0005 {
-        mac = MacAlgorithm::HmacSha1,
-        enc = EncAlgorithm::Rc4128,
+        mac = MacType::HmacSha1,
+        enc = EncryptionType::Rc4128,
         kx  = KeyExchangeAlgorithm::Rsa,
         prf = PrfAlgorithm::Sha256,
     },
     RSA_WITH_3DES_EDE_CBC_SHA = 0x000a {
-        mac = MacAlgorithm::HmacSha1,
-        enc = EncAlgorithm::ThreeDesEdeCbc,
+        mac = MacType::HmacSha1,
+        enc = EncryptionType::ThreeDesEdeCbc,
         kx  = KeyExchangeAlgorithm::Rsa,
         prf = PrfAlgorithm::Sha256,
     },
     RSA_WITH_AES_128_CBC_SHA = 0x002f {
-        mac = MacAlgorithm::HmacSha1,
-        enc = EncAlgorithm::Aes128Cbc,
+        mac = MacType::HmacSha1,
+        enc = EncryptionType::Aes128Cbc,
         kx  = KeyExchangeAlgorithm::Rsa,
         prf = PrfAlgorithm::Sha256,
     },
     RSA_WITH_AES_256_CBC_SHA = 0x0035 {
-        mac = MacAlgorithm::HmacSha1,
-        enc = EncAlgorithm::Aes256Cbc,
+        mac = MacType::HmacSha1,
+        enc = EncryptionType::Aes256Cbc,
         kx  = KeyExchangeAlgorithm::Rsa,
         prf = PrfAlgorithm::Sha256,
     },
     RSA_WITH_AES_128_CBC_SHA256 = 0x003c {
-        mac = MacAlgorithm::HmacSha256,
-        enc = EncAlgorithm::Aes128Cbc,
+        mac = MacType::HmacSha256,
+        enc = EncryptionType::Aes128Cbc,
         kx  = KeyExchangeAlgorithm::Rsa,
         prf = PrfAlgorithm::Sha256,
     },
     RSA_WITH_AES_256_CBC_SHA256 = 0x003d {
-        mac = MacAlgorithm::HmacSha256,
-        enc = EncAlgorithm::Aes256Cbc,
+        mac = MacType::HmacSha256,
+        enc = EncryptionType::Aes256Cbc,
         kx  = KeyExchangeAlgorithm::Rsa,
         prf = PrfAlgorithm::Sha256,
     },
 
     // RFC5246 Group 2
     DH_DSS_WITH_3DES_EDE_CBC_SHA = 0x000d {
-        mac = MacAlgorithm::HmacSha1,
-        enc = EncAlgorithm::ThreeDesEdeCbc,
+        mac = MacType::HmacSha1,
+        enc = EncryptionType::ThreeDesEdeCbc,
         kx  = KeyExchangeAlgorithm::DhDss,
         prf = PrfAlgorithm::Sha256,
     },
     DH_RSA_WITH_3DES_EDE_CBC_SHA = 0x0010 {
-        mac = MacAlgorithm::HmacSha1,
-        enc = EncAlgorithm::ThreeDesEdeCbc,
+        mac = MacType::HmacSha1,
+        enc = EncryptionType::ThreeDesEdeCbc,
         kx  = KeyExchangeAlgorithm::DhRsa,
         prf = PrfAlgorithm::Sha256,
     },
     DHE_DSS_WITH_3DES_EDE_CBC_SHA = 0x0013 {
-        mac = MacAlgorithm::HmacSha1,
-        enc = EncAlgorithm::ThreeDesEdeCbc,
+        mac = MacType::HmacSha1,
+        enc = EncryptionType::ThreeDesEdeCbc,
         kx  = KeyExchangeAlgorithm::DheDss,
         prf = PrfAlgorithm::Sha256,
     },
     DHE_RSA_WITH_3DES_EDE_CBC_SHA = 0x0016 {
-        mac = MacAlgorithm::HmacSha1,
-        enc = EncAlgorithm::ThreeDesEdeCbc,
+        mac = MacType::HmacSha1,
+        enc = EncryptionType::ThreeDesEdeCbc,
         kx  = KeyExchangeAlgorithm::DheRsa,
         prf = PrfAlgorithm::Sha256,
     },
     DH_DSS_WITH_AES_128_CBC_SHA = 0x0030 {
-        mac = MacAlgorithm::HmacSha1,
-        enc = EncAlgorithm::Aes128Cbc,
+        mac = MacType::HmacSha1,
+        enc = EncryptionType::Aes128Cbc,
         kx  = KeyExchangeAlgorithm::DhDss,
         prf = PrfAlgorithm::Sha256,
     },
     DH_RSA_WITH_AES_128_CBC_SHA = 0x0031 {
-        mac = MacAlgorithm::HmacSha1,
-        enc = EncAlgorithm::Aes128Cbc,
+        mac = MacType::HmacSha1,
+        enc = EncryptionType::Aes128Cbc,
         kx  = KeyExchangeAlgorithm::DhRsa,
         prf = PrfAlgorithm::Sha256,
     },
     DHE_DSS_WITH_AES_128_CBC_SHA = 0x0032 {
-        mac = MacAlgorithm::HmacSha1,
-        enc = EncAlgorithm::Aes128Cbc,
+        mac = MacType::HmacSha1,
+        enc = EncryptionType::Aes128Cbc,
         kx  = KeyExchangeAlgorithm::DheDss,
         prf = PrfAlgorithm::Sha256,
     },
     DHE_RSA_WITH_AES_128_CBC_SHA = 0x0033 {
-        mac = MacAlgorithm::HmacSha1,
-        enc = EncAlgorithm::Aes128Cbc,
+        mac = MacType::HmacSha1,
+        enc = EncryptionType::Aes128Cbc,
         kx  = KeyExchangeAlgorithm::DheRsa,
         prf = PrfAlgorithm::Sha256,
     },
     DH_DSS_WITH_AES_256_CBC_SHA = 0x0036 {
-        mac = MacAlgorithm::HmacSha1,
-        enc = EncAlgorithm::Aes256Cbc,
+        mac = MacType::HmacSha1,
+        enc = EncryptionType::Aes256Cbc,
         kx  = KeyExchangeAlgorithm::DhDss,
         prf = PrfAlgorithm::Sha256,
     },
     DH_RSA_WITH_AES_256_CBC_SHA = 0x0037 {
-        mac = MacAlgorithm::HmacSha1,
-        enc = EncAlgorithm::Aes256Cbc,
+        mac = MacType::HmacSha1,
+        enc = EncryptionType::Aes256Cbc,
         kx  = KeyExchangeAlgorithm::DhRsa,
         prf = PrfAlgorithm::Sha256,
     },
     DHE_DSS_WITH_AES_256_CBC_SHA = 0x0038 {
-        mac = MacAlgorithm::HmacSha1,
-        enc = EncAlgorithm::Aes256Cbc,
+        mac = MacType::HmacSha1,
+        enc = EncryptionType::Aes256Cbc,
         kx  = KeyExchangeAlgorithm::DheDss,
         prf = PrfAlgorithm::Sha256,
     },
     DHE_RSA_WITH_AES_256_CBC_SHA = 0x0039 {
-        mac = MacAlgorithm::HmacSha1,
-        enc = EncAlgorithm::Aes256Cbc,
+        mac = MacType::HmacSha1,
+        enc = EncryptionType::Aes256Cbc,
         kx  = KeyExchangeAlgorithm::DheRsa,
         prf = PrfAlgorithm::Sha256,
     },
     DH_DSS_WITH_AES_128_CBC_SHA256 = 0x003e {
-        mac = MacAlgorithm::HmacSha256,
-        enc = EncAlgorithm::Aes128Cbc,
+        mac = MacType::HmacSha256,
+        enc = EncryptionType::Aes128Cbc,
         kx  = KeyExchangeAlgorithm::DhDss,
         prf = PrfAlgorithm::Sha256,
     },
     DH_RSA_WITH_AES_128_CBC_SHA256 = 0x003f {
-        mac = MacAlgorithm::HmacSha256,
-        enc = EncAlgorithm::Aes128Cbc,
+        mac = MacType::HmacSha256,
+        enc = EncryptionType::Aes128Cbc,
         kx  = KeyExchangeAlgorithm::DhRsa,
         prf = PrfAlgorithm::Sha256,
     },
     DHE_DSS_WITH_AES_128_CBC_SHA256 = 0x0040 {
-        mac = MacAlgorithm::HmacSha256,
-        enc = EncAlgorithm::Aes128Cbc,
+        mac = MacType::HmacSha256,
+        enc = EncryptionType::Aes128Cbc,
         kx  = KeyExchangeAlgorithm::DheDss,
         prf = PrfAlgorithm::Sha256,
     },
     DHE_RSA_WITH_AES_128_CBC_SHA256 = 0x0067 {
-        mac = MacAlgorithm::HmacSha256,
-        enc = EncAlgorithm::Aes128Cbc,
+        mac = MacType::HmacSha256,
+        enc = EncryptionType::Aes128Cbc,
         kx  = KeyExchangeAlgorithm::DheRsa,
         prf = PrfAlgorithm::Sha256,
     },
     DH_DSS_WITH_AES_256_CBC_SHA256 = 0x0068 {
-        mac = MacAlgorithm::HmacSha256,
-        enc = EncAlgorithm::Aes256Cbc,
+        mac = MacType::HmacSha256,
+        enc = EncryptionType::Aes256Cbc,
         kx  = KeyExchangeAlgorithm::DhDss,
         prf = PrfAlgorithm::Sha256,
     },
     DH_RSA_WITH_AES_256_CBC_SHA256 = 0x0069 {
-        mac = MacAlgorithm::HmacSha256,
-        enc = EncAlgorithm::Aes256Cbc,
+        mac = MacType::HmacSha256,
+        enc = EncryptionType::Aes256Cbc,
         kx  = KeyExchangeAlgorithm::DhRsa,
         prf = PrfAlgorithm::Sha256,
     },
     DHE_DSS_WITH_AES_256_CBC_SHA256 = 0x006a {
-        mac = MacAlgorithm::HmacSha256,
-        enc = EncAlgorithm::Aes256Cbc,
+        mac = MacType::HmacSha256,
+        enc = EncryptionType::Aes256Cbc,
         kx  = KeyExchangeAlgorithm::DheDss,
         prf = PrfAlgorithm::Sha256,
     },
     DHE_RSA_WITH_AES_256_CBC_SHA256 = 0x006b {
-        mac = MacAlgorithm::HmacSha256,
-        enc = EncAlgorithm::Aes256Cbc,
+        mac = MacType::HmacSha256,
+        enc = EncryptionType::Aes256Cbc,
         kx  = KeyExchangeAlgorithm::DheRsa,
         prf = PrfAlgorithm::Sha256,
     },
 
     // RFC5246 Group 3
     DH_anon_WITH_RC4_128_MD5 = 0x0018 {
-        mac = MacAlgorithm::HmacMd5,
-        enc = EncAlgorithm::Rc4128,
+        mac = MacType::HmacMd5,
+        enc = EncryptionType::Rc4128,
         kx  = KeyExchangeAlgorithm::DhAnon,
         prf = PrfAlgorithm::Sha256,
     },
     DH_anon_WITH_3DES_EDE_CBC_SHA = 0x001b {
-        mac = MacAlgorithm::HmacSha1,
-        enc = EncAlgorithm::ThreeDesEdeCbc,
+        mac = MacType::HmacSha1,
+        enc = EncryptionType::ThreeDesEdeCbc,
         kx  = KeyExchangeAlgorithm::DhAnon,
         prf = PrfAlgorithm::Sha256,
     },
     DH_anon_WITH_AES_128_CBC_SHA = 0x0034 {
-        mac = MacAlgorithm::HmacSha1,
-        enc = EncAlgorithm::Aes128Cbc,
+        mac = MacType::HmacSha1,
+        enc = EncryptionType::Aes128Cbc,
         kx  = KeyExchangeAlgorithm::DhAnon,
         prf = PrfAlgorithm::Sha256,
     },
     DH_anon_WITH_AES_256_CBC_SHA = 0x003a {
-        mac = MacAlgorithm::HmacSha1,
-        enc = EncAlgorithm::Aes256Cbc,
+        mac = MacType::HmacSha1,
+        enc = EncryptionType::Aes256Cbc,
         kx  = KeyExchangeAlgorithm::DhAnon,
         prf = PrfAlgorithm::Sha256,
     },
     DH_anon_WITH_AES_128_CBC_SHA256 = 0x006c {
-        mac = MacAlgorithm::HmacSha256,
-        enc = EncAlgorithm::Aes128Cbc,
+        mac = MacType::HmacSha256,
+        enc = EncryptionType::Aes128Cbc,
         kx  = KeyExchangeAlgorithm::DhAnon,
         prf = PrfAlgorithm::Sha256,
     },
     DH_anon_WITH_AES_256_CBC_SHA256 = 0x006d {
-        mac = MacAlgorithm::HmacSha256,
-        enc = EncAlgorithm::Aes256Cbc,
+        mac = MacType::HmacSha256,
+        enc = EncryptionType::Aes256Cbc,
         kx  = KeyExchangeAlgorithm::DhAnon,
         prf = PrfAlgorithm::Sha256,
     },
 
     // RFC5288 Galois Counter Mode
     RSA_WITH_AES_128_GCM_SHA256 = 0x009c {
-        mac = MacAlgorithm::Null,
-        enc = EncAlgorithm::Aes128Gcm,
+        mac = MacType::Null,
+        enc = EncryptionType::Aes128Gcm,
         kx  = KeyExchangeAlgorithm::Rsa,
         prf = PrfAlgorithm::Sha256,
     },
     RSA_WITH_AES_256_GCM_SHA384 = 0x009d {
-        mac = MacAlgorithm::Null,
-        enc = EncAlgorithm::Aes256Gcm,
+        mac = MacType::Null,
+        enc = EncryptionType::Aes256Gcm,
         kx  = KeyExchangeAlgorithm::Rsa,
         prf = PrfAlgorithm::Sha384,
     },
     DHE_RSA_WITH_AES_128_GCM_SHA256 = 0x009e {
-        mac = MacAlgorithm::Null,
-        enc = EncAlgorithm::Aes128Gcm,
+        mac = MacType::Null,
+        enc = EncryptionType::Aes128Gcm,
         kx  = KeyExchangeAlgorithm::DheRsa,
         prf = PrfAlgorithm::Sha256,
     },
     DHE_RSA_WITH_AES_256_GCM_SHA384 = 0x009f {
-        mac = MacAlgorithm::Null,
-        enc = EncAlgorithm::Aes256Gcm,
+        mac = MacType::Null,
+        enc = EncryptionType::Aes256Gcm,
         kx  = KeyExchangeAlgorithm::DheRsa,
         prf = PrfAlgorithm::Sha384,
     },
     DH_RSA_WITH_AES_128_GCM_SHA256 = 0x00a0 {
-        mac = MacAlgorithm::Null,
-        enc = EncAlgorithm::Aes128Gcm,
+        mac = MacType::Null,
+        enc = EncryptionType::Aes128Gcm,
         kx  = KeyExchangeAlgorithm::DhRsa,
         prf = PrfAlgorithm::Sha256,
     },
     DH_RSA_WITH_AES_256_GCM_SHA384 = 0x00a1 {
-        mac = MacAlgorithm::Null,
-        enc = EncAlgorithm::Aes256Gcm,
+        mac = MacType::Null,
+        enc = EncryptionType::Aes256Gcm,
         kx  = KeyExchangeAlgorithm::DhRsa,
         prf = PrfAlgorithm::Sha384,
     },
     DHE_DSS_WITH_AES_128_GCM_SHA256 = 0x00a2 {
-        mac = MacAlgorithm::Null,
-        enc = EncAlgorithm::Aes128Gcm,
+        mac = MacType::Null,
+        enc = EncryptionType::Aes128Gcm,
         kx  = KeyExchangeAlgorithm::DheDss,
         prf = PrfAlgorithm::Sha256,
     },
     DHE_DSS_WITH_AES_256_GCM_SHA384 = 0x00a3 {
-        mac = MacAlgorithm::Null,
-        enc = EncAlgorithm::Aes256Gcm,
+        mac = MacType::Null,
+        enc = EncryptionType::Aes256Gcm,
         kx  = KeyExchangeAlgorithm::DheDss,
         prf = PrfAlgorithm::Sha384,
     },
     DH_DSS_WITH_AES_128_GCM_SHA256 = 0x00a5 {
-        mac = MacAlgorithm::Null,
-        enc = EncAlgorithm::Aes128Gcm,
+        mac = MacType::Null,
+        enc = EncryptionType::Aes128Gcm,
         kx  = KeyExchangeAlgorithm::DhDss,
         prf = PrfAlgorithm::Sha256,
     },
     DH_DSS_WITH_AES_256_GCM_SHA384 = 0x00a4 {
-        mac = MacAlgorithm::Null,
-        enc = EncAlgorithm::Aes256Gcm,
+        mac = MacType::Null,
+        enc = EncryptionType::Aes256Gcm,
         kx  = KeyExchangeAlgorithm::DhDss,
         prf = PrfAlgorithm::Sha384,
     },
     DH_anon_WITH_AES_128_GCM_SHA256 = 0x00a6 {
-        mac = MacAlgorithm::Null,
-        enc = EncAlgorithm::Aes128Gcm,
+        mac = MacType::Null,
+        enc = EncryptionType::Aes128Gcm,
         kx  = KeyExchangeAlgorithm::DhAnon,
         prf = PrfAlgorithm::Sha256,
     },
     DH_anon_WITH_AES_256_GCM_SHA384 = 0x00a7 {
-        mac = MacAlgorithm::Null,
-        enc = EncAlgorithm::Aes256Gcm,
+        mac = MacType::Null,
+        enc = EncryptionType::Aes256Gcm,
         kx  = KeyExchangeAlgorithm::DhAnon,
         prf = PrfAlgorithm::Sha384,
     },
