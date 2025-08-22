@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     io::{Read, Write},
     rc::Rc,
 };
@@ -10,6 +11,8 @@ use crate::{
     ciphersuite::CipherSuiteId,
     connection::TlsConnection,
     extensions::{HashAlgo, MaxFragmentLength, SigAlgo, SignatureAlgorithm},
+    messages::ClientCertificateType,
+    oid::{get_public_key_algorithm, get_signature_algorithm},
     state_machine::TlsEntity,
     storage::{SessionStorage, SledSessionStore},
     utils,
@@ -26,6 +29,7 @@ pub struct CertificateAndPrivateKey {
     pub certificate_der: Vec<u8>,
     pub private_key_der: Vec<u8>,
     pub public_key_algorithm: PublicKeyAlgorithm,
+    pub signature_algorithm: SignatureAlgorithm,
     pub distinguished_name_der: Vec<u8>,
 }
 
@@ -65,13 +69,29 @@ impl Certificates {
         self.rsa.as_ref().or(self.dsa.as_ref()).or(self.dh.as_ref())
     }
 
-    pub fn certificates(&self) -> Vec<&CertificateAndPrivateKey> {
+    pub fn certificates_with_type(
+        &self,
+        certificate_types: &[ClientCertificateType],
+    ) -> Vec<&CertificateAndPrivateKey> {
+        let types: HashSet<_> = certificate_types.iter().collect();
         let mut certs = vec![];
-        if let Some(v) = self.rsa.as_ref() {
-            certs.push(v)
+
+        if types.contains(&ClientCertificateType::RsaSign) {
+            if let Some(v) = self.rsa.as_ref() {
+                certs.push(v)
+            }
         }
-        if let Some(v) = self.dsa.as_ref() {
-            certs.push(v)
+        if types.contains(&ClientCertificateType::DssSign) {
+            if let Some(v) = self.dsa.as_ref() {
+                certs.push(v)
+            }
+        }
+        if types.contains(&ClientCertificateType::DssFixedDh)
+            || types.contains(&ClientCertificateType::RsaFixedDh)
+        {
+            if let Some(v) = self.dh.as_ref() {
+                certs.push(v)
+            }
         }
         certs
     }
@@ -84,6 +104,7 @@ impl Certificates {
 
         let distinguished_name_der = certificate.issuer().as_raw().to_vec();
         let public_key_algorithm = get_public_key_algorithm(&certificate);
+        let signature_algorithm = get_signature_algorithm(&certificate);
 
         let private_key_der =
             utils::read_pem(private_key_path).expect("Failed to read private key");
@@ -92,6 +113,7 @@ impl Certificates {
             certificate_der,
             private_key_der,
             public_key_algorithm,
+            signature_algorithm,
             distinguished_name_der,
         }
     }
@@ -150,7 +172,7 @@ impl TlsConfigBuilder {
                 pcs!(1, RsaWithAes256CbcSha),
                 pcs!(1, RsaWithAes256CbcSha256),
             ])),
-            signature_algorithms: Box::new([
+            supported_signature_algorithms: Box::new([
                 // SignatureAndHashAlgorithm {
                 //     signature: SigAlgo::Ecdsa,
                 //     hash: HashAlgo::Sha1,
@@ -226,19 +248,10 @@ pub enum PublicKeyAlgorithm {
     DsaEncryption,
 }
 
-pub fn get_public_key_algorithm(cert: &X509Certificate) -> PublicKeyAlgorithm {
-    match cert.subject_pki.algorithm.oid().to_id_string().as_str() {
-        "1.2.840.113549.1.1.1" => PublicKeyAlgorithm::RsaEncryption,
-        "1.2.840.10040.4.1" => PublicKeyAlgorithm::DsaEncryption,
-        "1.2.840.113549.1.3.1" => PublicKeyAlgorithm::DhKeyAgreement,
-        x => unimplemented!("{x}"),
-    }
-}
-
 #[derive(Debug)]
 pub struct TlsConfig {
     pub cipher_suites: Box<[PrioritisedCipherSuite]>,
-    pub signature_algorithms: Box<[SignatureAlgorithm]>,
+    pub supported_signature_algorithms: Box<[SignatureAlgorithm]>,
     pub session_store: Option<Box<dyn SessionStorage>>,
     pub certificates: Certificates,
     pub server_name: Option<String>,

@@ -10,8 +10,8 @@ use crate::encoding::{
 };
 use crate::errors::{DecodingError, InvalidEncodingError};
 use crate::extensions::{
-    ExtendedMasterSecretExt, Extension, Extensions, HashAlgo, MaxFragmentLenExt,
-    RenegotiationInfoExt, ServerNameExt, SessionTicketExt, SigAlgo, SignatureAlgorithm, sign,
+    ExtendedMasterSecretExt, Extension, Extensions, MaxFragmentLenExt, RenegotiationInfoExt,
+    ServerNameExt, SessionTicketExt, SignatureAlgorithm, sign,
 };
 use crate::session_ticket::{ClientIdentity, StatePlaintext};
 use crate::storage::StekInfo;
@@ -422,58 +422,61 @@ impl TlsCodable for Certificate {
 //     pub signature: Vec<u8>,
 // }
 
-type DHParam = LengthPrefixedVec<u16, u8, NonEmpty>;
+type DhParam = LengthPrefixedVec<u16, u8, NonEmpty>;
 type Signature = LengthPrefixedVec<u16, u8, MaybeEmpty>;
 
 #[derive(Debug, Clone)]
 pub struct ServerDHParams {
-    pub p: DHParam,
-    pub g: DHParam,
-    pub server_public_key: DHParam,
+    pub p: BigUint,
+    pub g: BigUint,
+    pub server_public_key: BigUint,
 }
 
 impl ServerDHParams {
     pub fn new(p: BigUint, g: BigUint, server_public_key: BigUint) -> Self {
         Self {
-            p: p.to_bytes_be().try_into().unwrap(),
-            g: g.to_bytes_be().try_into().unwrap(),
-            server_public_key: server_public_key.to_bytes_be().try_into().unwrap(),
+            p,
+            g,
+            server_public_key,
         }
     }
 }
 
 impl TlsCodable for ServerDHParams {
     fn write_to(&self, bytes: &mut Vec<u8>) {
-        self.p.write_to(bytes);
-        self.g.write_to(bytes);
-        self.server_public_key.write_to(bytes);
+        DhParam::try_from(self.p.to_bytes_be())
+            .unwrap()
+            .write_to(bytes);
+        DhParam::try_from(self.g.to_bytes_be())
+            .unwrap()
+            .write_to(bytes);
+        DhParam::try_from(self.server_public_key.to_bytes_be())
+            .unwrap()
+            .write_to(bytes);
     }
     fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
         Ok(Self {
-            p: DHParam::read_from(reader)?,
-            g: DHParam::read_from(reader)?,
-            server_public_key: DHParam::read_from(reader)?,
+            p: BigUint::from_bytes_be(&DhParam::read_from(reader)?),
+            g: BigUint::from_bytes_be(&DhParam::read_from(reader)?),
+            server_public_key: BigUint::from_bytes_be(&DhParam::read_from(reader)?),
         })
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct DigitallySigned {
-    pub hash_algorithm: HashAlgo,
-    pub signature_algorithm: SigAlgo,
+    pub signature_algorithm: SignatureAlgorithm,
     pub signature: Signature,
 }
 
 impl TlsCodable for DigitallySigned {
     fn write_to(&self, bytes: &mut Vec<u8>) {
-        self.hash_algorithm.write_to(bytes);
         self.signature_algorithm.write_to(bytes);
         self.signature.write_to(bytes);
     }
     fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
         Ok(Self {
-            hash_algorithm: HashAlgo::read_from(reader)?,
-            signature_algorithm: SigAlgo::read_from(reader)?,
+            signature_algorithm: SignatureAlgorithm::read_from(reader)?,
             signature: Signature::read_from(reader)?,
         })
     }
@@ -501,16 +504,14 @@ impl ServerKeyExchange {
         params: ServerDHParams,
         client_random: [u8; 32],
         server_random: [u8; 32],
-        hash_algorithm: HashAlgo,
-        signature_algorithm: SigAlgo,
+        signature_algorithm: SignatureAlgorithm,
         private_key_der: &[u8],
     ) -> Self {
         let data = [&client_random[..], &server_random, &params.get_encoding()].concat();
-        let signature = sign(signature_algorithm, hash_algorithm, private_key_der, &data).unwrap();
+        let signature = sign(signature_algorithm, private_key_der, &data).unwrap();
         Self::Resolved(ServerKeyExchangeInner::Dhe(DheServerKeyExchange {
             params,
             signed_params: DigitallySigned {
-                hash_algorithm,
                 signature_algorithm,
                 signature: signature.try_into().unwrap(),
             },
@@ -600,11 +601,14 @@ pub struct CertificateRequest {
 }
 
 impl CertificateRequest {
-    pub fn new(signature_algorithms: &[SignatureAlgorithm]) -> Self {
+    pub fn new(
+        signature_algorithms: &[SignatureAlgorithm],
+        certificate_types: &[ClientCertificateType],
+    ) -> Self {
         Self {
-            certificate_types: vec![ClientCertificateType::RsaSign].try_into().unwrap(),
+            certificate_types: certificate_types.to_vec().try_into().unwrap(),
             supported_signature_algorithms: signature_algorithms.to_vec().try_into().unwrap(),
-            certificate_authorities: vec![].try_into().unwrap(),
+            certificate_authorities: vec![].try_into().unwrap(), // TODO: config
         }
     }
 }

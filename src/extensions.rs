@@ -396,13 +396,12 @@ tls_codable_enum! {
 }
 
 pub fn verify(
-    signature_algorithm: SigAlgo,
-    hash_algorithm: HashAlgo,
+    signature_algorithm: SignatureAlgorithm,
     key_der: &[u8],
     message: &[u8],
     signature: &[u8],
 ) -> Result<bool, String> {
-    match (signature_algorithm, hash_algorithm) {
+    match (signature_algorithm.signature, signature_algorithm.hash) {
         (SigAlgo::Dsa, HashAlgo::Sha1) => dsa_verify::<Sha1>(key_der, message, signature),
         (SigAlgo::Dsa, HashAlgo::Sha224) => dsa_verify::<Sha224>(key_der, message, signature),
         (SigAlgo::Dsa, HashAlgo::Sha256) => dsa_verify::<Sha256>(key_der, message, signature),
@@ -414,18 +413,17 @@ pub fn verify(
         (SigAlgo::Rsa, HashAlgo::Sha384) => rsa_verify::<Sha384>(key_der, message, signature),
         (SigAlgo::Rsa, HashAlgo::Sha512) => rsa_verify::<Sha512>(key_der, message, signature),
         _ => Err(format!(
-            "No verification available for {signature_algorithm:?} {hash_algorithm:?}"
+            "No verification available for {signature_algorithm:?}"
         )),
     }
 }
 
 pub fn sign(
-    signature_algorithm: SigAlgo,
-    hash_algorithm: HashAlgo,
+    signature_algorithm: SignatureAlgorithm,
     key_der: &[u8],
     data: &[u8],
 ) -> Result<Vec<u8>, String> {
-    match (signature_algorithm, hash_algorithm) {
+    match (signature_algorithm.signature, signature_algorithm.hash) {
         (SigAlgo::Dsa, HashAlgo::Sha1) => dsa_sign::<Sha1>(key_der, data),
         (SigAlgo::Dsa, HashAlgo::Sha224) => dsa_sign::<Sha224>(key_der, data),
         (SigAlgo::Dsa, HashAlgo::Sha256) => dsa_sign::<Sha256>(key_der, data),
@@ -436,9 +434,7 @@ pub fn sign(
         (SigAlgo::Rsa, HashAlgo::Sha256) => rsa_sign::<Sha256>(key_der, data),
         (SigAlgo::Rsa, HashAlgo::Sha384) => rsa_sign::<Sha384>(key_der, data),
         (SigAlgo::Rsa, HashAlgo::Sha512) => rsa_sign::<Sha512>(key_der, data),
-        _ => Err(format!(
-            "No signing available for {signature_algorithm:?} {hash_algorithm:?}"
-        )),
+        _ => Err(format!("No signing available for {signature_algorithm:?}")),
     }
 }
 
@@ -454,7 +450,7 @@ tls_codable_enum! {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 pub struct SignatureAlgorithm {
     pub hash: HashAlgo,
     pub signature: SigAlgo,
@@ -464,6 +460,12 @@ impl SignatureAlgorithm {
     pub fn rsa_with(hash: HashAlgo) -> Self {
         Self {
             signature: SigAlgo::Rsa,
+            hash,
+        }
+    }
+    pub fn dsa_with(hash: HashAlgo) -> Self {
+        Self {
+            signature: SigAlgo::Dsa,
             hash,
         }
     }
@@ -600,7 +602,6 @@ type ServerNameList = LengthPrefixedVec<u16, ServerName, NonEmpty>;
 
 #[derive(Debug, Clone)]
 pub struct ServerNameExt {
-
     // Some servers respond with an empty SNI extension
     list: Option<ServerNameList>,
 }

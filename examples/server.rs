@@ -33,7 +33,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_certificates(
             Certificates::new()
                 .with_rsa("testing/rsacert.pem", "testing/rsakey.pem")
-                // .with_dsa("testing/dsacert.pem", "testing/dsakey.pem")
+                .with_dsa("testing/dsacert.pem", "testing/dsakey.pem")
                 .with_dh("dh/dhcert.pem", "dh/dhkey.pem"),
         )
         .with_policy(TlsPolicy {

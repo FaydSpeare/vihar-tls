@@ -298,7 +298,6 @@ impl EncryptionType {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum KeyExchangeType {
-    Null,
     Rsa,
     Dhe,
     Dh,
@@ -307,7 +306,6 @@ pub enum KeyExchangeType {
 
 #[derive(Debug, Clone)]
 pub enum KeyExchangeAlgorithm {
-    Null,
     Rsa,
     DheRsa,
     DheDss,
@@ -322,13 +320,12 @@ impl KeyExchangeAlgorithm {
         match self {
             Self::Rsa | Self::DheRsa | Self::DhRsa => SigAlgo::Rsa,
             Self::DheDss => SigAlgo::Dsa,
-            Self::DhAnon => SigAlgo::Rsa, // TODO REMOVE THIS TMP FIX
+            Self::DhAnon => panic!(),
             _ => unimplemented!(),
         }
     }
     pub fn kx_type(&self) -> KeyExchangeType {
         match self {
-            Self::Null => KeyExchangeType::Null,
             Self::Rsa => KeyExchangeType::Rsa,
             Self::DheDss | Self::DheRsa => KeyExchangeType::Dhe,
             Self::DhDss | Self::DhRsa | Self::DhAnon => KeyExchangeType::Dh,
@@ -337,7 +334,7 @@ impl KeyExchangeAlgorithm {
     }
     pub fn sends_server_certificate(&self) -> bool {
         match self {
-            Self::Null | Self::DhAnon => false,
+            Self::DhAnon => false,
             _ => true,
         }
     }
@@ -438,13 +435,14 @@ macro_rules! define_cipher_suites {
 
 define_cipher_suites! {
 
+    // NULL_WITH_NULL_NULL = 0x0000 {
+    //     mac = MacType::Null,
+    //     enc = EncryptionType::Null,
+    //     kx  = KeyExchangeAlgorithm::Null,
+    //     prf = PrfAlgorithm::Sha256,
+    // },
+
     // RFC5246 Group 1
-    NULL_WITH_NULL_NULL = 0x0000 {
-        mac = MacType::Null,
-        enc = EncryptionType::Null,
-        kx  = KeyExchangeAlgorithm::Null,
-        prf = PrfAlgorithm::Sha256,
-    },
     RSA_WITH_NULL_MD5 = 0x0001 {
         mac = MacType::HmacMd5,
         enc = EncryptionType::Null,

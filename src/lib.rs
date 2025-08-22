@@ -4,19 +4,19 @@ use alert::{TlsAlert, TlsAlertLevel};
 pub mod macros;
 
 mod alert;
+mod ca;
 mod encoding;
 mod errors;
 mod extensions;
 mod gcm;
 mod messages;
+mod oid;
 mod prf;
 mod record;
 mod session_ticket;
 mod signature;
 mod state_machine;
 mod utils;
-mod ca;
-mod oid;
 
 pub mod ciphersuite;
 pub mod client;
@@ -25,6 +25,7 @@ pub mod server;
 pub mod storage;
 
 pub use extensions::MaxFragmentLength;
+use messages::ClientCertificateType;
 
 pub type TlsResult<T> = Result<T, Box<dyn std::error::Error>>;
 
@@ -52,15 +53,17 @@ pub enum ClientAuthPolicy {
     /// Server will not send a CertificateRequest during handshake.
     NoAuth,
 
-    /// Server will send a CertificateRequest during handshake, but will accept
-    /// a empty ClientCertificate (and absence of CertificateVerify) message.
-    OptionalAuth,
-
+    // Server will send a CertificateRequest during handshake, but will accept
+    // a empty ClientCertificate (and absence of CertificateVerify) message.
+    // 
     // Server will send a CertificateRequest during handshake, and expects a valid
     // verifiable certificate from the client. In the case of an empty client
     // certificate or failed certificate verification, the server will send a fatal
     // handshake_failure alert.
-    MandatoryAuth,
+    Auth {
+        certificate_types: Vec<ClientCertificateType>,
+        mandatory: bool,
+    },
 }
 
 #[derive(Debug, Clone)]

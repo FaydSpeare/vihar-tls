@@ -128,6 +128,25 @@ fn start_abbr_handshake(client_hello: ClientHello, session: SessionInfo) -> Hand
     ))
 }
 
+fn choose_signature_algorithm(
+    cipher_suite: &CipherSuite,
+    client_signature_algorithms: Option<&[SignatureAlgorithm]>,
+    supported_signature_algoritms: &[SignatureAlgorithm],
+) -> SignatureAlgorithm {
+    let default = SignatureAlgorithm {
+        hash: HashAlgo::Sha1,
+        signature: cipher_suite.kx_algorithm().signature_type(),
+    };
+    match client_signature_algorithms {
+        None => default,
+        Some(algorithms) => supported_signature_algoritms
+            .iter()
+            .flat_map(|sa1| algorithms.iter().filter(move |sa2| sa1 == *sa2).cloned())
+            .choose(&mut rand::thread_rng())
+            .unwrap_or(default),
+    }
+}
+
 fn start_full_handshake(
     ctx: &TlsContext,
     previous_verify_data: Option<PreviousVerifyData>,
@@ -151,27 +170,6 @@ fn start_full_handshake(
 
     let cipher_suite = CipherSuite::from(selected_cipher_suite);
     debug!("Selected CipherSuite {}", cipher_suite.name());
-
-    let backup = SignatureAlgorithm {
-        hash: HashAlgo::Sha1,
-        signature: cipher_suite.kx_algorithm().signature_type(),
-    };
-    let signature_algorithm = match client_hello.extensions.get_signature_algorithms() {
-        None => backup,
-        Some(algorithms) => ctx
-            .config
-            .signature_algorithms
-            .iter()
-            .flat_map(|algo| {
-                algorithms
-                    .iter()
-                    .filter(move |hs| hs.hash == algo.hash && hs.signature == algo.signature)
-                    .cloned()
-            })
-            .choose(&mut rand::thread_rng())
-            .unwrap_or(backup),
-    };
-    debug!("Selected SignatureAlgorithm: {:?}", signature_algorithm);
 
     let max_fragment_length = client_hello.extensions.get_max_fragment_len().filter(|_| {
         ctx.config.policy.max_fragment_length_negotiation
@@ -262,13 +260,21 @@ fn start_full_handshake(
                 private_key,
             });
 
+            let signature_algorithm = choose_signature_algorithm(
+                &cipher_suite,
+                client_hello
+                    .extensions
+                    .get_signature_algorithms()
+                    .as_deref(),
+                &ctx.config.supported_signature_algorithms,
+            );
+
             let dh_params = ServerDHParams::new(p, g, public_key);
             let server_kx = ServerKeyExchange::new_dhe(
                 dh_params,
                 client_hello.random.as_bytes(),
                 server_random,
-                signature_algorithm.hash,
-                signature_algorithm.signature,
+                signature_algorithm,
                 &private_key_der,
             );
 
@@ -281,9 +287,14 @@ fn start_full_handshake(
         _ => {}
     }
 
-    let request_certificate = ctx.config.policy.client_auth != ClientAuthPolicy::NoAuth;
-    if request_certificate {
-        let certificate_request = CertificateRequest::new(&ctx.config.signature_algorithms);
+    if let ClientAuthPolicy::Auth {
+        certificate_types, ..
+    } = &ctx.config.policy.client_auth
+    {
+        let certificate_request = CertificateRequest::new(
+            &ctx.config.supported_signature_algorithms,
+            certificate_types,
+        );
         let certificate_request = TlsHandshake::CertificateRequest(certificate_request);
         certificate_request.write_to(&mut handshakes);
         actions.push(TlsAction::SendHandshakeMsg(certificate_request));
@@ -297,7 +308,7 @@ fn start_full_handshake(
 
     info!("Sent ServerHelloDone");
 
-    if request_certificate {
+    if let ClientAuthPolicy::Auth { .. } = &ctx.config.policy.client_auth {
         return Ok((
             AwaitClientCertificate {
                 session_id,
@@ -548,8 +559,13 @@ impl HandleRecord<TlsState> for AwaitClientCertificate {
 
         info!("Received ClientCertificate");
 
-        if ctx.config.policy.client_auth == ClientAuthPolicy::MandatoryAuth
-            && certificate.list.is_empty()
+        if matches!(
+            ctx.config.policy.client_auth,
+            ClientAuthPolicy::Auth {
+                mandatory: true,
+                ..
+            }
+        ) && certificate.list.is_empty()
         {
             return close_connection(TlsAlertDesc::HandshakeFailure);
         }
@@ -703,7 +719,6 @@ impl HandleRecord<TlsState> for AwaitCertificateVerify {
 
         let verified = match verify(
             certificate_verify.signed.signature_algorithm,
-            certificate_verify.signed.hash_algorithm,
             &self.client_public_key,
             &self.handshakes,
             &certificate_verify.signed.signature,

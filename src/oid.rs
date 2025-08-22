@@ -1,4 +1,7 @@
-use crate::extensions::{HashAlgo, SignatureAlgorithm};
+use crate::{
+    client::PublicKeyAlgorithm,
+    extensions::{HashAlgo, SignatureAlgorithm},
+};
 use asn1_rs::Sequence;
 use num_bigint::BigUint;
 use pkcs8::{
@@ -6,12 +9,21 @@ use pkcs8::{
     der::{Decode, Encode},
 };
 use x509_parser::{
-    asn1_rs::{FromDer, Integer, Oid},
+    asn1_rs::{FromDer, Integer},
     prelude::X509Certificate,
 };
 
-pub fn signature_algorithm_from_oid(oid: &Oid) -> SignatureAlgorithm {
-    match oid.to_id_string().as_str() {
+pub fn get_public_key_algorithm(cert: &X509Certificate) -> PublicKeyAlgorithm {
+    match cert.subject_pki.algorithm.oid().to_id_string().as_str() {
+        "1.2.840.113549.1.1.1" => PublicKeyAlgorithm::RsaEncryption,
+        "1.2.840.10040.4.1" => PublicKeyAlgorithm::DsaEncryption,
+        "1.2.840.113549.1.3.1" => PublicKeyAlgorithm::DhKeyAgreement,
+        x => unimplemented!("{x}"),
+    }
+}
+
+pub fn get_signature_algorithm(cert: &X509Certificate) -> SignatureAlgorithm {
+    match cert.signature_algorithm.oid().to_id_string().as_str() {
         // RSA
         "1.2.840.113549.1.1.5" => SignatureAlgorithm::rsa_with(HashAlgo::Sha1),
         "1.2.840.113549.1.1.11" => SignatureAlgorithm::rsa_with(HashAlgo::Sha256),
@@ -25,9 +37,9 @@ pub fn signature_algorithm_from_oid(oid: &Oid) -> SignatureAlgorithm {
         // ("1.2.840.10045.4.3.3", "ecdsa-with-SHA384"),
         // ("1.2.840.10045.4.3.4", "ecdsa-with-SHA512"),
         // DSA
-        // ("1.2.840.10040.4.3", "dsa-with-sha1"),
-        // ("2.16.840.1.101.3.4.3.1", "dsa-with-sha224"),
-        // ("2.16.840.1.101.3.4.3.2", "dsa-with-sha256"),
+        "1.2.840.10040.4.3" => SignatureAlgorithm::dsa_with(HashAlgo::Sha1),
+        "2.16.840.1.101.3.4.3.1" => SignatureAlgorithm::dsa_with(HashAlgo::Sha224),
+        "2.16.840.1.101.3.4.3.2" => SignatureAlgorithm::dsa_with(HashAlgo::Sha256),
         x => unimplemented!("{x}"),
     }
 }

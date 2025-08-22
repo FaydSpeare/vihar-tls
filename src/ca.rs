@@ -1,9 +1,8 @@
-use crate::{extensions::verify, oid::signature_algorithm_from_oid};
+use crate::{extensions::verify, oid::get_signature_algorithm};
 use log::{error, trace};
 use security_framework::trust_settings::{Domain, TrustSettings};
 use thiserror::Error;
 use x509_parser::prelude::{FromDer, GeneralName, X509Certificate};
-
 
 #[cfg(target_os = "macos")]
 pub fn load_native_certs() -> Vec<Vec<u8>> {
@@ -64,12 +63,11 @@ pub fn verify_certificate_signature(
     cert: &X509Certificate,
     issuing_cert: &X509Certificate,
 ) -> Result<(), CertificateError> {
-    let signature_algorithm = signature_algorithm_from_oid(cert.signature_algorithm.oid());
+    let signature_algorithm = get_signature_algorithm(&cert);
     trace!("Used Signature Algorithm: {:?}", signature_algorithm);
 
     let verified = verify(
-        signature_algorithm.signature,
-        signature_algorithm.hash,
+        signature_algorithm,
         issuing_cert.subject_pki.raw,
         cert.tbs_certificate.as_ref(),
         cert.signature_value.as_ref(),
@@ -112,14 +110,11 @@ pub fn validate_certificate_chain(
     chain: Vec<Vec<u8>>,
     server_name: String,
 ) -> Result<(), CertificateError> {
-
     if chain.is_empty() {
         return Err(CertificateError::EmptyCertificateChain);
     }
 
-    let first_cert = X509Certificate::from_der(chain.first().unwrap())
-        .unwrap()
-        .1;
+    let first_cert = X509Certificate::from_der(chain.first().unwrap()).unwrap().1;
     if !first_cert.validity().is_valid() {
         return Err(CertificateError::BadCertificateValidity);
     }
