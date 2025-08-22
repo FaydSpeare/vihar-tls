@@ -1,5 +1,6 @@
 use crate::{
     client::PublicKeyAlgorithm,
+    errors::AnError,
     extensions::{HashAlgo, SignatureAlgorithm},
 };
 use asn1_rs::Sequence;
@@ -8,10 +9,31 @@ use pkcs8::{
     PrivateKeyInfo,
     der::{Decode, Encode},
 };
+use x509_cert::Certificate;
 use x509_parser::{
     asn1_rs::{FromDer, Integer},
     prelude::X509Certificate,
 };
+
+#[derive(Debug)]
+pub struct ServerCertificate(Certificate);
+
+impl<'a> ServerCertificate {
+    pub fn from_der(bytes: &[u8]) -> Result<Self, AnError> {
+        Ok(Self(
+            Certificate::from_der(bytes).map_err(|_| AnError::FailedToParseCertificate)?,
+        ))
+    }
+
+    pub fn public_key_der(&self) -> Vec<u8> {
+        return self
+            .0
+            .tbs_certificate
+            .subject_public_key_info
+            .to_der()
+            .unwrap();
+    }
+}
 
 pub fn get_public_key_algorithm(cert: &X509Certificate) -> PublicKeyAlgorithm {
     match cert.subject_pki.algorithm.oid().to_id_string().as_str() {
@@ -59,16 +81,26 @@ pub fn deconstruct_dh_key(bytes: &[u8]) -> (BigUint, BigUint, BigUint) {
     (p, g, private_key)
 }
 
-pub fn extract_dh_params(cert: &X509Certificate) -> Option<(BigUint, BigUint, BigUint)> {
-    let spki = cert.public_key();
+pub fn extract_dh_params(cert: &ServerCertificate) -> Option<(BigUint, BigUint, BigUint)> {
+    let der = cert
+        .0
+        .tbs_certificate
+        .subject_public_key_info
+        .subject_public_key.as_bytes().unwrap();
 
-    let public_key = Integer::from_der(&spki.subject_public_key.data).unwrap().1;
+    let public_key = Integer::from_der(&der).unwrap().1;
     let public_key = BigUint::from_bytes_be(public_key.as_ref());
 
-    let Some(bytes) = &spki.algorithm.parameters else {
+    let Some(bytes) = &cert
+        .0
+        .tbs_certificate
+        .subject_public_key_info
+        .algorithm
+        .parameters
+    else {
         return None;
     };
-    let Ok((bytes, p_int)) = Integer::from_der(bytes.as_bytes()) else {
+    let Ok((bytes, p_int)) = Integer::from_der(bytes.value()) else {
         return None;
     };
     let Ok((_, g_int)) = Integer::from_der(bytes) else {

@@ -43,3 +43,9 @@ impl From<TlsAlert> for TlsError {
         Self::Alert(value)
     }
 }
+
+#[derive(Debug, Error)]
+pub enum AnError {
+    #[error("Failed to parse certificate")]
+    FailedToParseCertificate,
+}

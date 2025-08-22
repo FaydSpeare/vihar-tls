@@ -21,7 +21,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut client = TlsClient::new(
         TlsConfigBuilder::new()
             //.with_max_fragment_length(MaxFragmentLength::Len1024)
-            .with_cipher_suites([pcs!(2, CipherSuiteId::DhAnonWithAes128CbcSha)].into())
+            .with_cipher_suites([pcs!(2, CipherSuiteId::DhRsaWithAes128CbcSha)].into())
             .with_certificates(
                 Certificates::new()
                     .with_rsa("testing/rsacert.pem", "testing/rsakey.pem")
