@@ -93,7 +93,7 @@ fn start_abbr_handshake(client_hello: ClientHello, session: SessionInfo) -> Hand
     );
     server_hello.session_id = client_hello.session_id.clone();
 
-    let params = SecurityParams::new(
+    let security_params = SecurityParams::new(
         client_hello.random.as_bytes(),
         server_hello.random.as_bytes(),
         session.master_secret,
@@ -103,9 +103,9 @@ fn start_abbr_handshake(client_hello: ClientHello, session: SessionInfo) -> Hand
     let server_hello = TlsHandshake::ServerHello(server_hello);
     server_hello.write_to(&mut handshakes);
 
-    let write = ConnState::new(params.clone(), TlsEntity::Server);
+    let write = ConnState::new(security_params.clone(), TlsEntity::Server);
 
-    let server_verify_data = params.server_verify_data(&handshakes);
+    let server_verify_data = security_params.server_verify_data(&handshakes);
     let server_finished = TlsHandshake::Finished(Finished::new(server_verify_data.clone()));
     server_finished.write_to(&mut handshakes);
 
@@ -115,7 +115,7 @@ fn start_abbr_handshake(client_hello: ClientHello, session: SessionInfo) -> Hand
     Ok((
         AwaitClientChangeCipherAbbr {
             handshakes,
-            params,
+            security_params,
             negotiated_extensions,
             server_verify_data,
         }
@@ -162,14 +162,14 @@ fn start_full_handshake(
         .collect();
     debug!("CipherSuites: {:#?}", suites);
 
-    let Some(selected_cipher_suite_id) =
+    let Some(negotiated_cipher_suite_id) =
         select_cipher_suite(&ctx.config.cipher_suites, &client_hello.cipher_suites)
     else {
         return close_connection(TlsAlertDesc::HandshakeFailure);
     };
 
-    let selected_cipher_suite = CipherSuite::from(selected_cipher_suite_id);
-    debug!("Selected CipherSuite {}", selected_cipher_suite.name());
+    let negotiated_cipher_suite = CipherSuite::from(negotiated_cipher_suite_id);
+    debug!("Selected CipherSuite {}", negotiated_cipher_suite.name());
 
     let max_fragment_length = client_hello.extensions.get_max_fragment_len().filter(|_| {
         ctx.config.policy.max_fragment_length_negotiation
@@ -180,7 +180,7 @@ fn start_full_handshake(
     let renegotiation_info = previous_verify_data.map(|data| [data.client, data.server].concat());
 
     let server_hello = ServerHello::new(
-        selected_cipher_suite_id,
+        negotiated_cipher_suite_id,
         client_hello.extensions.includes_secure_renegotiation(),
         client_hello.extensions.includes_extended_master_secret(),
         issue_session_ticket,
@@ -198,7 +198,7 @@ fn start_full_handshake(
     actions.push(TlsAction::SendHandshakeMsg(server_hello));
     info!("Sent ServerHello");
 
-    if selected_cipher_suite
+    if negotiated_cipher_suite
         .kx_algorithm()
         .sends_server_certificate()
     {
@@ -228,7 +228,7 @@ fn start_full_handshake(
         .clone();
 
     let mut server_dh_params = None;
-    match selected_cipher_suite.kx_algorithm() {
+    match negotiated_cipher_suite.kx_algorithm() {
         KeyExchangeAlgorithm::DhRsa | KeyExchangeAlgorithm::DhDss => {
             let (p, g, private_key) =
                 deconstruct_dh_key(&ctx.config.certificates.dh.as_ref().unwrap().private_key_der);
@@ -262,7 +262,7 @@ fn start_full_handshake(
             });
 
             let signature_algorithm = choose_signature_algorithm(
-                &selected_cipher_suite,
+                &negotiated_cipher_suite,
                 client_hello
                     .extensions
                     .get_signature_algorithms()
@@ -316,8 +316,8 @@ fn start_full_handshake(
                 handshakes,
                 client_random: client_hello.random.as_bytes(),
                 server_random,
-                selected_cipher_suite,
-                supported_extensions: NegotiatedExtensions {
+                negotiated_cipher_suite,
+                negotiated_extensions: NegotiatedExtensions {
                     session_ticket: false,
                     extended_master_secret: client_hello
                         .extensions
@@ -338,8 +338,8 @@ fn start_full_handshake(
             handshakes,
             client_random: client_hello.random.as_bytes(),
             server_random,
-            selected_cipher_suite,
-            supported_extensions: NegotiatedExtensions {
+            negotiated_cipher_suite,
+            negotiated_extensions: NegotiatedExtensions {
                 session_ticket: false,
                 extended_master_secret: client_hello.extensions.includes_extended_master_secret(),
                 secure_renegotiation: client_hello.extensions.includes_secure_renegotiation(),
@@ -475,7 +475,7 @@ impl HandleRecord<TlsState> for AwaitSessionValidation {
 #[derive(Debug)]
 pub struct AwaitClientChangeCipherAbbr {
     handshakes: Vec<u8>,
-    params: SecurityParams,
+    security_params: SecurityParams,
     negotiated_extensions: NegotiatedExtensions,
     server_verify_data: Vec<u8>,
 }
@@ -487,13 +487,13 @@ impl HandleRecord<TlsState> for AwaitClientChangeCipherAbbr {
         };
 
         info!("Received ChangeCipherSpec");
-        let read = ConnState::new(self.params.clone(), TlsEntity::Client);
+        let read = ConnState::new(self.security_params.clone(), TlsEntity::Client);
 
         Ok((
             AwaitClientFinishedAbbr {
                 handshakes: self.handshakes,
-                params: self.params,
-                supported_extensions: self.negotiated_extensions,
+                security_params: self.security_params,
+                negotiated_extensions: self.negotiated_extensions,
                 server_verify_data: self.server_verify_data,
             }
             .into(),
@@ -505,8 +505,8 @@ impl HandleRecord<TlsState> for AwaitClientChangeCipherAbbr {
 #[derive(Debug)]
 pub struct AwaitClientFinishedAbbr {
     handshakes: Vec<u8>,
-    params: SecurityParams,
-    supported_extensions: NegotiatedExtensions,
+    security_params: SecurityParams,
+    negotiated_extensions: NegotiatedExtensions,
     server_verify_data: Vec<u8>,
 }
 
@@ -515,7 +515,7 @@ impl HandleRecord<TlsState> for AwaitClientFinishedAbbr {
         let (_, client_finished) = require_handshake_msg!(event, TlsHandshake::Finished);
 
         info!("Received ClientFinished");
-        let client_verify_data = self.params.client_verify_data(&self.handshakes);
+        let client_verify_data = self.security_params.client_verify_data(&self.handshakes);
         if client_verify_data != client_finished.verify_data {
             return close_connection(TlsAlertDesc::DecryptError);
         }
@@ -524,7 +524,7 @@ impl HandleRecord<TlsState> for AwaitClientFinishedAbbr {
         Ok((
             ServerEstablished {
                 session_id: SessionId::new(&[]).unwrap(),
-                negotiated_extensions: self.supported_extensions,
+                negotiated_extensions: self.negotiated_extensions,
                 client_verify_data,
                 server_verify_data: self.server_verify_data,
             }
@@ -548,8 +548,8 @@ pub struct AwaitClientCertificate {
     handshakes: Vec<u8>,
     client_random: [u8; 32],
     server_random: [u8; 32],
-    selected_cipher_suite: CipherSuite,
-    supported_extensions: NegotiatedExtensions,
+    negotiated_cipher_suite: CipherSuite,
+    negotiated_extensions: NegotiatedExtensions,
     issue_session_ticket: bool,
     server_dh_params: Option<ServerDhParams>,
 }
@@ -588,8 +588,8 @@ impl HandleRecord<TlsState> for AwaitClientCertificate {
                 handshakes: self.handshakes,
                 client_random: self.client_random,
                 server_random: self.server_random,
-                selected_cipher_suite: self.selected_cipher_suite,
-                supported_extensions: self.supported_extensions,
+                negotiated_cipher_suite: self.negotiated_cipher_suite,
+                negotiated_extensions: self.negotiated_extensions,
                 issue_session_ticket: self.issue_session_ticket,
                 server_dh_params: self.server_dh_params,
                 expect_certificate_verify: !certificate.list.is_empty(),
@@ -607,8 +607,8 @@ pub struct AwaitClientKeyExchange {
     handshakes: Vec<u8>,
     client_random: [u8; 32],
     server_random: [u8; 32],
-    selected_cipher_suite: CipherSuite,
-    supported_extensions: NegotiatedExtensions,
+    negotiated_cipher_suite: CipherSuite,
+    negotiated_extensions: NegotiatedExtensions,
     issue_session_ticket: bool,
     server_dh_params: Option<ServerDhParams>,
     expect_certificate_verify: bool,
@@ -622,7 +622,7 @@ impl HandleRecord<TlsState> for AwaitClientKeyExchange {
         info!("Received ClientKeyExchange");
         handshake.write_to(&mut self.handshakes);
 
-        let kx_algo = self.selected_cipher_suite.kx_algorithm();
+        let kx_algo = self.negotiated_cipher_suite.kx_algorithm();
         let client_kx = client_kx.resolve(kx_algo);
 
         let pre_master_secret = match client_kx {
@@ -659,16 +659,16 @@ impl HandleRecord<TlsState> for AwaitClientKeyExchange {
             &self.client_random,
             &self.server_random,
             &pre_master_secret,
-            self.selected_cipher_suite.prf_algorithm(),
-            self.supported_extensions.extended_master_secret,
+            self.negotiated_cipher_suite.prf_algorithm(),
+            self.negotiated_extensions.extended_master_secret,
         );
         //println!("MS: {:?}", master_secret);
 
-        let params = SecurityParams::new(
+        let security_params = SecurityParams::new(
             self.client_random,
             self.server_random,
             master_secret,
-            &self.selected_cipher_suite,
+            &self.negotiated_cipher_suite,
         );
 
         if self.expect_certificate_verify {
@@ -676,8 +676,8 @@ impl HandleRecord<TlsState> for AwaitClientKeyExchange {
                 AwaitCertificateVerify {
                     session_id: self.session_id,
                     handshakes: self.handshakes,
-                    params,
-                    supported_extensions: self.supported_extensions,
+                    security_params,
+                    negotiated_extensions: self.negotiated_extensions,
                     issue_session_ticket: self.issue_session_ticket,
                     client_public_key: self.client_public_key.unwrap(),
                 }
@@ -690,8 +690,8 @@ impl HandleRecord<TlsState> for AwaitClientKeyExchange {
             AwaitClientChangeCipher {
                 session_id: self.session_id,
                 handshakes: self.handshakes,
-                params,
-                supported_extensions: self.supported_extensions,
+                security_params,
+                negotiated_extensions: self.negotiated_extensions,
                 issue_session_ticket: self.issue_session_ticket,
             }
             .into(),
@@ -704,8 +704,8 @@ impl HandleRecord<TlsState> for AwaitClientKeyExchange {
 pub struct AwaitCertificateVerify {
     session_id: Vec<u8>,
     handshakes: Vec<u8>,
-    params: SecurityParams,
-    supported_extensions: NegotiatedExtensions,
+    security_params: SecurityParams,
+    negotiated_extensions: NegotiatedExtensions,
     issue_session_ticket: bool,
     client_public_key: Vec<u8>,
 }
@@ -737,8 +737,8 @@ impl HandleRecord<TlsState> for AwaitCertificateVerify {
             AwaitClientChangeCipher {
                 session_id: self.session_id,
                 handshakes: self.handshakes,
-                params: self.params,
-                supported_extensions: self.supported_extensions,
+                security_params: self.security_params,
+                negotiated_extensions: self.negotiated_extensions,
                 issue_session_ticket: self.issue_session_ticket,
             }
             .into(),
@@ -751,8 +751,8 @@ impl HandleRecord<TlsState> for AwaitCertificateVerify {
 pub struct AwaitClientChangeCipher {
     session_id: Vec<u8>,
     handshakes: Vec<u8>,
-    params: SecurityParams,
-    supported_extensions: NegotiatedExtensions,
+    security_params: SecurityParams,
+    negotiated_extensions: NegotiatedExtensions,
     issue_session_ticket: bool,
 }
 
@@ -763,14 +763,14 @@ impl HandleRecord<TlsState> for AwaitClientChangeCipher {
         };
 
         info!("Received ChangeCipherSpec");
-        let read = ConnState::new(self.params.clone(), TlsEntity::Client);
+        let read = ConnState::new(self.security_params.clone(), TlsEntity::Client);
 
         Ok((
             AwaitClientFinished {
                 session_id: self.session_id,
                 handshakes: self.handshakes,
-                params: self.params,
-                negotiated_extensions: self.supported_extensions,
+                security_params: self.security_params,
+                negotiated_extensions: self.negotiated_extensions,
                 issue_session_ticket: self.issue_session_ticket,
             }
             .into(),
@@ -783,7 +783,7 @@ impl HandleRecord<TlsState> for AwaitClientChangeCipher {
 pub struct AwaitClientFinished {
     session_id: Vec<u8>,
     handshakes: Vec<u8>,
-    params: SecurityParams,
+    security_params: SecurityParams,
     negotiated_extensions: NegotiatedExtensions,
     issue_session_ticket: bool,
 }
@@ -793,7 +793,7 @@ impl HandleRecord<TlsState> for AwaitClientFinished {
         let (handshake, client_finished) = require_handshake_msg!(event, TlsHandshake::Finished);
 
         info!("Received ClientFinished");
-        let client_verify_data = self.params.client_verify_data(&self.handshakes);
+        let client_verify_data = self.security_params.client_verify_data(&self.handshakes);
         if client_verify_data != client_finished.verify_data {
             return close_connection(TlsAlertDesc::DecryptError);
         }
@@ -805,9 +805,9 @@ impl HandleRecord<TlsState> for AwaitClientFinished {
         if self.issue_session_ticket {
             let new_session_ticket = NewSessionTicket::new(
                 ProtocolVersion::tls12(),
-                self.params.cipher_suite_id,
-                self.params.compression_algorithm,
-                self.params.master_secret,
+                self.security_params.cipher_suite_id,
+                self.security_params.compression_algorithm,
+                self.security_params.master_secret,
                 ClientIdentity::Anonymous,
                 utils::get_unix_time(),
                 self.negotiated_extensions.max_fragment_length,
@@ -820,11 +820,11 @@ impl HandleRecord<TlsState> for AwaitClientFinished {
             info!("Sent NewSessionTicket");
         }
 
-        let write = ConnState::new(self.params.clone(), TlsEntity::Server);
+        let write = ConnState::new(self.security_params.clone(), TlsEntity::Server);
 
         actions.push(TlsAction::ChangeCipherSpec(TlsEntity::Server, write));
 
-        let server_verify_data = self.params.server_verify_data(&self.handshakes);
+        let server_verify_data = self.security_params.server_verify_data(&self.handshakes);
         let server_finished: TlsHandshake = Finished::new(server_verify_data.clone()).into();
         actions.push(TlsAction::SendHandshakeMsg(server_finished));
 
@@ -832,8 +832,8 @@ impl HandleRecord<TlsState> for AwaitClientFinished {
             actions.push(TlsAction::StoreSessionIdInfo(
                 self.session_id.clone(),
                 SessionInfo::new(
-                    self.params.master_secret,
-                    self.params.cipher_suite_id,
+                    self.security_params.master_secret,
+                    self.security_params.cipher_suite_id,
                     self.negotiated_extensions.max_fragment_length,
                     self.negotiated_extensions.extended_master_secret,
                 ),
