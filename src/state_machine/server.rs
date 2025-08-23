@@ -97,7 +97,7 @@ fn start_abbr_handshake(client_hello: ClientHello, session: SessionInfo) -> Hand
         client_hello.random.as_bytes(),
         server_hello.random.as_bytes(),
         session.master_secret,
-        session.cipher_suite,
+        &CipherSuite::from(session.cipher_suite),
     );
 
     let server_hello = TlsHandshake::ServerHello(server_hello);
@@ -162,14 +162,14 @@ fn start_full_handshake(
         .collect();
     debug!("CipherSuites: {:#?}", suites);
 
-    let Some(selected_cipher_suite) =
+    let Some(selected_cipher_suite_id) =
         select_cipher_suite(&ctx.config.cipher_suites, &client_hello.cipher_suites)
     else {
         return close_connection(TlsAlertDesc::HandshakeFailure);
     };
 
-    let cipher_suite = CipherSuite::from(selected_cipher_suite);
-    debug!("Selected CipherSuite {}", cipher_suite.name());
+    let selected_cipher_suite = CipherSuite::from(selected_cipher_suite_id);
+    debug!("Selected CipherSuite {}", selected_cipher_suite.name());
 
     let max_fragment_length = client_hello.extensions.get_max_fragment_len().filter(|_| {
         ctx.config.policy.max_fragment_length_negotiation
@@ -180,7 +180,7 @@ fn start_full_handshake(
     let renegotiation_info = previous_verify_data.map(|data| [data.client, data.server].concat());
 
     let server_hello = ServerHello::new(
-        selected_cipher_suite,
+        selected_cipher_suite_id,
         client_hello.extensions.includes_secure_renegotiation(),
         client_hello.extensions.includes_extended_master_secret(),
         issue_session_ticket,
@@ -196,11 +196,12 @@ fn start_full_handshake(
 
     let mut actions = vec![];
     actions.push(TlsAction::SendHandshakeMsg(server_hello));
-
-    let cipher_suite = CipherSuite::from(selected_cipher_suite);
     info!("Sent ServerHello");
 
-    if cipher_suite.kx_algorithm().sends_server_certificate() {
+    if selected_cipher_suite
+        .kx_algorithm()
+        .sends_server_certificate()
+    {
         let certificate: TlsHandshake = Certificate::new(
             ctx.config
                 .certificates
@@ -227,7 +228,7 @@ fn start_full_handshake(
         .clone();
 
     let mut server_dh_params = None;
-    match cipher_suite.kx_algorithm() {
+    match selected_cipher_suite.kx_algorithm() {
         KeyExchangeAlgorithm::DhRsa | KeyExchangeAlgorithm::DhDss => {
             let (p, g, private_key) =
                 deconstruct_dh_key(&ctx.config.certificates.dh.as_ref().unwrap().private_key_der);
@@ -261,7 +262,7 @@ fn start_full_handshake(
             });
 
             let signature_algorithm = choose_signature_algorithm(
-                &cipher_suite,
+                &selected_cipher_suite,
                 client_hello
                     .extensions
                     .get_signature_algorithms()
@@ -547,7 +548,7 @@ pub struct AwaitClientCertificate {
     handshakes: Vec<u8>,
     client_random: [u8; 32],
     server_random: [u8; 32],
-    selected_cipher_suite: CipherSuiteId,
+    selected_cipher_suite: CipherSuite,
     supported_extensions: NegotiatedExtensions,
     issue_session_ticket: bool,
     server_dh_params: Option<ServerDhParams>,
@@ -606,7 +607,7 @@ pub struct AwaitClientKeyExchange {
     handshakes: Vec<u8>,
     client_random: [u8; 32],
     server_random: [u8; 32],
-    selected_cipher_suite: CipherSuiteId,
+    selected_cipher_suite: CipherSuite,
     supported_extensions: NegotiatedExtensions,
     issue_session_ticket: bool,
     server_dh_params: Option<ServerDhParams>,
@@ -621,7 +622,7 @@ impl HandleRecord<TlsState> for AwaitClientKeyExchange {
         info!("Received ClientKeyExchange");
         handshake.write_to(&mut self.handshakes);
 
-        let kx_algo = CipherSuite::from(self.selected_cipher_suite).kx_algorithm();
+        let kx_algo = self.selected_cipher_suite.kx_algorithm();
         let client_kx = client_kx.resolve(kx_algo);
 
         let pre_master_secret = match client_kx {
@@ -653,13 +654,12 @@ impl HandleRecord<TlsState> for AwaitClientKeyExchange {
             }
         };
 
-        let ciphersuite = CipherSuite::from(self.selected_cipher_suite);
         let master_secret = calculate_master_secret(
             &self.handshakes,
             &self.client_random,
             &self.server_random,
             &pre_master_secret,
-            ciphersuite.prf_algorithm(),
+            self.selected_cipher_suite.prf_algorithm(),
             self.supported_extensions.extended_master_secret,
         );
         //println!("MS: {:?}", master_secret);
@@ -668,7 +668,7 @@ impl HandleRecord<TlsState> for AwaitClientKeyExchange {
             self.client_random,
             self.server_random,
             master_secret,
-            self.selected_cipher_suite,
+            &self.selected_cipher_suite,
         );
 
         if self.expect_certificate_verify {

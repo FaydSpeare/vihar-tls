@@ -39,7 +39,7 @@ pub enum TlsEntity {
 pub struct SessionIdResumption {
     pub session_id: Vec<u8>,
     pub master_secret: [u8; 48],
-    pub cipher_suite: CipherSuiteId,
+    pub cipher_suite_id: CipherSuiteId,
     pub max_fragment_len: Option<MaxFragmentLength>,
     pub extended_master_secret: bool,
 }
@@ -48,7 +48,7 @@ pub struct SessionIdResumption {
 pub struct SessionTicketResumption {
     pub session_ticket: Vec<u8>,
     pub master_secret: [u8; 48],
-    pub cipher_suite: CipherSuiteId,
+    pub cipher_suite_id: CipherSuiteId,
     pub max_fragment_len: Option<MaxFragmentLength>,
     pub extended_master_secret: bool,
 }

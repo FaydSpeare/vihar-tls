@@ -45,17 +45,16 @@ impl SecurityParams {
         client_random: [u8; 32],
         server_random: [u8; 32],
         master_secret: [u8; 48],
-        cipher_suite_id: CipherSuiteId,
+        cipher_suite: &CipherSuite,
     ) -> Self {
-        let suite = CipherSuite::from(cipher_suite_id);
         Self {
-            cipher_suite_id,
+            cipher_suite_id: cipher_suite.id(),
             client_random,
             server_random,
             master_secret,
-            enc_type: suite.enc_type(),
-            mac_type: suite.mac_type(),
-            prf_algorithm: suite.prf_algorithm(),
+            enc_type: cipher_suite.enc_type(),
+            mac_type: cipher_suite.mac_type(),
+            prf_algorithm: cipher_suite.prf_algorithm(),
             compression_algorithm: CompressionMethod::Null,
         }
     }
@@ -650,7 +649,7 @@ impl<T: Read + Write> TlsConnection<T> {
                         SessionResumption::SessionTicket(SessionTicketResumption {
                             session_ticket,
                             master_secret: info.master_secret,
-                            cipher_suite: info.cipher_suite,
+                            cipher_suite_id: info.cipher_suite,
                             max_fragment_len: info.max_fragment_len,
                             extended_master_secret: info.extended_master_secret,
                         })
@@ -662,7 +661,7 @@ impl<T: Read + Write> TlsConnection<T> {
                             SessionResumption::SessionId(SessionIdResumption {
                                 session_id,
                                 master_secret: info.master_secret,
-                                cipher_suite: info.cipher_suite,
+                                cipher_suite_id: info.cipher_suite,
                                 max_fragment_len: info.max_fragment_len,
                                 extended_master_secret: info.extended_master_secret,
                             })

@@ -362,6 +362,7 @@ macro_rules! define_cipher_suites {
                 }
             }
 
+            #[derive(Debug)]
             pub enum CipherSuite {
                 $(
                     [< $name:camel >],

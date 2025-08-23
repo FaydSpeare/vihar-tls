@@ -5,7 +5,7 @@ use std::collections::HashSet;
 
 use crate::alert::TlsAlertDesc;
 use crate::ca::validate_certificate_chain;
-use crate::ciphersuite::{CipherSuiteId, KeyExchangeAlgorithm, KeyExchangeType};
+use crate::ciphersuite::KeyExchangeAlgorithm;
 use crate::client::{CertificateAndPrivateKey, Certificates};
 use crate::extensions::{
     ExtendedMasterSecretExt, ExtensionType, MaxFragmentLenExt, MaxFragmentLength,
@@ -208,7 +208,7 @@ impl HandleRecord<TlsState> for AwaitServerHello {
                     self.client_random,
                     server_hello.random.as_bytes(),
                     session.master_secret,
-                    session.cipher_suite,
+                    &CipherSuite::from(session.cipher_suite_id),
                 );
 
                 // The server must correctly remember the session's max_fragment_length
@@ -270,7 +270,7 @@ impl HandleRecord<TlsState> for AwaitServerHello {
                         handshakes: self.handshakes,
                         client_random: self.client_random,
                         server_random: server_hello.random.as_bytes(),
-                        selected_cipher_suite_id: server_hello.cipher_suite,
+                        selected_cipher_suite: CipherSuite::from(server_hello.cipher_suite),
                         negotiated_extensions,
                         session_ticket_resumption: session,
                     }
@@ -292,7 +292,7 @@ impl HandleRecord<TlsState> for AwaitServerHello {
                     session_id: server_hello.session_id.clone(),
                     client_random: self.client_random,
                     server_random: server_hello.random.as_bytes(),
-                    selected_cipher_suite_id: server_hello.cipher_suite,
+                    selected_cipher_suite: CipherSuite::from(server_hello.cipher_suite),
                     negotiated_extensions,
                     handshakes: self.handshakes,
                     session_ticket_resumption: session,
@@ -303,24 +303,27 @@ impl HandleRecord<TlsState> for AwaitServerHello {
         }
 
         // Boring... no session resumption, we're doing a full handshake.
-        let cipher_suite = CipherSuite::from(server_hello.cipher_suite);
-        debug!("Selected CipherSuite: {}", cipher_suite.name());
+        let selected_cipher_suite = CipherSuite::from(server_hello.cipher_suite);
+        debug!("Selected CipherSuite: {}", selected_cipher_suite.name());
 
         // No server certificate for dh_anon...
-        if !cipher_suite.kx_algorithm().sends_server_certificate() {
+        if !selected_cipher_suite
+            .kx_algorithm()
+            .sends_server_certificate()
+        {
             return Ok((
                 AwaitServerKeyExchange {
                     session_id: server_hello.session_id.clone(),
                     handshakes: self.handshakes,
                     client_random: self.client_random,
                     server_random: server_hello.random.as_bytes(),
-                    selected_cipher_suite_id: cipher_suite.id(),
+                    selected_cipher_suite,
                     negotiated_extensions,
                     server_certificate: None,
                     client_certificate_request: None,
                 }
                 .into(),
-                vec![],
+                actions,
             ));
         }
 
@@ -330,7 +333,7 @@ impl HandleRecord<TlsState> for AwaitServerHello {
                 handshakes: self.handshakes,
                 client_random: self.client_random,
                 server_random: server_hello.random.as_bytes(),
-                selected_cipher_suite_id: server_hello.cipher_suite,
+                selected_cipher_suite: CipherSuite::from(server_hello.cipher_suite),
                 negotiated_extensions,
             }
             .into(),
@@ -345,7 +348,7 @@ pub struct AwaitServerCertificate {
     handshakes: Vec<u8>,
     client_random: [u8; 32],
     server_random: [u8; 32],
-    selected_cipher_suite_id: CipherSuiteId,
+    selected_cipher_suite: CipherSuite,
     negotiated_extensions: NegotiatedExtensions,
 }
 
@@ -369,16 +372,17 @@ impl HandleRecord<TlsState> for AwaitServerCertificate {
             }
         }
 
-        let cipher_suite = CipherSuite::from(self.selected_cipher_suite_id);
-        match cipher_suite.kx_algorithm().kx_type() {
-            KeyExchangeType::Dhe => {
+        match self.selected_cipher_suite.kx_algorithm() {
+            KeyExchangeAlgorithm::DheDss
+            | KeyExchangeAlgorithm::DheRsa
+            | KeyExchangeAlgorithm::DhAnon => {
                 return Ok((
                     AwaitServerKeyExchangeOrCertificateRequest {
                         session_id: self.session_id,
                         handshakes: self.handshakes,
                         client_random: self.client_random,
                         server_random: self.server_random,
-                        selected_cipher_suite_id: self.selected_cipher_suite_id,
+                        selected_cipher_suite: self.selected_cipher_suite,
                         negotiated_extensions: self.negotiated_extensions,
                         server_certificate: ServerCertificate::from_der(&certs.list[0]).unwrap(),
                     }
@@ -386,9 +390,7 @@ impl HandleRecord<TlsState> for AwaitServerCertificate {
                     vec![],
                 ));
             }
-            KeyExchangeType::Rsa => {}
-            KeyExchangeType::Dh => {}
-            _ => unimplemented!(),
+            _ => {}
         }
 
         Ok((
@@ -397,7 +399,7 @@ impl HandleRecord<TlsState> for AwaitServerCertificate {
                 handshakes: self.handshakes,
                 client_random: self.client_random,
                 server_random: self.server_random,
-                selected_cipher_suite_id: self.selected_cipher_suite_id,
+                selected_cipher_suite: self.selected_cipher_suite,
                 negotiated_extensions: self.negotiated_extensions,
                 server_certificate: Some(ServerCertificate::from_der(&certs.list[0]).unwrap()),
                 secrets: None,
@@ -414,7 +416,7 @@ pub struct AwaitServerKeyExchangeOrCertificateRequest {
     handshakes: Vec<u8>,
     client_random: [u8; 32],
     server_random: [u8; 32],
-    selected_cipher_suite_id: CipherSuiteId,
+    selected_cipher_suite: CipherSuite,
     negotiated_extensions: NegotiatedExtensions,
     server_certificate: ServerCertificate,
 }
@@ -432,7 +434,7 @@ impl HandleRecord<TlsState> for AwaitServerKeyExchangeOrCertificateRequest {
                         handshakes: self.handshakes,
                         client_random: self.client_random,
                         server_random: self.server_random,
-                        selected_cipher_suite_id: self.selected_cipher_suite_id,
+                        selected_cipher_suite: self.selected_cipher_suite,
                         negotiated_extensions: self.negotiated_extensions,
                         server_certificate: Some(self.server_certificate),
                         client_certificate_request: Some(certificate_request.clone()),
@@ -448,7 +450,7 @@ impl HandleRecord<TlsState> for AwaitServerKeyExchangeOrCertificateRequest {
                 handshakes: self.handshakes,
                 client_random: self.client_random,
                 server_random: self.server_random,
-                selected_cipher_suite_id: self.selected_cipher_suite_id,
+                selected_cipher_suite: self.selected_cipher_suite,
                 negotiated_extensions: self.negotiated_extensions,
                 server_certificate: Some(self.server_certificate),
                 client_certificate_request: None,
@@ -465,7 +467,7 @@ pub struct AwaitServerKeyExchange {
     handshakes: Vec<u8>,
     client_random: [u8; 32],
     server_random: [u8; 32],
-    selected_cipher_suite_id: CipherSuiteId,
+    selected_cipher_suite: CipherSuite,
     negotiated_extensions: NegotiatedExtensions,
     server_certificate: Option<ServerCertificate>,
     client_certificate_request: Option<CertificateRequest>,
@@ -477,10 +479,10 @@ impl HandleRecord<TlsState> for AwaitServerKeyExchange {
 
         info!("Received ServerKeyExchange");
 
-        let cipher_suite = CipherSuite::from(self.selected_cipher_suite_id);
-        let secrets = match server_kx.resolve(cipher_suite.kx_algorithm()) {
+        let secrets = match server_kx.resolve(self.selected_cipher_suite.kx_algorithm()) {
             ServerKeyExchangeInner::Dhe(server_kx) => {
-                let server_public_key_der = self.server_certificate.as_ref().unwrap().public_key_der();
+                let server_public_key_der =
+                    self.server_certificate.as_ref().unwrap().public_key_der();
                 let message = [
                     self.client_random.as_ref(),
                     self.server_random.as_ref(),
@@ -513,7 +515,7 @@ impl HandleRecord<TlsState> for AwaitServerKeyExchange {
                 handshakes: self.handshakes,
                 client_random: self.client_random,
                 server_random: self.server_random,
-                selected_cipher_suite_id: self.selected_cipher_suite_id,
+                selected_cipher_suite: self.selected_cipher_suite,
                 negotiated_extensions: self.negotiated_extensions,
                 server_certificate: self.server_certificate,
                 secrets: Some(secrets),
@@ -531,7 +533,7 @@ pub struct AwaitServerHelloDoneOrCertificateRequest {
     handshakes: Vec<u8>,
     client_random: [u8; 32],
     server_random: [u8; 32],
-    selected_cipher_suite_id: CipherSuiteId,
+    selected_cipher_suite: CipherSuite,
     negotiated_extensions: NegotiatedExtensions,
     server_certificate: Option<ServerCertificate>,
     secrets: Option<ServerDHParams>,
@@ -550,7 +552,7 @@ impl HandleRecord<TlsState> for AwaitServerHelloDoneOrCertificateRequest {
                         handshakes: self.handshakes,
                         client_random: self.client_random,
                         server_random: self.server_random,
-                        selected_cipher_suite_id: self.selected_cipher_suite_id,
+                        selected_cipher_suite: self.selected_cipher_suite,
                         negotiated_extensions: self.negotiated_extensions,
                         server_certificate: self.server_certificate,
                         secrets: self.secrets,
@@ -566,7 +568,7 @@ impl HandleRecord<TlsState> for AwaitServerHelloDoneOrCertificateRequest {
                     handshakes: self.handshakes,
                     client_random: self.client_random,
                     server_random: self.server_random,
-                    selected_cipher_suite_id: self.selected_cipher_suite_id,
+                    selected_cipher_suite: self.selected_cipher_suite,
                     negotiated_extensions: self.negotiated_extensions,
                     server_certificate: self.server_certificate,
                     secrets: self.secrets,
@@ -621,7 +623,7 @@ pub struct AwaitServerHelloDone {
     handshakes: Vec<u8>,
     client_random: [u8; 32],
     server_random: [u8; 32],
-    selected_cipher_suite_id: CipherSuiteId,
+    selected_cipher_suite: CipherSuite,
     negotiated_extensions: NegotiatedExtensions,
     server_certificate: Option<ServerCertificate>,
     secrets: Option<ServerDHParams>,
@@ -658,8 +660,7 @@ impl HandleRecord<TlsState> for AwaitServerHelloDone {
         };
 
         // TODO: into function
-        let ciphersuite = CipherSuite::from(self.selected_cipher_suite_id);
-        let (pre_master_secret, client_kx) = match ciphersuite.kx_algorithm() {
+        let (pre_master_secret, client_kx) = match self.selected_cipher_suite.kx_algorithm() {
             KeyExchangeAlgorithm::Rsa => {
                 let server_public_key_der = self.server_certificate.unwrap().public_key_der();
 
@@ -686,7 +687,8 @@ impl HandleRecord<TlsState> for AwaitServerHelloDone {
                 (pms, ClientKeyExchange::new_dhe(&client_public_key))
             }
             KeyExchangeAlgorithm::DhDss | KeyExchangeAlgorithm::DhRsa => {
-                let (p, g, public_key) = extract_dh_params(&self.server_certificate.unwrap()).unwrap();
+                let (p, g, public_key) =
+                    extract_dh_params(&self.server_certificate.unwrap()).unwrap();
                 let (pms, client_public_key) = get_dh_pre_master_secret(&p, &g, &public_key);
                 (pms, ClientKeyExchange::new_dhe(&client_public_key))
             }
@@ -703,7 +705,7 @@ impl HandleRecord<TlsState> for AwaitServerHelloDone {
             &self.client_random,
             &self.server_random,
             &pre_master_secret,
-            ciphersuite.prf_algorithm(),
+            self.selected_cipher_suite.prf_algorithm(),
             self.negotiated_extensions.extended_master_secret,
         );
         //println!("MS: {:?}", master_secret);
@@ -733,7 +735,7 @@ impl HandleRecord<TlsState> for AwaitServerHelloDone {
             self.client_random,
             self.server_random,
             master_secret,
-            self.selected_cipher_suite_id,
+            &self.selected_cipher_suite,
         );
         let write = ConnState::new(params.clone(), TlsEntity::Client);
         actions.push(TlsAction::ChangeCipherSpec(TlsEntity::Client, write));
@@ -812,7 +814,7 @@ pub struct AwaitNewSessionTicketOrCertificate {
     handshakes: Vec<u8>,
     client_random: [u8; 32],
     server_random: [u8; 32],
-    selected_cipher_suite_id: CipherSuiteId,
+    selected_cipher_suite: CipherSuite,
     negotiated_extensions: NegotiatedExtensions,
     session_ticket_resumption: SessionTicketResumption,
 }
@@ -827,7 +829,7 @@ impl HandleRecord<TlsState> for AwaitNewSessionTicketOrCertificate {
                 self.client_random,
                 self.server_random,
                 self.session_ticket_resumption.master_secret,
-                self.session_ticket_resumption.cipher_suite,
+                &CipherSuite::from(self.session_ticket_resumption.cipher_suite_id),
             );
 
             // The ClientHello and ServerHello resulted in a different max_fragment_length
@@ -844,7 +846,7 @@ impl HandleRecord<TlsState> for AwaitNewSessionTicketOrCertificate {
                 return close_connection(TlsAlertDesc::IllegalParameter);
             }
 
-            if self.session_ticket_resumption.cipher_suite != self.selected_cipher_suite_id {
+            if self.session_ticket_resumption.cipher_suite_id != self.selected_cipher_suite.id() {
                 return close_connection(TlsAlertDesc::IllegalParameter);
             }
 
@@ -864,7 +866,7 @@ impl HandleRecord<TlsState> for AwaitNewSessionTicketOrCertificate {
                 handshakes: self.handshakes,
                 client_random: self.client_random,
                 server_random: self.server_random,
-                selected_cipher_suite_id: self.selected_cipher_suite_id,
+                selected_cipher_suite: self.selected_cipher_suite,
                 negotiated_extensions: self.negotiated_extensions,
             }
             .handle(ctx, event);
@@ -892,7 +894,7 @@ pub struct AwaitServerChangeCipherOrCertificate {
     handshakes: Vec<u8>,
     client_random: [u8; 32],
     server_random: [u8; 32],
-    selected_cipher_suite_id: CipherSuiteId,
+    selected_cipher_suite: CipherSuite,
     negotiated_extensions: NegotiatedExtensions,
     session_ticket_resumption: SessionTicketResumption,
 }
@@ -904,7 +906,7 @@ impl HandleRecord<TlsState> for AwaitServerChangeCipherOrCertificate {
                 self.client_random,
                 self.server_random,
                 self.session_ticket_resumption.master_secret,
-                self.session_ticket_resumption.cipher_suite,
+                &CipherSuite::from(self.session_ticket_resumption.cipher_suite_id),
             );
 
             // The ClientHello and ServerHello resulted in a different max_fragment_length
@@ -921,7 +923,7 @@ impl HandleRecord<TlsState> for AwaitServerChangeCipherOrCertificate {
                 return close_connection(TlsAlertDesc::IllegalParameter);
             }
 
-            if self.session_ticket_resumption.cipher_suite != self.selected_cipher_suite_id {
+            if self.session_ticket_resumption.cipher_suite_id != self.selected_cipher_suite.id() {
                 return close_connection(TlsAlertDesc::IllegalParameter);
             }
 
@@ -941,7 +943,7 @@ impl HandleRecord<TlsState> for AwaitServerChangeCipherOrCertificate {
                 handshakes: self.handshakes,
                 client_random: self.client_random,
                 server_random: self.server_random,
-                selected_cipher_suite_id: self.selected_cipher_suite_id,
+                selected_cipher_suite: self.selected_cipher_suite,
                 negotiated_extensions: self.negotiated_extensions,
             }
             .handle(ctx, event);
