@@ -34,7 +34,7 @@ macro_rules! impl_state_dispatch {
 
 #[macro_export]
 macro_rules! pcs {
-    ($priority:expr, $id:path) => {
+    ($priority:expr, $id:expr) => {
         $crate::client::PrioritisedCipherSuite {
             id: $id,
             priority: $priority,

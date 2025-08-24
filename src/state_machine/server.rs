@@ -1,13 +1,13 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use log::{debug, info};
 use num_bigint::BigUint;
 
 use crate::alert::TlsAlertDesc;
 use crate::ciphersuite::{CipherSuiteId, KeyExchangeAlgorithm};
-use crate::client::PrioritisedCipherSuite;
+use crate::client::{CertificateAndPrivateKey, PrioritisedCipherSuite};
 use crate::encoding::Reader;
-use crate::extensions::{HashAlgo, SignatureAlgorithm, verify};
+use crate::extensions::{HashType, SignatureAlgorithm, verify};
 use crate::messages::{
     Certificate, CertificateRequest, ClientHello, ClientKeyExchangeInner, NewSessionTicket,
     ProtocolVersion, PublicValueEncoding, ServerDHParams, ServerHello, ServerKeyExchange,
@@ -38,10 +38,23 @@ use rand::prelude::IteratorRandom;
 fn select_cipher_suite(
     prioritised: &[PrioritisedCipherSuite],
     offered: &[CipherSuiteId],
+    certificates: &Vec<&CertificateAndPrivateKey>,
 ) -> Option<CipherSuiteId> {
+    let cert_types: HashSet<_> = certificates
+        .iter()
+        .map(|cert| (cert.public_key_type(), cert.signature_algorithm.signature))
+        .collect();
+
     let mut map: HashMap<CipherSuiteId, u32> = HashMap::new();
     for pcs in prioritised {
-        map.insert(pcs.id, pcs.priority);
+        let kx = CipherSuite::from(pcs.id).kx_algorithm();
+        if kx == KeyExchangeAlgorithm::DhAnon {
+            map.insert(pcs.id, pcs.priority);
+        } else if cert_types
+            .contains(&(kx.public_key_type().unwrap(), kx.signature_type().unwrap()))
+        {
+            map.insert(pcs.id, pcs.priority);
+        }
     }
 
     let acceptable: Vec<CipherSuiteId> = offered
@@ -134,13 +147,20 @@ fn choose_signature_algorithm(
     supported_signature_algoritms: &[SignatureAlgorithm],
 ) -> SignatureAlgorithm {
     let default = SignatureAlgorithm {
-        hash: HashAlgo::Sha1,
-        signature: cipher_suite.kx_algorithm().signature_type(),
+        hash: HashType::Sha1,
+        signature: cipher_suite.kx_algorithm().signature_type().unwrap(),
     };
     match client_signature_algorithms {
         None => default,
         Some(algorithms) => supported_signature_algoritms
             .iter()
+            // Is there a potential bug here?
+            // We're saying we must use a signature type, that matches the key exchange
+            // algorithm. We chose the signature type of the cipher suite to match one of
+            // the server's certificate's signatures, not necessarily the type of signature
+            // the certificate itself signs. These two things mostly align, so maybe its not
+            // an issue.
+            .filter(|x| x.signature == cipher_suite.kx_algorithm().signature_type().unwrap())
             .flat_map(|sa1| algorithms.iter().filter(move |sa2| sa1 == *sa2).cloned())
             .choose(&mut rand::thread_rng())
             .unwrap_or(default),
@@ -162,9 +182,11 @@ fn start_full_handshake(
         .collect();
     debug!("CipherSuites: {:#?}", suites);
 
-    let Some(negotiated_cipher_suite_id) =
-        select_cipher_suite(&ctx.config.cipher_suites, &client_hello.cipher_suites)
-    else {
+    let Some(negotiated_cipher_suite_id) = select_cipher_suite(
+        &ctx.config.cipher_suites,
+        &client_hello.cipher_suites,
+        &ctx.config.certificates.certificates(),
+    ) else {
         return close_connection(TlsAlertDesc::HandshakeFailure);
     };
 
@@ -198,34 +220,24 @@ fn start_full_handshake(
     actions.push(TlsAction::SendHandshakeMsg(server_hello));
     info!("Sent ServerHello");
 
+    let mut private_key_der = None;
+
     if negotiated_cipher_suite
         .kx_algorithm()
         .sends_server_certificate()
     {
-        let certificate: TlsHandshake = Certificate::new(
-            ctx.config
-                .certificates
-                .primary()
-                .as_ref()
-                .expect("Server certificate not configured")
-                .certificate_der
-                .clone(),
-        )
-        .into();
+        let selected_cert = ctx
+            .config
+            .certificates
+            .certificate_for_cipher_suite(&negotiated_cipher_suite);
+        private_key_der = Some(selected_cert.private_key_der.clone());
+        let certificate: TlsHandshake =
+            Certificate::new(selected_cert.certificate_der.clone()).into();
         certificate.write_to(&mut handshakes);
 
         actions.push(TlsAction::SendHandshakeMsg(certificate));
         info!("Sent Certificate");
     }
-
-    let private_key_der = ctx
-        .config
-        .certificates
-        .primary()
-        .as_ref()
-        .expect("Server certificate not configured")
-        .private_key_der
-        .clone();
 
     let mut server_dh_params = None;
     match negotiated_cipher_suite.kx_algorithm() {
@@ -276,7 +288,7 @@ fn start_full_handshake(
                 client_hello.random.as_bytes(),
                 server_random,
                 signature_algorithm,
-                &private_key_der,
+                &private_key_der.unwrap(),
             );
 
             let server_kx = TlsHandshake::ServerKeyExchange(server_kx);

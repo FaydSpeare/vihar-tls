@@ -2,8 +2,6 @@
 
 ======== MVP =========
 
-- server needs to select correct certificate based on suite
-
 - Native root certs for linux and windows
 
 - Fix bad decryption overflow panics
@@ -11,7 +9,6 @@
 - HelloRequest
 - Need to finished reading before starting client.renegotiate
 
-- Support 3Des
 - add DistinguishedName client auth config
 - Fixed DH client auth => implicit CKX
 

@@ -4,13 +4,14 @@ use std::{
     rc::Rc,
 };
 
+use rand::seq::IteratorRandom;
 use x509_parser::prelude::{FromDer, X509Certificate};
 
 use crate::{
     TlsPolicy, TlsResult,
-    ciphersuite::CipherSuiteId,
+    ciphersuite::{CipherSuite, CipherSuiteId},
     connection::TlsConnection,
-    extensions::{HashAlgo, MaxFragmentLength, SigAlgo, SignatureAlgorithm},
+    extensions::{HashType, MaxFragmentLength, SignatureAlgorithm, SignatureType},
     messages::ClientCertificateType,
     oid::{get_public_key_algorithm, get_signature_algorithm},
     state_machine::TlsEntity,
@@ -33,12 +34,19 @@ pub struct CertificateAndPrivateKey {
     pub distinguished_name_der: Vec<u8>,
 }
 
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+pub enum PublicKeyType {
+    Rsa,
+    Dsa,
+    Dh,
+}
+
 impl CertificateAndPrivateKey {
-    pub fn signature_algorithm(&self) -> SigAlgo {
+    pub fn public_key_type(&self) -> PublicKeyType {
         match self.public_key_algorithm {
-            PublicKeyAlgorithm::RsaEncryption => SigAlgo::Rsa,
-            PublicKeyAlgorithm::DsaEncryption => SigAlgo::Dsa,
-            _ => unimplemented!(),
+            PublicKeyAlgorithm::RsaEncryption => PublicKeyType::Rsa,
+            PublicKeyAlgorithm::DsaEncryption => PublicKeyType::Dsa,
+            PublicKeyAlgorithm::DhKeyAgreement => PublicKeyType::Dh,
         }
     }
 }
@@ -65,8 +73,33 @@ impl Certificates {
         }
     }
 
-    pub fn primary(&self) -> Option<&CertificateAndPrivateKey> {
-        self.rsa.as_ref().or(self.dsa.as_ref()).or(self.dh.as_ref())
+    pub fn certificate_for_cipher_suite(
+        &self,
+        cipher_suite: &CipherSuite,
+    ) -> &CertificateAndPrivateKey {
+        let kx = cipher_suite.kx_algorithm();
+        self.certificates()
+            .iter()
+            .filter(|cert| {
+                kx.public_key_type().unwrap() == cert.public_key_type()
+                    && kx.signature_type().unwrap() == cert.signature_algorithm.signature
+            })
+            .choose(&mut rand::thread_rng())
+            .unwrap()
+    }
+
+    pub fn certificates(&self) -> Vec<&CertificateAndPrivateKey> {
+        let mut certs = vec![];
+        if let Some(v) = self.rsa.as_ref() {
+            certs.push(v)
+        }
+        if let Some(v) = self.dsa.as_ref() {
+            certs.push(v)
+        }
+        if let Some(v) = self.dh.as_ref() {
+            certs.push(v)
+        }
+        certs
     }
 
     pub fn certificates_with_type(
@@ -182,24 +215,24 @@ impl TlsConfigBuilder {
                 //     hash: HashAlgo::Sha256,
                 // },
                 SignatureAlgorithm {
-                    signature: SigAlgo::Rsa,
-                    hash: HashAlgo::Sha1,
+                    signature: SignatureType::Rsa,
+                    hash: HashType::Sha1,
                 },
                 SignatureAlgorithm {
-                    signature: SigAlgo::Rsa,
-                    hash: HashAlgo::Sha224,
+                    signature: SignatureType::Rsa,
+                    hash: HashType::Sha224,
                 },
                 SignatureAlgorithm {
-                    signature: SigAlgo::Rsa,
-                    hash: HashAlgo::Sha256,
+                    signature: SignatureType::Rsa,
+                    hash: HashType::Sha256,
                 },
                 SignatureAlgorithm {
-                    signature: SigAlgo::Rsa,
-                    hash: HashAlgo::Sha384,
+                    signature: SignatureType::Rsa,
+                    hash: HashType::Sha384,
                 },
                 SignatureAlgorithm {
-                    signature: SigAlgo::Rsa,
-                    hash: HashAlgo::Sha512,
+                    signature: SignatureType::Rsa,
+                    hash: HashType::Sha512,
                 },
             ]),
             session_store: self.session_store,

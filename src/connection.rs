@@ -131,7 +131,7 @@ impl InitialConnState {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct ConnState {
     compression: CompressionMethod,
     encryption: ConcreteEncryption,

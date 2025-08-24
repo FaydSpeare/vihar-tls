@@ -1,7 +1,8 @@
 use std::{cell::RefCell, fmt::Debug};
 
 use crate::{
-    extensions::SigAlgo,
+    client::PublicKeyType,
+    extensions::SignatureType,
     gcm::{decrypt_aes_gcm, decrypt_cbc, encrypt_aes_gcm, encrypt_cbc},
     prf::{HmacHashAlgo, hmac, prf_sha256, prf_sha384},
 };
@@ -80,7 +81,6 @@ impl MacType {
 
 #[derive(Debug, Copy, Clone)]
 pub enum PrfAlgorithm {
-    Null,
     Sha256,
     Sha384,
 }
@@ -90,7 +90,6 @@ impl PrfAlgorithm {
         match self {
             Self::Sha256 => prf_sha256(secret, label, seed, len),
             Self::Sha384 => prf_sha384(secret, label, seed, len),
-            _ => unimplemented!(),
         }
     }
 
@@ -98,7 +97,6 @@ impl PrfAlgorithm {
         match self {
             Self::Sha256 => Sha256::digest(data).to_vec(),
             Self::Sha384 => Sha384::digest(data).to_vec(),
-            _ => unimplemented!(),
         }
     }
 }
@@ -128,12 +126,6 @@ impl StreamCipher {
     }
     pub fn decrypt(&self, ciphertext: &[u8]) -> Vec<u8> {
         self.encrypt(ciphertext)
-    }
-}
-
-impl Clone for StreamCipher {
-    fn clone(&self) -> Self {
-        unimplemented!()
     }
 }
 
@@ -182,7 +174,7 @@ impl AeadCipher {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub enum ConcreteEncryption {
     Block(BlockCipher),
     Aead(AeadCipher),
@@ -324,27 +316,23 @@ pub enum KeyExchangeAlgorithm {
 }
 
 impl KeyExchangeAlgorithm {
-    pub fn signature_type(&self) -> SigAlgo {
+    pub fn public_key_type(&self) -> Option<PublicKeyType> {
         match self {
-            Self::Rsa | Self::DheRsa | Self::DhRsa => SigAlgo::Rsa,
-            Self::DheDss => SigAlgo::Dsa,
-            Self::DhAnon => panic!(),
-            _ => unimplemented!(),
+            Self::Rsa | Self::DheRsa | Self::EcdheRsa => Some(PublicKeyType::Rsa),
+            Self::DheDss => Some(PublicKeyType::Dsa),
+            Self::DhRsa | Self::DhDss => Some(PublicKeyType::Dh),
+            Self::DhAnon => None,
         }
     }
-    pub fn kx_type(&self) -> KeyExchangeType {
+    pub fn signature_type(&self) -> Option<SignatureType> {
         match self {
-            Self::Rsa => KeyExchangeType::Rsa,
-            Self::DheDss | Self::DheRsa => KeyExchangeType::Dhe,
-            Self::DhDss | Self::DhRsa | Self::DhAnon => KeyExchangeType::Dh,
-            Self::EcdheRsa => KeyExchangeType::Ecdhe,
+            Self::Rsa | Self::DheRsa | Self::DhRsa | Self::EcdheRsa => Some(SignatureType::Rsa),
+            Self::DheDss | Self::DhDss => Some(SignatureType::Dsa),
+            Self::DhAnon => None,
         }
     }
     pub fn sends_server_certificate(&self) -> bool {
-        match self {
-            Self::DhAnon => false,
-            _ => true,
-        }
+        !matches!(self, Self::DhAnon)
     }
 }
 
@@ -368,6 +356,14 @@ macro_rules! define_cipher_suites {
                         [< $name:camel >] = $id,
                     )*
                 }
+            }
+
+            impl CipherSuiteId {
+
+                pub fn all() -> &'static [CipherSuiteId] {
+                    &[$(Self::[< $name:camel >]),*]
+                }
+
             }
 
             #[derive(Debug)]

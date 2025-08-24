@@ -1,7 +1,7 @@
 use crate::{
     client::PublicKeyAlgorithm,
     errors::AnError,
-    extensions::{HashAlgo, SignatureAlgorithm},
+    extensions::{HashType, SignatureAlgorithm},
 };
 use asn1_rs::Sequence;
 use num_bigint::BigUint;
@@ -47,11 +47,11 @@ pub fn get_public_key_algorithm(cert: &X509Certificate) -> PublicKeyAlgorithm {
 pub fn get_signature_algorithm(cert: &X509Certificate) -> SignatureAlgorithm {
     match cert.signature_algorithm.oid().to_id_string().as_str() {
         // RSA
-        "1.2.840.113549.1.1.5" => SignatureAlgorithm::rsa_with(HashAlgo::Sha1),
-        "1.2.840.113549.1.1.11" => SignatureAlgorithm::rsa_with(HashAlgo::Sha256),
-        "1.2.840.113549.1.1.12" => SignatureAlgorithm::rsa_with(HashAlgo::Sha384),
-        "1.2.840.113549.1.1.13" => SignatureAlgorithm::rsa_with(HashAlgo::Sha512),
-        "1.2.840.113549.1.1.14" => SignatureAlgorithm::rsa_with(HashAlgo::Sha224),
+        "1.2.840.113549.1.1.5" => SignatureAlgorithm::rsa_with(HashType::Sha1),
+        "1.2.840.113549.1.1.11" => SignatureAlgorithm::rsa_with(HashType::Sha256),
+        "1.2.840.113549.1.1.12" => SignatureAlgorithm::rsa_with(HashType::Sha384),
+        "1.2.840.113549.1.1.13" => SignatureAlgorithm::rsa_with(HashType::Sha512),
+        "1.2.840.113549.1.1.14" => SignatureAlgorithm::rsa_with(HashType::Sha224),
         // "1.2.840.113549.1.1.10", "rsassaPss",
         // ECDSA
         // ("1.2.840.10045.4.1", "ecdsa-with-SHA1"),
@@ -59,9 +59,9 @@ pub fn get_signature_algorithm(cert: &X509Certificate) -> SignatureAlgorithm {
         // ("1.2.840.10045.4.3.3", "ecdsa-with-SHA384"),
         // ("1.2.840.10045.4.3.4", "ecdsa-with-SHA512"),
         // DSA
-        "1.2.840.10040.4.3" => SignatureAlgorithm::dsa_with(HashAlgo::Sha1),
-        "2.16.840.1.101.3.4.3.1" => SignatureAlgorithm::dsa_with(HashAlgo::Sha224),
-        "2.16.840.1.101.3.4.3.2" => SignatureAlgorithm::dsa_with(HashAlgo::Sha256),
+        "1.2.840.10040.4.3" => SignatureAlgorithm::dsa_with(HashType::Sha1),
+        "2.16.840.1.101.3.4.3.1" => SignatureAlgorithm::dsa_with(HashType::Sha224),
+        "2.16.840.1.101.3.4.3.2" => SignatureAlgorithm::dsa_with(HashType::Sha256),
         x => unimplemented!("{x}"),
     }
 }

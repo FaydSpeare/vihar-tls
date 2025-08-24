@@ -388,7 +388,7 @@ impl TlsCodable for ExtendedMasterSecretExt {
 
 tls_codable_enum! {
     #[repr(u8)]
-    pub enum SigAlgo {
+    pub enum SignatureType {
         Rsa = 1,
         Dsa = 2,
         Ecdsa = 3
@@ -402,16 +402,16 @@ pub fn verify(
     signature: &[u8],
 ) -> Result<bool, String> {
     match (signature_algorithm.signature, signature_algorithm.hash) {
-        (SigAlgo::Dsa, HashAlgo::Sha1) => dsa_verify::<Sha1>(key_der, message, signature),
-        (SigAlgo::Dsa, HashAlgo::Sha224) => dsa_verify::<Sha224>(key_der, message, signature),
-        (SigAlgo::Dsa, HashAlgo::Sha256) => dsa_verify::<Sha256>(key_der, message, signature),
-        (SigAlgo::Dsa, HashAlgo::Sha384) => dsa_verify::<Sha384>(key_der, message, signature),
-        (SigAlgo::Dsa, HashAlgo::Sha512) => dsa_verify::<Sha512>(key_der, message, signature),
-        (SigAlgo::Rsa, HashAlgo::Sha1) => rsa_verify::<Sha1>(key_der, message, signature),
-        (SigAlgo::Rsa, HashAlgo::Sha224) => rsa_verify::<Sha224>(key_der, message, signature),
-        (SigAlgo::Rsa, HashAlgo::Sha256) => rsa_verify::<Sha256>(key_der, message, signature),
-        (SigAlgo::Rsa, HashAlgo::Sha384) => rsa_verify::<Sha384>(key_der, message, signature),
-        (SigAlgo::Rsa, HashAlgo::Sha512) => rsa_verify::<Sha512>(key_der, message, signature),
+        (SignatureType::Dsa, HashType::Sha1) => dsa_verify::<Sha1>(key_der, message, signature),
+        (SignatureType::Dsa, HashType::Sha224) => dsa_verify::<Sha224>(key_der, message, signature),
+        (SignatureType::Dsa, HashType::Sha256) => dsa_verify::<Sha256>(key_der, message, signature),
+        (SignatureType::Dsa, HashType::Sha384) => dsa_verify::<Sha384>(key_der, message, signature),
+        (SignatureType::Dsa, HashType::Sha512) => dsa_verify::<Sha512>(key_der, message, signature),
+        (SignatureType::Rsa, HashType::Sha1) => rsa_verify::<Sha1>(key_der, message, signature),
+        (SignatureType::Rsa, HashType::Sha224) => rsa_verify::<Sha224>(key_der, message, signature),
+        (SignatureType::Rsa, HashType::Sha256) => rsa_verify::<Sha256>(key_der, message, signature),
+        (SignatureType::Rsa, HashType::Sha384) => rsa_verify::<Sha384>(key_der, message, signature),
+        (SignatureType::Rsa, HashType::Sha512) => rsa_verify::<Sha512>(key_der, message, signature),
         _ => Err(format!(
             "No verification available for {signature_algorithm:?}"
         )),
@@ -424,23 +424,23 @@ pub fn sign(
     data: &[u8],
 ) -> Result<Vec<u8>, String> {
     match (signature_algorithm.signature, signature_algorithm.hash) {
-        (SigAlgo::Dsa, HashAlgo::Sha1) => dsa_sign::<Sha1>(key_der, data),
-        (SigAlgo::Dsa, HashAlgo::Sha224) => dsa_sign::<Sha224>(key_der, data),
-        (SigAlgo::Dsa, HashAlgo::Sha256) => dsa_sign::<Sha256>(key_der, data),
-        (SigAlgo::Dsa, HashAlgo::Sha384) => dsa_sign::<Sha384>(key_der, data),
-        (SigAlgo::Dsa, HashAlgo::Sha512) => dsa_sign::<Sha512>(key_der, data),
-        (SigAlgo::Rsa, HashAlgo::Sha1) => rsa_sign::<Sha1>(key_der, data),
-        (SigAlgo::Rsa, HashAlgo::Sha224) => rsa_sign::<Sha224>(key_der, data),
-        (SigAlgo::Rsa, HashAlgo::Sha256) => rsa_sign::<Sha256>(key_der, data),
-        (SigAlgo::Rsa, HashAlgo::Sha384) => rsa_sign::<Sha384>(key_der, data),
-        (SigAlgo::Rsa, HashAlgo::Sha512) => rsa_sign::<Sha512>(key_der, data),
+        (SignatureType::Dsa, HashType::Sha1) => dsa_sign::<Sha1>(key_der, data),
+        (SignatureType::Dsa, HashType::Sha224) => dsa_sign::<Sha224>(key_der, data),
+        (SignatureType::Dsa, HashType::Sha256) => dsa_sign::<Sha256>(key_der, data),
+        (SignatureType::Dsa, HashType::Sha384) => dsa_sign::<Sha384>(key_der, data),
+        (SignatureType::Dsa, HashType::Sha512) => dsa_sign::<Sha512>(key_der, data),
+        (SignatureType::Rsa, HashType::Sha1) => rsa_sign::<Sha1>(key_der, data),
+        (SignatureType::Rsa, HashType::Sha224) => rsa_sign::<Sha224>(key_der, data),
+        (SignatureType::Rsa, HashType::Sha256) => rsa_sign::<Sha256>(key_der, data),
+        (SignatureType::Rsa, HashType::Sha384) => rsa_sign::<Sha384>(key_der, data),
+        (SignatureType::Rsa, HashType::Sha512) => rsa_sign::<Sha512>(key_der, data),
         _ => Err(format!("No signing available for {signature_algorithm:?}")),
     }
 }
 
 tls_codable_enum! {
     #[repr(u8)]
-    pub enum HashAlgo {
+    pub enum HashType {
         Md5 = 1,
         Sha1 = 2,
         Sha224 = 3,
@@ -452,20 +452,20 @@ tls_codable_enum! {
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 pub struct SignatureAlgorithm {
-    pub hash: HashAlgo,
-    pub signature: SigAlgo,
+    pub hash: HashType,
+    pub signature: SignatureType,
 }
 
 impl SignatureAlgorithm {
-    pub fn rsa_with(hash: HashAlgo) -> Self {
+    pub fn rsa_with(hash: HashType) -> Self {
         Self {
-            signature: SigAlgo::Rsa,
+            signature: SignatureType::Rsa,
             hash,
         }
     }
-    pub fn dsa_with(hash: HashAlgo) -> Self {
+    pub fn dsa_with(hash: HashType) -> Self {
         Self {
-            signature: SigAlgo::Dsa,
+            signature: SignatureType::Dsa,
             hash,
         }
     }
@@ -474,8 +474,8 @@ impl SignatureAlgorithm {
 impl TlsCodable for SignatureAlgorithm {
     fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
         Ok(Self {
-            hash: HashAlgo::read_from(reader)?,
-            signature: SigAlgo::read_from(reader)?,
+            hash: HashType::read_from(reader)?,
+            signature: SignatureType::read_from(reader)?,
         })
     }
 
@@ -497,8 +497,8 @@ impl TlsCodable for SignatureAlgorithmsExt {
         let mut algorithms = vec![];
         for _ in 0..algorithm_count {
             algorithms.push(SignatureAlgorithm {
-                hash: HashAlgo::read_from(reader)?,
-                signature: SigAlgo::read_from(reader)?,
+                hash: HashType::read_from(reader)?,
+                signature: SignatureType::read_from(reader)?,
             });
         }
         Ok(Self {
