@@ -2,6 +2,8 @@
 
 ======== MVP =========
 
+- server needs to select correct certificate based on suite
+
 - Native root certs for linux and windows
 
 - Fix bad decryption overflow panics

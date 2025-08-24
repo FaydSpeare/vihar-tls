@@ -6,7 +6,7 @@ use crate::{
     ciphersuite::{CipherSuiteId, CompressionMethod},
     encoding::{LengthPrefixedVec, MaybeEmpty, Reader, TlsCodable},
     errors::{DecodingError, InvalidEncodingError},
-    gcm::{decrypt_aes_cbc, encrypt_aes_cbc},
+    gcm::{decrypt_cbc, encrypt_cbc},
     messages::{CeritificateList, ProtocolVersion},
     prf::{HmacHashAlgo, hmac},
     storage::StekInfo,
@@ -59,7 +59,7 @@ impl SessionTicket {
         }
 
         let ciphertext: Vec<u8> = self.encrypted_state.to_vec();
-        let plaintext = decrypt_aes_cbc::<Aes128>(&ciphertext, &stek.enc_key, &self.iv);
+        let plaintext = decrypt_cbc::<Aes128>(&ciphertext, &stek.enc_key, &self.iv);
         // TODO: check padding
 
         let mut reader = Reader::new(&plaintext);
@@ -112,7 +112,7 @@ impl StatePlaintext {
         plaintext.extend(std::iter::repeat_n(pad_len as u8, pad_len));
 
         let iv: [u8; 16] = utils::get_random_bytes(16).try_into().unwrap();
-        let ciphertext = encrypt_aes_cbc::<Aes128>(&plaintext, &stek.enc_key, &iv);
+        let ciphertext = encrypt_cbc::<Aes128>(&plaintext, &stek.enc_key, &iv);
         let encrypted_state =
             EncryptedState::try_from(ciphertext).expect("failed to convert to encrypted_state");
         let data = [&stek.key_name[..], &iv, &encrypted_state.get_encoding()].concat();

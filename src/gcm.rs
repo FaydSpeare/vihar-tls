@@ -3,7 +3,7 @@ use aes::cipher::{
     BlockDecrypt, BlockEncrypt, BlockSizeUser, KeyInit, generic_array::GenericArray,
 };
 
-pub fn encrypt_aes_cbc<C: KeyInit + BlockEncrypt + BlockSizeUser>(
+pub fn encrypt_cbc<C: KeyInit + BlockEncrypt + BlockSizeUser>(
     plaintext: &[u8],
     key: &[u8],
     iv: &[u8],
@@ -23,7 +23,7 @@ pub fn encrypt_aes_cbc<C: KeyInit + BlockEncrypt + BlockSizeUser>(
     ciphertext
 }
 
-pub fn decrypt_aes_cbc<C: KeyInit + BlockDecrypt>(
+pub fn decrypt_cbc<C: KeyInit + BlockDecrypt>(
     ciphertext: &[u8],
     key: &[u8],
     iv: &[u8],

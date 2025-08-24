@@ -2,10 +2,11 @@ use std::{cell::RefCell, fmt::Debug};
 
 use crate::{
     extensions::SigAlgo,
-    gcm::{decrypt_aes_cbc, decrypt_aes_gcm, encrypt_aes_cbc, encrypt_aes_gcm},
+    gcm::{decrypt_aes_gcm, decrypt_cbc, encrypt_aes_gcm, encrypt_cbc},
     prf::{HmacHashAlgo, hmac, prf_sha256, prf_sha384},
 };
 use aes::{Aes128, Aes256};
+use des::TdesEde3;
 use paste::paste;
 use rc4::{KeyInit, Rc4, StreamCipher as Rc4StreamCipher};
 use sha2::{Digest, Sha256, Sha384};
@@ -195,7 +196,7 @@ pub enum EncryptionType {
     Aes256Cbc,
     Aes128Gcm,
     Aes256Gcm,
-    ThreeDesEdeCbc,
+    TripleDesEdeCbc,
     Rc4128,
 }
 
@@ -206,15 +207,22 @@ impl EncryptionType {
             Self::Null => ConcreteEncryption::Stream(StreamCipher::Null),
             Self::Aes128Cbc => ConcreteEncryption::Block(BlockCipher {
                 enc_key,
-                encrypt_fn: encrypt_aes_cbc::<Aes128>,
-                decrypt_fn: decrypt_aes_cbc::<Aes128>,
+                encrypt_fn: encrypt_cbc::<Aes128>,
+                decrypt_fn: decrypt_cbc::<Aes128>,
                 block_length: self.block_length(),
                 record_iv_length,
             }),
             Self::Aes256Cbc => ConcreteEncryption::Block(BlockCipher {
                 enc_key,
-                encrypt_fn: encrypt_aes_cbc::<Aes256>,
-                decrypt_fn: decrypt_aes_cbc::<Aes256>,
+                encrypt_fn: encrypt_cbc::<Aes256>,
+                decrypt_fn: decrypt_cbc::<Aes256>,
+                block_length: self.block_length(),
+                record_iv_length,
+            }),
+            Self::TripleDesEdeCbc => ConcreteEncryption::Block(BlockCipher {
+                enc_key,
+                encrypt_fn: encrypt_cbc::<TdesEde3>,
+                decrypt_fn: decrypt_cbc::<TdesEde3>,
                 block_length: self.block_length(),
                 record_iv_length,
             }),
@@ -237,7 +245,6 @@ impl EncryptionType {
             Self::Rc4128 => ConcreteEncryption::Stream(StreamCipher::Rc4(RefCell::new(
                 Rc4::new_from_slice(&enc_key).unwrap(),
             ))),
-            _ => unimplemented!(),
         }
     }
     pub fn key_length(&self) -> usize {
@@ -247,8 +254,8 @@ impl EncryptionType {
             Self::Aes256Cbc => 32,
             Self::Aes128Gcm => 16,
             Self::Aes256Gcm => 32,
+            Self::TripleDesEdeCbc => 24,
             Self::Rc4128 => 16,
-            _ => unimplemented!(),
         }
     }
 
@@ -258,8 +265,9 @@ impl EncryptionType {
             Self::Aes256Cbc => 16,
             Self::Aes128Gcm => 16,
             Self::Aes256Gcm => 16,
+            Self::TripleDesEdeCbc => 8,
             Self::Rc4128 => unreachable!(),
-            _ => unimplemented!(),
+            Self::Null => unreachable!(),
         }
     }
 
@@ -269,8 +277,8 @@ impl EncryptionType {
             Self::Aes128Gcm => 8,
             Self::Aes256Gcm => 8,
             Self::Aes128Cbc | Self::Aes256Cbc => self.block_length(),
+            Self::TripleDesEdeCbc => 8,
             Self::Rc4128 => 0,
-            _ => unimplemented!(),
         }
     }
 
@@ -279,8 +287,7 @@ impl EncryptionType {
             Self::Null => 0,
             Self::Aes128Gcm => 4,
             Self::Aes256Gcm => 4,
-            Self::Aes128Cbc | Self::Aes256Cbc | Self::Rc4128 => 0,
-            _ => unimplemented!(),
+            Self::Aes128Cbc | Self::Aes256Cbc | Self::Rc4128 | Self::TripleDesEdeCbc => 0,
         }
     }
 
@@ -288,10 +295,11 @@ impl EncryptionType {
         match self {
             Self::Aes128Cbc => CipherType::Block,
             Self::Aes256Cbc => CipherType::Block,
+            Self::TripleDesEdeCbc => CipherType::Block,
             Self::Aes128Gcm => CipherType::Aead,
             Self::Aes256Gcm => CipherType::Aead,
+            Self::Null => CipherType::Stream,
             Self::Rc4128 => CipherType::Stream,
-            _ => unimplemented!(),
         }
     }
 }
@@ -304,7 +312,7 @@ pub enum KeyExchangeType {
     Ecdhe,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum KeyExchangeAlgorithm {
     Rsa,
     DheRsa,
@@ -476,7 +484,7 @@ define_cipher_suites! {
     },
     RSA_WITH_3DES_EDE_CBC_SHA = 0x000a {
         mac = MacType::HmacSha1,
-        enc = EncryptionType::ThreeDesEdeCbc,
+        enc = EncryptionType::TripleDesEdeCbc,
         kx  = KeyExchangeAlgorithm::Rsa,
         prf = PrfAlgorithm::Sha256,
     },
@@ -508,25 +516,25 @@ define_cipher_suites! {
     // RFC5246 Group 2
     DH_DSS_WITH_3DES_EDE_CBC_SHA = 0x000d {
         mac = MacType::HmacSha1,
-        enc = EncryptionType::ThreeDesEdeCbc,
+        enc = EncryptionType::TripleDesEdeCbc,
         kx  = KeyExchangeAlgorithm::DhDss,
         prf = PrfAlgorithm::Sha256,
     },
     DH_RSA_WITH_3DES_EDE_CBC_SHA = 0x0010 {
         mac = MacType::HmacSha1,
-        enc = EncryptionType::ThreeDesEdeCbc,
+        enc = EncryptionType::TripleDesEdeCbc,
         kx  = KeyExchangeAlgorithm::DhRsa,
         prf = PrfAlgorithm::Sha256,
     },
     DHE_DSS_WITH_3DES_EDE_CBC_SHA = 0x0013 {
         mac = MacType::HmacSha1,
-        enc = EncryptionType::ThreeDesEdeCbc,
+        enc = EncryptionType::TripleDesEdeCbc,
         kx  = KeyExchangeAlgorithm::DheDss,
         prf = PrfAlgorithm::Sha256,
     },
     DHE_RSA_WITH_3DES_EDE_CBC_SHA = 0x0016 {
         mac = MacType::HmacSha1,
-        enc = EncryptionType::ThreeDesEdeCbc,
+        enc = EncryptionType::TripleDesEdeCbc,
         kx  = KeyExchangeAlgorithm::DheRsa,
         prf = PrfAlgorithm::Sha256,
     },
@@ -636,7 +644,7 @@ define_cipher_suites! {
     },
     DH_anon_WITH_3DES_EDE_CBC_SHA = 0x001b {
         mac = MacType::HmacSha1,
-        enc = EncryptionType::ThreeDesEdeCbc,
+        enc = EncryptionType::TripleDesEdeCbc,
         kx  = KeyExchangeAlgorithm::DhAnon,
         prf = PrfAlgorithm::Sha256,
     },

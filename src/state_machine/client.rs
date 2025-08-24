@@ -427,6 +427,11 @@ impl HandleRecord<TlsState> for AwaitServerKeyExchangeOrCertificateRequest {
             TlsEvent::IncomingMessage(TlsMessage::Handshake(
                 handshake @ TlsHandshake::CertificateRequest(certificate_request),
             )) => {
+                // Anonymous servers are not permitted to request a client certificate
+                if self.negotiated_cipher_suite.kx_algorithm() == KeyExchangeAlgorithm::DhAnon {
+                    return close_connection(TlsAlertDesc::HandshakeFailure);
+                }
+
                 handshake.write_to(&mut self.handshakes);
                 Ok((
                     AwaitServerKeyExchange {

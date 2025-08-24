@@ -15,6 +15,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = TlsConfigBuilder::new()
         .with_cipher_suites(
             [
+                pcs!(3, CipherSuiteId::RsaWith3DesEdeCbcSha),
                 pcs!(3, CipherSuiteId::DhAnonWithAes128CbcSha),
                 pcs!(3, CipherSuiteId::DhRsaWithAes128GcmSha256),
                 pcs!(3, CipherSuiteId::DhRsaWithAes128CbcSha),
@@ -32,7 +33,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_session_store("server-sdb")
         .with_certificates(
             Certificates::new()
-                // .with_rsa("testing/rsacert.pem", "testing/rsakey.pem")
+                .with_rsa("testing/rsacert.pem", "testing/rsakey.pem")
                 // .with_dsa("testing/dsacert.pem", "testing/dsakey.pem")
                 .with_dh("dh/dhcert.pem", "dh/dhkey.pem"),
         )
