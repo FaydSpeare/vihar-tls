@@ -2,25 +2,22 @@
 
 ======== MVP =========
 
-- Seperate stek and session store
+- [3] Seperate config for client and server
+- [1] add DistinguishedName client auth config
+- [2] Seperate stek and session store
+- [2] Validate client certificate
+- [2] Certificate validation alerts
 
-- Seperate config
-
-- Validate client certificate
-
-- Certificate validation alerts
-
-- Native root certs for linux and windows
-
-- HelloRequest
+- [5] HelloRequest
+- [5] Renegotiation
 - Need to finished reading before starting client.renegotiate
 
-- add DistinguishedName client auth config
-- Fixed DH client auth => implicit CKX
+- [3] Fixed DH client auth => implicit CKX
 
-- Clean up all the DH stuff
+- [2] Native root certs for linux and windows
 
-==============================================
+
+======== Further =========
 
 - RFC5246 D3 - setting for min and max key sizes
 
@@ -31,7 +28,6 @@
 - Do sessions need to be invalidated when an fatal error occurs during handshake. E.g. illegal parameter when resuming session
 - Do session tickets need to be invalidated for fatal alerts, how?
 - servername a part of session?
-
 
 === Questions ===
 

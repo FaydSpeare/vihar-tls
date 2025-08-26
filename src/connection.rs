@@ -725,7 +725,7 @@ impl<T: Read + Write> TlsConnection<T> {
         }
 
         let elapsed = Instant::now() - start_time;
-        println!("elapsed: {} seconds", elapsed.as_secs_f64());
+        println!("Elapsed: {} secs", elapsed.as_secs_f64());
         Ok(())
     }
 
