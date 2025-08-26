@@ -148,6 +148,17 @@ impl TlsCodable for u32 {
     }
 }
 
+impl TlsCodable for u64 {
+    fn write_to(&self, bytes: &mut Vec<u8>) {
+        bytes.extend_from_slice(&self.to_be_bytes());
+    }
+
+    fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
+        let bytes: [u8; 8] = reader.consume(8)?.try_into().unwrap();
+        Ok(u64::from_be_bytes(bytes))
+    }
+}
+
 impl<const N: usize> TlsCodable for [u8; N] {
     fn write_to(&self, bytes: &mut Vec<u8>) {
         bytes.extend_from_slice(&self[..]);

@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::alert::Alert;
+use crate::alert::AlertDesc;
 
 #[derive(Debug, Error)]
 pub enum InvalidEncodingError {
@@ -32,15 +32,15 @@ pub enum TlsError {
     Decoding(#[from] DecodingError),
 
     #[error("TlsAlert: {0:?}")]
-    Alert(Alert),
+    FatalAlert(AlertDesc),
 
     #[error("Connection has been closed")]
     ConnectionClosed,
 }
 
-impl From<Alert> for TlsError {
-    fn from(value: Alert) -> Self {
-        Self::Alert(value)
+impl From<AlertDesc> for TlsError {
+    fn from(value: AlertDesc) -> Self {
+        Self::FatalAlert(value)
     }
 }
 

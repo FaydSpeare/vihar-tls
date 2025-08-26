@@ -37,19 +37,13 @@ impl RecordLayer {
             let mut reader = Reader::new(&self.buffer);
 
             let ciphertext = TlsCiphertext::read_from(&mut reader)?;
-            //println!("ciphertext len {}", ciphertext.fragment.len());
             if ciphertext.fragment.len() > max_fragmentation_len + 2048 {
-                return Err(TlsError::Alert(Alert::fatal(
-                    AlertDesc::RecordOverflow,
-                )));
+                return Err(AlertDesc::RecordOverflow.into());
             }
 
             let plaintext = conn_state.decrypt(ciphertext)?;
-            //println!("plaintext len {}", plaintext.fragment.len());
             if plaintext.fragment.len() > max_fragmentation_len {
-                return Err(TlsError::Alert(Alert::fatal(
-                    AlertDesc::RecordOverflow,
-                )));
+                return Err(AlertDesc::RecordOverflow.into());
             }
 
             plaintext.validate(policy)?;
@@ -89,9 +83,7 @@ impl RecordLayer {
                 }
                 TlsContentType::Unknown(x) => {
                     error!("Received unknown record type: {x}");
-                    return Err(TlsError::Alert(Alert::fatal(
-                        AlertDesc::UnexpectedMessage,
-                    )));
+                    return Err(AlertDesc::UnexpectedMessage.into());
                 }
             }
         }

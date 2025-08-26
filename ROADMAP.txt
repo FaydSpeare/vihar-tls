@@ -2,13 +2,15 @@
 
 ======== MVP =========
 
+- Seperate stek and session store
+
+- Seperate config
+
 - Validate client certificate
 
-- Need to allow receiving unknown cipher suites
+- Certificate validation alerts
 
 - Native root certs for linux and windows
-
-- Fix bad decryption overflow panics
 
 - HelloRequest
 - Need to finished reading before starting client.renegotiate

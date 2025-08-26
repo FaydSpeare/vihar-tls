@@ -5,7 +5,7 @@ use std::{collections::HashSet, fmt::Debug};
 
 use crate::{
     TlsPolicy, TlsValidateable, UnrecognisedServerNamePolicy,
-    alert::{Alert, AlertDesc},
+    alert::AlertDesc,
     encoding::{
         LengthPrefixWriter, LengthPrefixedVec, MaybeEmpty, NonEmpty, Reader, Reconstrainable,
         TlsCodable,
@@ -161,7 +161,7 @@ impl Extensions {
         Self { list: None }
     }
 
-    pub fn validate(&self, policy: &TlsPolicy) -> Result<(), Alert> {
+    pub fn validate(&self, policy: &TlsPolicy) -> Result<(), AlertDesc> {
         if let Some(extensions) = &self.list {
             for item in extensions.iter() {
                 if let Extension::ServerName(ext) = item {
@@ -624,7 +624,7 @@ impl ServerNameExt {
         }
     }
 
-    pub fn validate(&self, policy: &TlsPolicy) -> Result<(), Alert> {
+    pub fn validate(&self, policy: &TlsPolicy) -> Result<(), AlertDesc> {
         let mut seen = HashSet::new();
 
         if let Some(list) = &self.list {
@@ -633,15 +633,15 @@ impl ServerNameExt {
                 .iter()
                 .all(|server_name| seen.insert(server_name.name_type()))
             {
-                return Err(Alert::fatal(AlertDesc::DecodeError));
+                return Err(AlertDesc::DecodeError);
             }
 
-            if let UnrecognisedServerNamePolicy::Alert(level) = policy.unrecognised_server_name {
+            if let UnrecognisedServerNamePolicy::Alert(_) = policy.unrecognised_server_name {
                 if list
                     .iter()
                     .any(|server_name| matches!(server_name, ServerName::Unknown(_, _)))
                 {
-                    return Err(Alert::new(level, AlertDesc::UnrecognisedName));
+                    return Err(AlertDesc::UnrecognisedName);
                 }
             }
         }
@@ -730,10 +730,10 @@ impl TlsCodable for MaxFragmentLenExt {
 }
 
 impl TlsValidateable for MaxFragmentLenExt {
-    fn validate(&self, _: &TlsPolicy) -> Result<(), Alert> {
+    fn validate(&self, _: &TlsPolicy) -> Result<(), AlertDesc> {
         if let MaxFragmentLength::Unknown(x) = self.value {
             trace!("Invalid max_fragment_length value: {x}");
-            return Err(Alert::fatal(AlertDesc::IllegalParameter));
+            return Err(AlertDesc::IllegalParameter);
         }
         Ok(())
     }

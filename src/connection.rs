@@ -6,7 +6,9 @@ use crate::ciphersuite::{
 use crate::client::TlsConfig;
 use crate::encoding::TlsCodable;
 use crate::errors::{DecodingError, TlsError};
-use crate::messages::{TlsCiphertext, TlsCompressed, TlsContentType, TlsMessage, TlsPlaintext};
+use crate::messages::{
+    ProtocolVersion, TlsCiphertext, TlsCompressed, TlsContentType, TlsMessage, TlsPlaintext,
+};
 use crate::record::RecordLayer;
 use crate::state_machine::{
     ClientStateMachine, ServerStateMachine, SessionIdResumption, SessionResumption,
@@ -131,6 +133,34 @@ impl InitialConnState {
     }
 }
 
+fn create_mac_data(
+    content_type: TlsContentType,
+    version: ProtocolVersion,
+    fragment: &[u8],
+    seq_num: u64,
+) -> Vec<u8> {
+    let mut bytes = Vec::<u8>::new();
+    seq_num.write_to(&mut bytes);
+    content_type.write_to(&mut bytes);
+    version.write_to(&mut bytes);
+    (fragment.len() as u16).write_to(&mut bytes);
+    bytes.extend_from_slice(fragment);
+    bytes
+}
+fn create_aad(
+    content_type: TlsContentType,
+    version: ProtocolVersion,
+    fragment_len: usize,
+    seq_num: u64,
+) -> Vec<u8> {
+    let mut aad = Vec::<u8>::new();
+    seq_num.write_to(&mut aad);
+    content_type.write_to(&mut aad);
+    version.write_to(&mut aad);
+    (fragment_len as u16).write_to(&mut aad);
+    aad
+}
+
 #[derive(Debug)]
 pub struct ConnState {
     compression: CompressionMethod,
@@ -182,25 +212,19 @@ impl ConnState {
     fn decrypt_stream_cipher(
         ciphertext: TlsCiphertext,
         cipher: &StreamCipher,
-        mac: &ConcreteMac,
+        mac_algorithm: &ConcreteMac,
         seq_num: u64,
-    ) -> Result<TlsCompressed, TlsError> {
+    ) -> Result<TlsCompressed, AlertDesc> {
         let content_type = ciphertext.content_type;
         let version = ciphertext.version;
         let decrypted = cipher.decrypt(&ciphertext.fragment);
+        let (fragment, mac) = decrypted
+            .split_at_checked(decrypted.len() - mac_algorithm.length())
+            .ok_or(AlertDesc::BadRecordMac)?;
 
-        let (fragment, mac_bytes) = decrypted.split_at(decrypted.len() - mac.length());
-
-        let mut bytes = Vec::<u8>::new();
-        bytes.extend_from_slice(&seq_num.to_be_bytes());
-        bytes.push(u8::from(content_type));
-        bytes.extend([3, 3]);
-        bytes.extend((fragment.len() as u16).to_be_bytes());
-        bytes.extend_from_slice(fragment);
-
-        if mac_bytes != mac.compute(&bytes) {
-            debug!("mac verification failed");
-            return Err(Alert::fatal(AlertDesc::BadRecordMac).into());
+        let mac_data = create_mac_data(content_type, version, fragment, seq_num);
+        if mac != mac_algorithm.compute(&mac_data) {
+            return Err(AlertDesc::BadRecordMac);
         }
 
         Ok(TlsCompressed {
@@ -213,37 +237,43 @@ impl ConnState {
     fn decrypt_block_cipher(
         ciphertext: TlsCiphertext,
         cipher: &BlockCipher,
-        mac: &ConcreteMac,
+        mac_algorithm: &ConcreteMac,
         seq_num: u64,
-    ) -> Result<TlsCompressed, TlsError> {
+    ) -> Result<TlsCompressed, AlertDesc> {
         let content_type = ciphertext.content_type;
         let version = ciphertext.version;
-        let (iv, ciphertext) = ciphertext.fragment.split_at(cipher.record_iv_length);
-        let decrypted = cipher.decrypt(ciphertext, iv);
+        let (iv, ciphertext) = ciphertext
+            .fragment
+            .split_at_checked(cipher.record_iv_length)
+            .ok_or(AlertDesc::BadRecordMac)?;
 
+        let decrypted = cipher.decrypt(ciphertext, iv);
         let len = decrypted.len();
         let padding_len = decrypted[len - 1];
-        let mac_len = mac.length();
-        let fragment_len = len - (padding_len as usize) - 1 - mac_len;
-        let (fragment, mac_and_padding) = decrypted.split_at(fragment_len);
-        let (actual_mac, padding_bytes) = mac_and_padding.split_at(mac_len);
+        let mac_len = mac_algorithm.length();
 
-        if padding_bytes.iter().any(|b| *b != padding_len) {
-            debug!("invalid padding bytes: {:?}", padding_bytes);
-            return Err(Alert::fatal(AlertDesc::BadRecordMac).into());
-        }
+        let fragment_len = len
+            .checked_sub(padding_len as usize + 1 + mac_len)
+            .ok_or(AlertDesc::BadRecordMac)?;
 
-        let mut bytes = Vec::<u8>::new();
-        bytes.extend_from_slice(&seq_num.to_be_bytes());
-        bytes.push(u8::from(content_type));
-        bytes.extend([3, 3]);
-        bytes.extend((fragment.len() as u16).to_be_bytes());
-        bytes.extend_from_slice(fragment);
+        let (fragment, mac_and_padding) = decrypted
+            .split_at_checked(fragment_len)
+            .ok_or(AlertDesc::BadRecordMac)?;
 
-        let expected_mac = mac.compute(&bytes);
-        if actual_mac != expected_mac {
+        let (mac, padding) = mac_and_padding
+            .split_at_checked(mac_len)
+            .ok_or(AlertDesc::BadRecordMac)?;
+
+        padding
+            .iter()
+            .all(|&b| b == padding_len)
+            .then_some(())
+            .ok_or(AlertDesc::BadRecordMac)?;
+
+        let mac_data = create_mac_data(content_type, version, fragment, seq_num);
+        if mac != mac_algorithm.compute(&mac_data) {
             debug!("mac verification failed");
-            return Err(Alert::fatal(AlertDesc::BadRecordMac).into());
+            return Err(AlertDesc::BadRecordMac);
         }
 
         Ok(TlsCompressed {
@@ -257,22 +287,25 @@ impl ConnState {
         ciphertext: TlsCiphertext,
         cipher: &AeadCipher,
         seq_num: u64,
-    ) -> Result<TlsCompressed, TlsError> {
+    ) -> Result<TlsCompressed, AlertDesc> {
         let content_type = ciphertext.content_type;
         let version = ciphertext.version;
-        let (explicit, ciphertext) = ciphertext.fragment.split_at(cipher.record_iv_length);
-        let iv = [&cipher.write_iv, explicit].concat();
-        let mut aad = Vec::<u8>::new();
-        aad.extend_from_slice(&seq_num.to_be_bytes());
-        aad.push(u8::from(content_type));
-        aad.extend([3, 3]);
+        let (explicit, ciphertext) = ciphertext
+            .fragment
+            .split_at_checked(cipher.record_iv_length)
+            .ok_or(AlertDesc::BadRecordMac)?;
 
         // Remeber the -16 to remove the tag length
-        aad.extend(((ciphertext.len() - 16) as u16).to_be_bytes());
-        let fragment = match cipher.decrypt(ciphertext, &iv, &aad) {
-            Ok(fragment) => fragment,
-            Err(_) => return Err(Alert::fatal(AlertDesc::BadRecordMac).into()),
-        };
+        let fragment_len = ciphertext
+            .len()
+            .checked_sub(16)
+            .ok_or(AlertDesc::BadRecordMac)?;
+
+        let iv = [&cipher.write_iv, explicit].concat();
+        let aad = create_aad(content_type, version, fragment_len, seq_num);
+        let fragment = cipher
+            .decrypt(ciphertext, &iv, &aad)
+            .map_err(|_| AlertDesc::BadRecordMac)?;
 
         Ok(TlsCompressed {
             content_type,
@@ -284,49 +317,46 @@ impl ConnState {
     fn encrypt_stream_cipher(
         compressed: TlsCompressed,
         cipher: &StreamCipher,
-        mac: &ConcreteMac,
+        mac_algorithm: &ConcreteMac,
         seq_num: u64,
-    ) -> Result<TlsCiphertext, DecodingError> {
-        let mut bytes = Vec::<u8>::new();
-        bytes.extend_from_slice(&seq_num.to_be_bytes());
-        bytes.push(u8::from(compressed.content_type));
-        bytes.extend([compressed.version.major, compressed.version.minor]);
-        bytes.extend((compressed.fragment.len() as u16).to_be_bytes());
-        bytes.extend_from_slice(&compressed.fragment);
-        let mac = mac.compute(&bytes);
+    ) -> TlsCiphertext {
+        let mac_data = create_mac_data(
+            compressed.content_type,
+            compressed.version,
+            &compressed.fragment,
+            seq_num,
+        );
+        let mac = mac_algorithm.compute(&mac_data);
 
         let mut to_encrypt = Vec::<u8>::new();
         to_encrypt.extend_from_slice(&compressed.fragment);
         to_encrypt.extend_from_slice(&mac);
 
         let ciphertext = cipher.encrypt(&to_encrypt);
-        Ok(TlsCiphertext {
+        TlsCiphertext {
             content_type: compressed.content_type,
             version: compressed.version,
             fragment: ciphertext,
-        })
+        }
     }
 
     fn encrypt_block_cipher(
         compressed: TlsCompressed,
         cipher: &BlockCipher,
-        mac: &ConcreteMac,
+        mac_algorithm: &ConcreteMac,
         seq_num: u64,
-    ) -> Result<TlsCiphertext, DecodingError> {
-        let mut bytes = Vec::<u8>::new();
-        bytes.extend_from_slice(&seq_num.to_be_bytes());
-        bytes.push(u8::from(compressed.content_type));
-        bytes.extend([compressed.version.major, compressed.version.minor]);
-        bytes.extend((compressed.fragment.len() as u16).to_be_bytes());
-        bytes.extend_from_slice(&compressed.fragment);
-        let mac = mac.compute(&bytes);
+    ) -> TlsCiphertext {
+        let mac_data = create_mac_data(
+            compressed.content_type,
+            compressed.version,
+            &compressed.fragment,
+            seq_num,
+        );
+        let mac = mac_algorithm.compute(&mac_data);
 
-        let block_len = cipher.block_length;
-        let padding_len = block_len - ((compressed.fragment.len() + mac.len() + 1) % block_len);
-        let mut padding = Vec::<u8>::new();
-        for _ in 0..padding_len {
-            padding.push(padding_len as u8);
-        }
+        let padding_len = cipher.block_length
+            - ((compressed.fragment.len() + mac.len() + 1) % cipher.block_length);
+        let padding = vec![padding_len as u8; padding_len];
 
         let mut to_encrypt = Vec::<u8>::new();
         to_encrypt.extend_from_slice(&compressed.fragment);
@@ -340,36 +370,36 @@ impl ConnState {
         let mut fragment = Vec::<u8>::new();
         fragment.extend_from_slice(&iv);
         fragment.extend_from_slice(&ciphertext);
-        Ok(TlsCiphertext {
+        TlsCiphertext {
             content_type: compressed.content_type,
             version: compressed.version,
             fragment,
-        })
+        }
     }
 
     fn encrypt_aead_cipher(
         compressed: TlsCompressed,
         cipher: &AeadCipher,
         seq_num: u64,
-    ) -> Result<TlsCiphertext, DecodingError> {
+    ) -> TlsCiphertext {
         let implicit: [u8; 4] = cipher.write_iv.clone().try_into().unwrap();
-        let explicit = utils::get_random_bytes(cipher.record_iv_length);
+        let explicit = seq_num.get_encoding();
         let nonce = [&implicit[..], &explicit[..]].concat();
         assert_eq!(nonce.len(), 12);
 
-        let mut aad = Vec::<u8>::new();
-        aad.extend_from_slice(&seq_num.to_be_bytes());
-        aad.push(u8::from(compressed.content_type));
-        aad.extend([compressed.version.major, compressed.version.minor]);
-        aad.extend((compressed.fragment.len() as u16).to_be_bytes());
-
+        let aad = create_aad(
+            compressed.content_type,
+            compressed.version,
+            compressed.fragment.len(),
+            seq_num,
+        );
         let ciphertext = cipher.encrypt(&compressed.fragment, &nonce, &aad);
         let fragment = [&explicit, &ciphertext[..]].concat();
-        Ok(TlsCiphertext {
+        TlsCiphertext {
             content_type: compressed.content_type,
             version: compressed.version,
             fragment,
-        })
+        }
     }
 
     pub fn compress(&mut self, plaintext: TlsPlaintext) -> TlsCompressed {
@@ -394,7 +424,7 @@ impl ConnState {
         }
     }
 
-    pub fn encrypt(&mut self, plaintext: TlsPlaintext) -> Result<TlsCiphertext, DecodingError> {
+    pub fn encrypt(&mut self, plaintext: TlsPlaintext) -> TlsCiphertext {
         let compressed = self.compress(plaintext);
         let ciphertext = match &self.encryption {
             ConcreteEncryption::Block(cipher) => {
@@ -582,7 +612,7 @@ impl<T: Read + Write> TlsConnection<T> {
                     return Ok(msg);
                 }
                 Err(e) => match e {
-                    TlsError::Alert(alert) => self.send_alert(alert)?,
+                    TlsError::FatalAlert(desc) => self.send_alert(Alert::fatal(desc))?,
                     TlsError::Decoding(e @ DecodingError::RanOutOfData) => {
                         trace!("Record parsing failed: {e}");
                     }
@@ -617,7 +647,7 @@ impl<T: Read + Write> TlsConnection<T> {
         let content_type = msg.content_type();
         for bytes in Fragmenter::new(msg.encode(), self.max_fragment_len) {
             let plaintext = TlsPlaintext::new(content_type, bytes.to_vec())?;
-            let ciphertext = self.conn_states.write.encrypt(plaintext)?;
+            let ciphertext = self.conn_states.write.encrypt(plaintext);
             self.send_bytes(&ciphertext.get_encoding())?;
         }
 
@@ -704,7 +734,7 @@ impl<T: Read + Write> TlsConnection<T> {
 
         let msg = TlsMessage::new_appdata(bytes.to_vec());
         let plaintext = TlsPlaintext::new(TlsContentType::ApplicationData, msg.encode())?;
-        let ciphertext = self.conn_states.write.encrypt(plaintext)?;
+        let ciphertext = self.conn_states.write.encrypt(plaintext);
         self.send_bytes(&ciphertext.get_encoding())?;
         println!("Sent AppData: {:?}", String::from_utf8_lossy(bytes));
         Ok(())

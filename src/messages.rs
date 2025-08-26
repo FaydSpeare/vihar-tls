@@ -889,7 +889,7 @@ impl TlsHandshake {
         }
     }
 
-    pub fn validate(&self, policy: &TlsPolicy) -> Result<(), Alert> {
+    pub fn validate(&self, policy: &TlsPolicy) -> Result<(), AlertDesc> {
         if let Self::ClientHello(hello) = self {
             hello.extensions.validate(policy)?
         }
@@ -1020,10 +1020,10 @@ impl TlsPlaintext {
 }
 
 impl TlsValidateable for TlsPlaintext {
-    fn validate(&self, _policy: &TlsPolicy) -> Result<(), Alert> {
+    fn validate(&self, _policy: &TlsPolicy) -> Result<(), AlertDesc> {
         if let TlsContentType::Unknown(x) = self.content_type {
             debug!("Received unrecognised content type: {}", x);
-            return Err(Alert::fatal(AlertDesc::UnexpectedMessage));
+            return Err(AlertDesc::UnexpectedMessage);
         }
         Ok(())
     }

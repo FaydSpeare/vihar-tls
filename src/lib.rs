@@ -1,4 +1,4 @@
-use alert::{Alert, AlertLevel};
+use alert::{AlertDesc, AlertLevel};
 
 #[macro_use]
 pub mod macros;
@@ -93,5 +93,5 @@ impl Default for TlsPolicy {
 }
 
 pub trait TlsValidateable {
-    fn validate(&self, policy: &TlsPolicy) -> Result<(), Alert>;
+    fn validate(&self, policy: &TlsPolicy) -> Result<(), AlertDesc>;
 }

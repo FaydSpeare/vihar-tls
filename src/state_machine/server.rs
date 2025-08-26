@@ -30,7 +30,7 @@ use crate::{
     messages::{Finished, TlsHandshake, TlsMessage},
 };
 
-use super::{HandleEvent, HandleResult, PreviousVerifyData, ServerContext, TlsEvent, ServerState};
+use super::{HandleEvent, HandleResult, PreviousVerifyData, ServerContext, ServerState, TlsEvent};
 use rand::prelude::IteratorRandom;
 
 fn select_cipher_suite(
@@ -188,8 +188,8 @@ fn start_full_handshake(
     let suites: Vec<_> = client_hello
         .cipher_suites
         .iter()
+        .filter(|x| !matches!(x, CipherSuiteId::Unknown(_)))
         .map(|x| CipherSuite::from(*x).name())
-        .filter(|x| *x != "UNKNOWN")
         .collect();
     debug!("CipherSuites: {:#?}", suites);
 
