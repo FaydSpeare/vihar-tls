@@ -149,18 +149,18 @@ impl ClientHello {
         suites: &[CipherSuiteId],
         extensions: Vec<Extension>,
         session_id: Option<SessionId>,
-    ) -> Result<Self, DecodingError> {
-        Ok(ClientHello {
+    ) -> Self {
+        ClientHello {
             version: ProtocolVersion { major: 3, minor: 3 },
             random: Random {
                 unix_time: utils::get_unix_time(),
                 random_bytes: utils::get_random_bytes(28).try_into().unwrap(),
             },
             session_id: session_id.unwrap_or(SessionId::new(&[]).unwrap()),
-            cipher_suites: suites.to_vec().try_into()?,
-            compression_methods: vec![CompressionMethod::Null].try_into()?,
-            extensions: Extensions::new(extensions)?,
-        })
+            cipher_suites: suites.to_vec().try_into().unwrap(),
+            compression_methods: vec![CompressionMethod::Null].try_into().unwrap(),
+            extensions: Extensions::new(extensions),
+        }
     }
 }
 
@@ -227,7 +227,7 @@ impl ServerHello {
 
         if with_renegotiation_info {
             if let Some(info) = renegotiation_info {
-                extensions.push(RenegotiationInfoExt::renegotiation(&info).unwrap().into());
+                extensions.push(RenegotiationInfoExt::renegotiation(&info).into());
             } else {
                 extensions.push(RenegotiationInfoExt::IndicateSupport.into());
             }
@@ -254,7 +254,7 @@ impl ServerHello {
             session_id: SessionId(utils::get_random_bytes(32).try_into().unwrap()),
             cipher_suite,
             compression_method: CompressionMethod::Null,
-            extensions: Extensions::new(extensions).unwrap(),
+            extensions: Extensions::new(extensions),
         }
     }
 

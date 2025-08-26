@@ -20,8 +20,8 @@ macro_rules! impl_state_dispatch {
             }
         )+
 
-        impl HandleRecord<$enum_name> for $enum_name {
-            fn handle(self, ctx: &mut TlsContext, event: TlsEvent) -> HandleResult<$enum_name> {
+        impl HandleEvent<TlsContext> for $enum_name {
+            fn handle(self, ctx: &mut TlsContext, event: TlsEvent) -> HandleResult {
                 match self {
                     $(
                         Self::$variant(inner) => inner.handle(ctx, event),

@@ -148,13 +148,13 @@ pub struct Extensions {
 }
 
 impl Extensions {
-    pub fn new(extensions: Vec<Extension>) -> Result<Self, DecodingError> {
+    pub fn new(extensions: Vec<Extension>) -> Self {
         if extensions.is_empty() {
-            return Ok(Self::empty());
+            return Self::empty();
         }
-        Ok(Self {
-            list: Some(extensions.try_into()?),
-        })
+        Self {
+            list: Some(extensions.try_into().unwrap()),
+        }
     }
 
     pub fn empty() -> Self {
@@ -308,8 +308,8 @@ impl RenegotiationInfoExt {
     pub fn indicate_support() -> Self {
         Self::IndicateSupport
     }
-    pub fn renegotiation(renegotiation_info: &[u8]) -> Result<Self, DecodingError> {
-        Ok(Self::Renegotiation(renegotiation_info.to_vec().try_into()?))
+    pub fn renegotiation(renegotiation_info: &[u8]) -> Self {
+        Self::Renegotiation(renegotiation_info.to_vec().try_into().unwrap())
     }
 }
 

@@ -116,9 +116,7 @@ impl TlsStateMachine {
 
                 // Must reply with close_notify if we receive one
                 if alert.is_close_notification() {
-                    actions.push(TlsAction::SendAlert(Alert::fatal(
-                        AlertDesc::CloseNotify,
-                    )));
+                    actions.push(TlsAction::SendAlert(Alert::fatal(AlertDesc::CloseNotify)));
                 }
 
                 // Must invalidate session for fatal alerts
@@ -201,6 +199,7 @@ impl_state_dispatch! {
         AwaitClientFinished(AwaitClientFinished),
         AwaitClientChangeCipherAbbr(AwaitClientChangeCipherAbbr),
         AwaitClientFinishedAbbr(AwaitClientFinishedAbbr),
+        ClientEstablished(ClientEstablished),
 
         AwaitClientInitiate(AwaitClientInitiateState),
         AwaitServerHello(AwaitServerHello),
@@ -214,12 +213,9 @@ impl_state_dispatch! {
         AwaitServerChangeCipherOrCertificate(AwaitServerChangeCipherOrCertificate),
         AwaitServerChangeCipher(AwaitServerChangeCipher),
         AwaitServerFinished(AwaitServerFinished),
-
         ExpectNewSessionTicketAbbr(ExpectNewSessionTicketAbbr),
         ExpectServerChangeCipherAbbr(ExpectServerChangeCipherAbbr),
         ExpectServerFinishedAbbr(ExpectServerFinishedAbbr),
-
-        ClientEstablished(ClientEstablished),
         ServerEstablished(ServerEstablished),
         Closed(ClosedState),
 
@@ -227,10 +223,10 @@ impl_state_dispatch! {
     }
 }
 
-type HandleResult<T> = Result<(T, Vec<TlsAction>), AlertDesc>;
+type HandleResult = Result<(TlsState, Vec<TlsAction>), AlertDesc>;
 
-pub trait HandleRecord<T> {
-    fn handle(self, ctx: &mut TlsContext, event: TlsEvent) -> HandleResult<T>;
+pub trait HandleEvent<T> {
+    fn handle(self, ctx: &mut T, event: TlsEvent) -> HandleResult;
 }
 
 #[derive(Debug)]
@@ -271,8 +267,8 @@ fn calculate_master_secret(
 #[derive(Debug)]
 pub struct ClosedState {}
 
-impl HandleRecord<TlsState> for ClosedState {
-    fn handle(self, _ctx: &mut TlsContext, event: TlsEvent) -> HandleResult<TlsState> {
+impl HandleEvent<TlsContext> for ClosedState {
+    fn handle(self, _ctx: &mut TlsContext, event: TlsEvent) -> HandleResult {
         println!("{:?}", event);
         // Maybe get server hello
         // Maybe get alert
