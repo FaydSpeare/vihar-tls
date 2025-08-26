@@ -329,7 +329,7 @@ impl Certificate {
 
 impl From<Certificate> for TlsHandshake {
     fn from(value: Certificate) -> Self {
-        Self::Certificates(value)
+        Self::Certificate(value)
     }
 }
 
@@ -426,13 +426,13 @@ type DhParam = LengthPrefixedVec<u16, u8, NonEmpty>;
 type Signature = LengthPrefixedVec<u16, u8, MaybeEmpty>;
 
 #[derive(Debug, Clone)]
-pub struct ServerDHParams {
+pub struct ServerDhParams {
     pub p: BigUint,
     pub g: BigUint,
     pub server_public_key: BigUint,
 }
 
-impl ServerDHParams {
+impl ServerDhParams {
     pub fn new(p: BigUint, g: BigUint, server_public_key: BigUint) -> Self {
         Self {
             p,
@@ -442,7 +442,7 @@ impl ServerDHParams {
     }
 }
 
-impl TlsCodable for ServerDHParams {
+impl TlsCodable for ServerDhParams {
     fn write_to(&self, bytes: &mut Vec<u8>) {
         DhParam::try_from(self.p.to_bytes_be())
             .unwrap()
@@ -487,7 +487,7 @@ impl TlsCodable for DigitallySigned {
 #[derive(Debug, Clone)]
 pub enum ServerKeyExchangeInner {
     Dhe(DheServerKeyExchange),
-    DhAnon(ServerDHParams),
+    DhAnon(ServerDhParams),
 }
 
 #[derive(Debug, Clone)]
@@ -497,11 +497,11 @@ pub enum ServerKeyExchange {
 }
 
 impl ServerKeyExchange {
-    pub fn new_dh_anon(params: ServerDHParams) -> Self {
+    pub fn new_dh_anon(params: ServerDhParams) -> Self {
         Self::Resolved(ServerKeyExchangeInner::DhAnon(params))
     }
     pub fn new_dhe(
-        params: ServerDHParams,
+        params: ServerDhParams,
         client_random: [u8; 32],
         server_random: [u8; 32],
         signature_algorithm: SignatureAlgorithm,
@@ -526,7 +526,7 @@ impl ServerKeyExchange {
                 match kx {
                     KeyExchangeAlgorithm::DhAnon => {
                         return ServerKeyExchangeInner::DhAnon(
-                            ServerDHParams::read_from(&mut reader).unwrap(),
+                            ServerDhParams::read_from(&mut reader).unwrap(),
                         );
                     }
                     _ => {
@@ -555,7 +555,7 @@ impl TlsCodable for ServerKeyExchange {
 
 #[derive(Debug, Clone)]
 pub struct DheServerKeyExchange {
-    pub params: ServerDHParams,
+    pub params: ServerDhParams,
     pub signed_params: DigitallySigned,
 }
 
@@ -566,7 +566,7 @@ impl TlsCodable for DheServerKeyExchange {
     }
     fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
         Ok(Self {
-            params: ServerDHParams::read_from(reader)?,
+            params: ServerDhParams::read_from(reader)?,
             signed_params: DigitallySigned::read_from(reader)?,
         })
     }
@@ -633,6 +633,17 @@ pub struct CertificateVerify {
     pub signed: DigitallySigned,
 }
 
+impl CertificateVerify {
+    pub fn new(signature_algorithm: SignatureAlgorithm, signature: Vec<u8>) -> Self {
+        Self {
+            signed: DigitallySigned {
+                signature_algorithm,
+                signature: signature.try_into().unwrap(),
+            },
+        }
+    }
+}
+
 impl TlsCodable for CertificateVerify {
     fn write_to(&self, bytes: &mut Vec<u8>) {
         self.signed.write_to(bytes);
@@ -670,14 +681,20 @@ impl ClientKeyExchange {
             PublicValueEncoding::Implicit,
         ))
     }
-    pub fn new_dhe(bytes: &[u8]) -> Self {
+    pub fn new_dhe(client_public_key_der: Vec<u8>) -> Self {
         Self::Resolved(ClientKeyExchangeInner::ClientDiffieHellmanPublic(
-            PublicValueEncoding::Explicit(bytes.to_vec().try_into().unwrap()),
+            PublicValueEncoding::Explicit(
+                client_public_key_der
+                    .try_into()
+                    .expect("significantly smaller"),
+            ),
         ))
     }
-    pub fn new_rsa(bytes: &[u8]) -> Self {
+    pub fn new_rsa(encrypted_pre_master_secret: Vec<u8>) -> Self {
         Self::Resolved(ClientKeyExchangeInner::EncryptedPreMasterSecret(
-            bytes.to_vec().try_into().unwrap(),
+            encrypted_pre_master_secret
+                .try_into()
+                .expect("significantly smaller"),
         ))
     }
     pub fn resolve(&self, kx: KeyExchangeAlgorithm) -> ClientKeyExchangeInner {
@@ -847,7 +864,7 @@ pub enum TlsHandshake {
     ClientHello(ClientHello),
     ServerHello(ServerHello),
     NewSessionTicket(NewSessionTicket),
-    Certificates(Certificate),
+    Certificate(Certificate),
     ServerKeyExchange(ServerKeyExchange),
     ServerHelloDone,
     CertificateVerify(CertificateVerify),
@@ -862,7 +879,7 @@ impl TlsHandshake {
             Self::ClientHello(_) => TlsHandshakeType::ClientHello,
             Self::ServerHello(_) => TlsHandshakeType::ServerHello,
             Self::NewSessionTicket(_) => TlsHandshakeType::NewSessionTicket,
-            Self::Certificates(_) => TlsHandshakeType::Certificates,
+            Self::Certificate(_) => TlsHandshakeType::Certificates,
             Self::ServerKeyExchange(_) => TlsHandshakeType::ServerKeyExchange,
             Self::ServerHelloDone => TlsHandshakeType::ServerHelloDone,
             Self::CertificateVerify(_) => TlsHandshakeType::CertificateVerify,
@@ -889,7 +906,7 @@ impl TlsCodable for TlsHandshake {
             Self::ClientHello(h) => h.write_to(&mut writer),
             Self::ServerHello(h) => h.write_to(&mut writer),
             Self::NewSessionTicket(h) => h.write_to(&mut writer),
-            Self::Certificates(h) => h.write_to(&mut writer),
+            Self::Certificate(h) => h.write_to(&mut writer),
             Self::ServerKeyExchange(h) => h.write_to(&mut writer),
             Self::ServerHelloDone => {}
             Self::CertificateVerify(h) => h.write_to(&mut writer),
@@ -916,7 +933,7 @@ impl TlsCodable for TlsHandshake {
                 NewSessionTicket::read_from(&mut subreader).map(TlsHandshake::NewSessionTicket)
             }
             TlsHandshakeType::Certificates => {
-                Certificate::read_from(&mut subreader).map(TlsHandshake::Certificates)
+                Certificate::read_from(&mut subreader).map(TlsHandshake::Certificate)
             }
             TlsHandshakeType::ServerKeyExchange => {
                 ServerKeyExchange::read_from(&mut subreader).map(TlsHandshake::ServerKeyExchange)

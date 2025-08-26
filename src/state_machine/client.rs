@@ -1,6 +1,5 @@
 use log::{debug, error, info, trace};
 use rand::seq::IteratorRandom;
-use rsa::{RsaPublicKey, pkcs8::DecodePublicKey};
 use std::collections::HashSet;
 
 use crate::alert::AlertDesc;
@@ -13,8 +12,8 @@ use crate::extensions::{
     SignatureAlgorithmsExt, sign, verify,
 };
 use crate::messages::{
-    Certificate, CertificateRequest, CertificateVerify, ClientHello, DigitallySigned,
-    ServerDHParams, ServerKeyExchangeInner, SessionId,
+    Certificate, CertificateRequest, CertificateVerify, ClientHello, ServerDhParams,
+    ServerKeyExchangeInner, SessionId,
 };
 use crate::oid::{ServerCertificate, extract_dh_params};
 use crate::signature::{get_dh_pre_master_secret, get_rsa_pre_master_secret};
@@ -352,7 +351,7 @@ pub struct AwaitServerCertificate {
 
 impl HandleRecord<TlsState> for AwaitServerCertificate {
     fn handle(mut self, ctx: &mut TlsContext, event: TlsEvent) -> HandleResult<TlsState> {
-        let (handshake, certs) = require_handshake_msg!(event, TlsHandshake::Certificates);
+        let (handshake, certs) = require_handshake_msg!(event, TlsHandshake::Certificate);
 
         handshake.write_to(&mut self.handshakes);
 
@@ -521,7 +520,7 @@ impl HandleRecord<TlsState> for AwaitServerKeyExchange {
                 negotiated_cipher_suite: self.negotiated_cipher_suite,
                 negotiated_extensions: self.negotiated_extensions,
                 server_certificate: self.server_certificate,
-                secrets: Some(secrets),
+                dh_params: Some(secrets),
                 client_certificate_request: self.client_certificate_request,
             }
             .into(),
@@ -539,7 +538,7 @@ pub struct AwaitServerHelloDoneOrCertificateRequest {
     negotiated_cipher_suite: CipherSuite,
     negotiated_extensions: NegotiatedExtensions,
     server_certificate: Option<ServerCertificate>,
-    secrets: Option<ServerDHParams>,
+    secrets: Option<ServerDhParams>,
 }
 
 impl HandleRecord<TlsState> for AwaitServerHelloDoneOrCertificateRequest {
@@ -558,7 +557,7 @@ impl HandleRecord<TlsState> for AwaitServerHelloDoneOrCertificateRequest {
                         negotiated_cipher_suite: self.negotiated_cipher_suite,
                         negotiated_extensions: self.negotiated_extensions,
                         server_certificate: self.server_certificate,
-                        secrets: self.secrets,
+                        dh_params: self.secrets,
                         client_certificate_request: Some(certificate_request.clone()),
                     }
                     .into(),
@@ -574,7 +573,7 @@ impl HandleRecord<TlsState> for AwaitServerHelloDoneOrCertificateRequest {
                     negotiated_cipher_suite: self.negotiated_cipher_suite,
                     negotiated_extensions: self.negotiated_extensions,
                     server_certificate: self.server_certificate,
-                    secrets: self.secrets,
+                    dh_params: self.secrets,
                     client_certificate_request: None,
                 }
                 .handle(ctx, event)
@@ -620,6 +619,52 @@ fn choose_client_certificate<'a>(
         .choose(&mut rand::thread_rng())
 }
 
+fn prepare_client_key_exchange(
+    kx_algorithm: KeyExchangeAlgorithm,
+    server_certificate: Option<&ServerCertificate>,
+    dh_params: Option<&ServerDhParams>,
+) -> Result<(Vec<u8>, ClientKeyExchange), AlertDesc> {
+    match kx_algorithm {
+        KeyExchangeAlgorithm::Rsa => {
+            let server_public_key_der = server_certificate
+                .expect("server certificate must be present for this kx")
+                .public_key_der();
+            let (pre_master_secret, encrypted_pre_master_secret) =
+                get_rsa_pre_master_secret(&server_public_key_der)?;
+            Ok((
+                pre_master_secret,
+                ClientKeyExchange::new_rsa(encrypted_pre_master_secret),
+            ))
+        }
+        KeyExchangeAlgorithm::DheDss
+        | KeyExchangeAlgorithm::DheRsa
+        | KeyExchangeAlgorithm::DhAnon => {
+            let dh_params = dh_params
+                .as_ref()
+                .expect("dh params must be present for this kx");
+            let (pre_master_secret, client_public_key) =
+                get_dh_pre_master_secret(&dh_params.p, &dh_params.g, &dh_params.server_public_key);
+            Ok((
+                pre_master_secret,
+                ClientKeyExchange::new_dhe(client_public_key),
+            ))
+        }
+        KeyExchangeAlgorithm::DhDss | KeyExchangeAlgorithm::DhRsa => {
+            let server_certificate =
+                server_certificate.expect("server certificate must be present for this kx");
+            let dh_params =
+                extract_dh_params(&server_certificate).map_err(|_| AlertDesc::HandshakeFailure)?;
+            let (pre_master_secret, client_public_key) =
+                get_dh_pre_master_secret(&dh_params.p, &dh_params.g, &dh_params.server_public_key);
+            Ok((
+                pre_master_secret,
+                ClientKeyExchange::new_dhe(client_public_key),
+            ))
+        }
+        KeyExchangeAlgorithm::EcdheRsa => unimplemented!(),
+    }
+}
+
 #[derive(Debug)]
 pub struct AwaitServerHelloDone {
     session_id: SessionId,
@@ -629,7 +674,7 @@ pub struct AwaitServerHelloDone {
     negotiated_cipher_suite: CipherSuite,
     negotiated_extensions: NegotiatedExtensions,
     server_certificate: Option<ServerCertificate>,
-    secrets: Option<ServerDHParams>,
+    dh_params: Option<ServerDhParams>,
     client_certificate_request: Option<CertificateRequest>,
 }
 
@@ -642,13 +687,14 @@ impl HandleRecord<TlsState> for AwaitServerHelloDone {
 
         let mut actions = vec![];
 
+        // Send ClientCertificate
         let requested_certificate = match &self.client_certificate_request {
             None => None,
             Some(certificate_request) => {
                 let client_certificate =
                     choose_client_certificate(&certificate_request, &ctx.config.certificates);
 
-                let certificate = TlsHandshake::Certificates(
+                let certificate = TlsHandshake::Certificate(
                     client_certificate
                         .map(|cert| Certificate::new(cert.certificate_der.clone()))
                         .unwrap_or(Certificate::empty()),
@@ -657,47 +703,16 @@ impl HandleRecord<TlsState> for AwaitServerHelloDone {
                 certificate.write_to(&mut self.handshakes);
                 actions.push(TlsAction::SendHandshakeMsg(certificate));
                 info!("Sent ClientCertificate");
-
                 client_certificate
             }
         };
 
-        // TODO: into function
-        let (pre_master_secret, client_kx) = match self.negotiated_cipher_suite.kx_algorithm() {
-            KeyExchangeAlgorithm::Rsa => {
-                let server_public_key_der = self.server_certificate.unwrap().public_key_der();
-
-                let Ok(rsa_public_key) = RsaPublicKey::from_public_key_der(&server_public_key_der)
-                else {
-                    return Err(AlertDesc::IllegalParameter);
-                };
-
-                let Ok((pms, enc_pms)) = get_rsa_pre_master_secret(&rsa_public_key) else {
-                    return Err(AlertDesc::DecryptError);
-                };
-
-                (pms, ClientKeyExchange::new_rsa(&enc_pms))
-            }
-            KeyExchangeAlgorithm::DheDss
-            | KeyExchangeAlgorithm::DheRsa
-            | KeyExchangeAlgorithm::DhAnon => {
-                let ServerDHParams {
-                    p,
-                    g,
-                    server_public_key,
-                } = self.secrets.as_ref().unwrap();
-                let (pms, client_public_key) = get_dh_pre_master_secret(&p, &g, &server_public_key);
-                (pms, ClientKeyExchange::new_dhe(&client_public_key))
-            }
-            KeyExchangeAlgorithm::DhDss | KeyExchangeAlgorithm::DhRsa => {
-                let (p, g, public_key) =
-                    extract_dh_params(&self.server_certificate.unwrap()).unwrap();
-                let (pms, client_public_key) = get_dh_pre_master_secret(&p, &g, &public_key);
-                (pms, ClientKeyExchange::new_dhe(&client_public_key))
-            }
-            KeyExchangeAlgorithm::EcdheRsa => unimplemented!(),
-        };
-
+        // Send ClientKeyExchange
+        let (pre_master_secret, client_kx) = prepare_client_key_exchange(
+            self.negotiated_cipher_suite.kx_algorithm(),
+            self.server_certificate.as_ref(),
+            self.dh_params.as_ref(),
+        )?;
         let client_kx = TlsHandshake::ClientKeyExchange(client_kx);
         client_kx.write_to(&mut self.handshakes);
         actions.push(TlsAction::SendHandshakeMsg(client_kx));
@@ -711,39 +726,36 @@ impl HandleRecord<TlsState> for AwaitServerHelloDone {
             self.negotiated_cipher_suite.prf_algorithm(),
             self.negotiated_extensions.extended_master_secret,
         );
-        //println!("MS: {:?}", master_secret);
 
-        if let Some(_) = self.client_certificate_request {
-            let client_certificate = requested_certificate.unwrap();
-            let Ok(signature) = sign(
+        // Send CertificateVerify
+        if let Some(client_certificate) = requested_certificate {
+            let signature = sign(
                 client_certificate.signature_algorithm,
                 &client_certificate.private_key_der,
                 &self.handshakes,
-            ) else {
-                return Err(AlertDesc::InternalError);
-            };
-
-            let certificate_verify = TlsHandshake::CertificateVerify(CertificateVerify {
-                signed: DigitallySigned {
-                    signature_algorithm: client_certificate.signature_algorithm,
-                    signature: signature.try_into().unwrap(),
-                },
-            });
+            )
+            .map_err(|_| AlertDesc::InternalError)?;
+            let certificate_verify = TlsHandshake::CertificateVerify(CertificateVerify::new(
+                client_certificate.signature_algorithm,
+                signature,
+            ));
             certificate_verify.write_to(&mut self.handshakes);
             actions.push(TlsAction::SendHandshakeMsg(certificate_verify));
             info!("Sent CertificateVerify");
         }
 
+        // Send ChangeCipherSuite
         let security_params = SecurityParams::new(
             self.client_random,
             self.server_random,
             master_secret,
             &self.negotiated_cipher_suite,
         );
-        let write = ConnState::new(security_params.clone(), TlsEntity::Client);
+        let write = ConnState::new(&security_params, TlsEntity::Client);
         actions.push(TlsAction::ChangeCipherSpec(TlsEntity::Client, write));
         info!("Sent ChangeCipherSuite");
 
+        // Send ClientFinished
         let client_verify_data = security_params.client_verify_data(&self.handshakes);
         let client_finished = Finished::new(client_verify_data.clone());
         let client_finished = TlsHandshake::Finished(client_finished);
@@ -860,9 +872,9 @@ impl HandleRecord<TlsState> for AwaitNewSessionTicketOrCertificate {
                 security_params,
             }
             .handle(ctx, event);
-        } else if let TlsEvent::IncomingMessage(TlsMessage::Handshake(
-            TlsHandshake::Certificates(_),
-        )) = event
+        } else if let TlsEvent::IncomingMessage(TlsMessage::Handshake(TlsHandshake::Certificate(
+            _,
+        ))) = event
         {
             let next_state = AwaitServerCertificate {
                 session_id: self.session_id,
@@ -937,9 +949,9 @@ impl HandleRecord<TlsState> for AwaitServerChangeCipherOrCertificate {
                 security_params,
             }
             .handle(ctx, event);
-        } else if let TlsEvent::IncomingMessage(TlsMessage::Handshake(
-            TlsHandshake::Certificates(_),
-        )) = event
+        } else if let TlsEvent::IncomingMessage(TlsMessage::Handshake(TlsHandshake::Certificate(
+            _,
+        ))) = event
         {
             let next_state = AwaitServerCertificate {
                 session_id: self.session_id,
@@ -977,7 +989,7 @@ impl HandleRecord<TlsState> for AwaitServerChangeCipher {
         };
 
         info!("Received ChangeCipherSpec");
-        let read = ConnState::new(self.security_params.clone(), TlsEntity::Server);
+        let read = ConnState::new(&self.security_params, TlsEntity::Server);
 
         Ok((
             AwaitServerFinished {
@@ -1109,7 +1121,7 @@ impl HandleRecord<TlsState> for ExpectServerChangeCipherAbbr {
         };
 
         info!("Received ChangeCipherSpec");
-        let read = ConnState::new(self.security_params.clone(), TlsEntity::Server);
+        let read = ConnState::new(&self.security_params, TlsEntity::Server);
 
         Ok((
             ExpectServerFinishedAbbr {
@@ -1143,9 +1155,8 @@ impl HandleRecord<TlsState> for ExpectServerFinishedAbbr {
         }
         handshake.write_to(&mut self.handshakes);
 
-        let write = ConnState::new(self.security_params.clone(), TlsEntity::Client);
-
         let client_verify_data = self.security_params.client_verify_data(&self.handshakes);
+        let write = ConnState::new(&self.security_params, TlsEntity::Client);
         let client_finished = Finished::new(client_verify_data.clone());
 
         info!("Sent ChangeCipherSpec");

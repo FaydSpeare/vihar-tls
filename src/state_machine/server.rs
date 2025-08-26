@@ -10,7 +10,7 @@ use crate::encoding::Reader;
 use crate::extensions::{HashType, SignatureAlgorithm, verify};
 use crate::messages::{
     Certificate, CertificateRequest, ClientHello, ClientKeyExchangeInner, NewSessionTicket,
-    ProtocolVersion, PublicValueEncoding, ServerDHParams, ServerHello, ServerKeyExchange,
+    ProtocolVersion, PublicValueEncoding, ServerDhParams, ServerHello, ServerKeyExchange,
     SessionId,
 };
 use crate::oid::deconstruct_dh_key;
@@ -71,7 +71,10 @@ fn select_cipher_suite(
         .copied()
 }
 
-fn start_abbr_handshake(client_hello: ClientHello, session: SessionInfo) -> HandleResult<TlsState> {
+fn start_abbreviated_handshake(
+    client_hello: ClientHello,
+    session: SessionInfo,
+) -> HandleResult<TlsState> {
     if client_hello.extensions.get_max_fragment_len() != session.max_fragment_len {
         return Err(AlertDesc::IllegalParameter);
     }
@@ -97,11 +100,13 @@ fn start_abbr_handshake(client_hello: ClientHello, session: SessionInfo) -> Hand
         session.cipher_suite,
         client_hello.extensions.includes_secure_renegotiation(),
         client_hello.extensions.includes_extended_master_secret(),
-        false,
+        false, // TODO
         client_hello.extensions.includes_server_name(),
-        None,
+        None, // TODO
         session.max_fragment_len,
     );
+
+    // TODO: put in new?
     server_hello.session_id = client_hello.session_id.clone();
 
     let security_params = SecurityParams::new(
@@ -114,7 +119,7 @@ fn start_abbr_handshake(client_hello: ClientHello, session: SessionInfo) -> Hand
     let server_hello = TlsHandshake::ServerHello(server_hello);
     server_hello.write_to(&mut handshakes);
 
-    let write = ConnState::new(security_params.clone(), TlsEntity::Server);
+    let write = ConnState::new(&security_params, TlsEntity::Server);
 
     let server_verify_data = security_params.server_verify_data(&handshakes);
     let server_finished = TlsHandshake::Finished(Finished::new(server_verify_data.clone()));
@@ -163,6 +168,14 @@ fn choose_signature_algorithm(
             .choose(&mut rand::thread_rng())
             .unwrap_or(default),
     }
+}
+
+#[allow(dead_code)]
+#[derive(Debug)]
+struct DhParams {
+    p: BigUint,
+    g: BigUint,
+    private_key: BigUint,
 }
 
 fn start_full_handshake(
@@ -242,18 +255,18 @@ fn start_full_handshake(
         KeyExchangeAlgorithm::DhRsa | KeyExchangeAlgorithm::DhDss => {
             let (p, g, private_key) =
                 deconstruct_dh_key(&ctx.config.certificates.dh.as_ref().unwrap().private_key_der);
-            server_dh_params = Some(ServerDhParams { p, g, private_key });
+            server_dh_params = Some(DhParams { p, g, private_key });
         }
         KeyExchangeAlgorithm::DhAnon => {
             let (p, g) = get_dh_params();
             let (private_key, public_key) = generate_dh_keypair(&p, &g);
-            server_dh_params = Some(ServerDhParams {
+            server_dh_params = Some(DhParams {
                 p: p.clone(),
                 g: g.clone(),
                 private_key,
             });
 
-            let dh_params = ServerDHParams::new(p, g, public_key);
+            let dh_params = ServerDhParams::new(p, g, public_key);
             let server_kx = ServerKeyExchange::new_dh_anon(dh_params);
 
             let server_kx = TlsHandshake::ServerKeyExchange(server_kx);
@@ -265,7 +278,7 @@ fn start_full_handshake(
         KeyExchangeAlgorithm::DheRsa | KeyExchangeAlgorithm::DheDss => {
             let (p, g) = get_dh_params();
             let (private_key, public_key) = generate_dh_keypair(&p, &g);
-            server_dh_params = Some(ServerDhParams {
+            server_dh_params = Some(DhParams {
                 p: p.clone(),
                 g: g.clone(),
                 private_key,
@@ -280,7 +293,7 @@ fn start_full_handshake(
                 &ctx.config.supported_signature_algorithms,
             );
 
-            let dh_params = ServerDHParams::new(p, g, public_key);
+            let dh_params = ServerDhParams::new(p, g, public_key);
             let server_kx = ServerKeyExchange::new_dhe(
                 dh_params,
                 client_hello.random.as_bytes(),
@@ -432,7 +445,7 @@ pub struct AwaitStekInfo {
 impl HandleRecord<TlsState> for AwaitStekInfo {
     fn handle(self, ctx: &mut TlsContext, event: TlsEvent) -> HandleResult<TlsState> {
         let TlsEvent::StekInfo(maybe_stek) = event else {
-            panic!("Expected STEK info");
+            panic!("Expected StekInfo event");
         };
 
         if let Some(stek) = maybe_stek {
@@ -443,7 +456,7 @@ impl HandleRecord<TlsState> for AwaitStekInfo {
                     session_state.max_fragment_length,
                     session_state.extended_master_secret,
                 );
-                return start_abbr_handshake(self.client_hello, session);
+                return start_abbreviated_handshake(self.client_hello, session);
             }
         }
 
@@ -478,7 +491,7 @@ impl HandleRecord<TlsState> for AwaitSessionValidation {
             );
         };
 
-        start_abbr_handshake(self.client_hello, session)
+        start_abbreviated_handshake(self.client_hello, session)
     }
 }
 
@@ -497,7 +510,7 @@ impl HandleRecord<TlsState> for AwaitClientChangeCipherAbbr {
         };
 
         info!("Received ChangeCipherSpec");
-        let read = ConnState::new(self.security_params.clone(), TlsEntity::Client);
+        let read = ConnState::new(&self.security_params, TlsEntity::Client);
 
         Ok((
             AwaitClientFinishedAbbr {
@@ -545,14 +558,6 @@ impl HandleRecord<TlsState> for AwaitClientFinishedAbbr {
 }
 
 #[derive(Debug)]
-pub struct ServerDhParams {
-    p: BigUint,
-    #[allow(dead_code)]
-    g: BigUint,
-    private_key: BigUint,
-}
-
-#[derive(Debug)]
 pub struct AwaitClientCertificate {
     session_id: Vec<u8>,
     handshakes: Vec<u8>,
@@ -561,12 +566,12 @@ pub struct AwaitClientCertificate {
     negotiated_cipher_suite: CipherSuite,
     negotiated_extensions: NegotiatedExtensions,
     issue_session_ticket: bool,
-    server_dh_params: Option<ServerDhParams>,
+    server_dh_params: Option<DhParams>,
 }
 
 impl HandleRecord<TlsState> for AwaitClientCertificate {
     fn handle(mut self, ctx: &mut TlsContext, event: TlsEvent) -> HandleResult<TlsState> {
-        let (handshake, certificate) = require_handshake_msg!(event, TlsHandshake::Certificates);
+        let (handshake, certificate) = require_handshake_msg!(event, TlsHandshake::Certificate);
 
         info!("Received ClientCertificate");
 
@@ -620,7 +625,7 @@ pub struct AwaitClientKeyExchange {
     negotiated_cipher_suite: CipherSuite,
     negotiated_extensions: NegotiatedExtensions,
     issue_session_ticket: bool,
-    server_dh_params: Option<ServerDhParams>,
+    server_dh_params: Option<DhParams>,
     expect_certificate_verify: bool,
     client_public_key: Option<Vec<u8>>,
 }
@@ -773,7 +778,7 @@ impl HandleRecord<TlsState> for AwaitClientChangeCipher {
         };
 
         info!("Received ChangeCipherSpec");
-        let read = ConnState::new(self.security_params.clone(), TlsEntity::Client);
+        let read = ConnState::new(&self.security_params, TlsEntity::Client);
 
         Ok((
             AwaitClientFinished {
@@ -830,8 +835,7 @@ impl HandleRecord<TlsState> for AwaitClientFinished {
             info!("Sent NewSessionTicket");
         }
 
-        let write = ConnState::new(self.security_params.clone(), TlsEntity::Server);
-
+        let write = ConnState::new(&self.security_params, TlsEntity::Server);
         actions.push(TlsAction::ChangeCipherSpec(TlsEntity::Server, write));
 
         let server_verify_data = self.security_params.server_verify_data(&self.handshakes);

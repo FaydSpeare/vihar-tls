@@ -151,7 +151,7 @@ impl Default for ConnState {
 }
 
 impl ConnState {
-    pub fn new(params: SecurityParams, entity: TlsEntity) -> Self {
+    pub fn new(params: &SecurityParams, entity: TlsEntity) -> Self {
         let keys = params.derive_keys();
         let (enc_key, mac_key, write_iv) = match entity {
             TlsEntity::Client => (

@@ -2,6 +2,8 @@
 
 ======== MVP =========
 
+- Need to allow receiving unknown cipher suites
+
 - Native root certs for linux and windows
 
 - Fix bad decryption overflow panics
@@ -32,3 +34,18 @@ what to do about all the try_into().unwraps() when creating length prefixed vect
 unchecked function?
 
 https://security.stackexchange.com/questions/44251/openssl-generate-different-types-of-self-signed-certificate/82868#82868
+
+fn function() {
+    let x = None;
+    if cond_A {
+        // Do something
+        x = Some(...)
+    }
+
+    // Do stuff important order
+
+    if cond_A {
+        // use x
+        x.unwrap()
+    }
+}

@@ -2,6 +2,7 @@ use crate::{
     client::PublicKeyAlgorithm,
     errors::AnError,
     extensions::{HashType, SignatureAlgorithm},
+    messages::ServerDhParams,
 };
 use asn1_rs::Sequence;
 use num_bigint::BigUint;
@@ -81,32 +82,35 @@ pub fn deconstruct_dh_key(bytes: &[u8]) -> (BigUint, BigUint, BigUint) {
     (p, g, private_key)
 }
 
-pub fn extract_dh_params(cert: &ServerCertificate) -> Option<(BigUint, BigUint, BigUint)> {
+pub fn extract_dh_params(
+    cert: &ServerCertificate,
+) -> Result<ServerDhParams, Box<dyn std::error::Error>> {
     let der = cert
         .0
         .tbs_certificate
         .subject_public_key_info
-        .subject_public_key.as_bytes().unwrap();
+        .subject_public_key
+        .raw_bytes();
 
-    let public_key = Integer::from_der(&der).unwrap().1;
-    let public_key = BigUint::from_bytes_be(public_key.as_ref());
+    let public_key = Integer::from_der(&der)?.1;
+    let server_public_key = BigUint::from_bytes_be(public_key.as_ref());
 
-    let Some(bytes) = &cert
+    let bytes = &cert
         .0
         .tbs_certificate
         .subject_public_key_info
         .algorithm
         .parameters
-    else {
-        return None;
-    };
-    let Ok((bytes, p_int)) = Integer::from_der(bytes.value()) else {
-        return None;
-    };
-    let Ok((_, g_int)) = Integer::from_der(bytes) else {
-        return None;
-    };
+        .as_ref()
+        .ok_or("must contain parameters")?;
+
+    let (bytes, p_int) = Integer::from_der(bytes.value())?;
+    let (_, g_int) = Integer::from_der(bytes)?;
     let p = BigUint::from_bytes_be(p_int.as_ref());
     let g = BigUint::from_bytes_be(g_int.as_ref());
-    Some((p, g, public_key))
+    Ok(ServerDhParams {
+        p,
+        g,
+        server_public_key,
+    })
 }

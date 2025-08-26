@@ -1,4 +1,4 @@
-use crate::TlsResult;
+use crate::{TlsResult, alert::AlertDesc};
 use aes::cipher::BlockSizeUser;
 use dsa::{
     Signature as DsaSignature, SigningKey as DsaSigningKey, VerifyingKey as DsaVerifyingKey,
@@ -23,15 +23,22 @@ pub fn public_key_from_cert(cert_der: &[u8]) -> TlsResult<Vec<u8>> {
     Ok(cert.tbs_certificate.subject_pki.raw.to_vec())
 }
 
-pub fn get_rsa_pre_master_secret(rsa_pubkey: &RsaPublicKey) -> TlsResult<(Vec<u8>, Vec<u8>)> {
-    let mut pre_master = [0u8; 48];
+pub fn get_rsa_pre_master_secret(public_key_der: &[u8]) -> Result<(Vec<u8>, Vec<u8>), AlertDesc> {
+    let rsa_pubkey = RsaPublicKey::from_public_key_der(public_key_der)
+        .map_err(|_| AlertDesc::IllegalParameter)?;
+    let mut pre_master_secret = [0u8; 48];
     let mut rng = OsRng;
-    pre_master[0] = 0x03;
-    pre_master[1] = 0x03;
-    rng.fill_bytes(&mut pre_master[2..]);
+    pre_master_secret[0] = 0x03;
+    pre_master_secret[1] = 0x03;
 
-    let encrypted = rsa_pubkey.encrypt(&mut rng, Pkcs1v15Encrypt, &pre_master)?;
-    Ok((pre_master.to_vec(), encrypted))
+    rng.try_fill_bytes(&mut pre_master_secret[2..])
+        .map_err(|_| AlertDesc::InternalError)?;
+
+    let encrypted = rsa_pubkey
+        .encrypt(&mut rng, Pkcs1v15Encrypt, &pre_master_secret)
+        .map_err(|_| AlertDesc::DecryptError)?;
+
+    Ok((pre_master_secret.to_vec(), encrypted))
 }
 
 pub fn decrypt_rsa_master_secret(
