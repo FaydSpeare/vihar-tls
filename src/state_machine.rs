@@ -9,17 +9,18 @@ use crate::{
     messages::{TlsHandshake, TlsMessage},
 };
 use client::{
-    AwaitClientInitiateState, AwaitNewSessionTicket, AwaitNewSessionTicketOrCertificate,
-    AwaitServerCertificate, AwaitServerChangeCipher, AwaitServerChangeCipherOrCertificate,
-    AwaitServerFinished, AwaitServerHello, AwaitServerHelloDone,
-    AwaitServerHelloDoneOrCertificateRequest, AwaitServerKeyExchange,
-    AwaitServerKeyExchangeOrCertificateRequest, ClientEstablished, ExpectNewSessionTicketAbbr,
-    ExpectServerChangeCipherAbbr, ExpectServerFinishedAbbr,
+    ClientEstablished, ExpectClientInitiateState, ExpectNewSessionTicket,
+    ExpectNewSessionTicketAbbr, ExpectNewSessionTicketOrCertificate, ExpectServerCertificate,
+    ExpectServerChangeCipher, ExpectServerChangeCipherAbbr, ExpectServerChangeCipherOrCertificate,
+    ExpectServerFinished, ExpectServerFinishedAbbr, ExpectServerHello, ExpectServerHelloDone,
+    ExpectServerHelloDoneOrCertificateRequest, ExpectServerKeyExchange,
+    ExpectServerKeyExchangeOrCertificateRequest,
 };
 use server::{
-    AwaitCertificateVerify, AwaitClientCertificate, AwaitClientChangeCipher,
-    AwaitClientChangeCipherAbbr, AwaitClientFinished, AwaitClientFinishedAbbr, AwaitClientHello,
-    AwaitClientKeyExchange, AwaitSessionValidation, AwaitStekInfo, ServerEstablished,
+    ExpectCertificateVerify, ExpectClientCertificate, ExpectClientChangeCipher,
+    ExpectClientChangeCipherAbbr, ExpectClientFinished, ExpectClientFinishedAbbr,
+    ExpectClientHello, ExpectClientKeyExchange, ExpectSessionValidation, ExpectStekInfo,
+    ServerEstablished,
 };
 use std::rc::Rc;
 
@@ -123,7 +124,7 @@ impl ClientStateMachine {
         Self {
             ctx: ClientContext { config },
             state: Some(
-                AwaitClientInitiateState {
+                ExpectClientInitiateState {
                     previous_verify_data: None,
                 }
                 .into(),
@@ -144,7 +145,7 @@ impl ServerStateMachine {
         Self {
             ctx: ServerContext { config, stek },
             state: Some(
-                AwaitClientHello {
+                ExpectClientHello {
                     previous_verify_data: None,
                 }
                 .into(),
@@ -210,22 +211,22 @@ pub trait TlsState<C>: Sized {
 }
 
 impl_state_dispatch! {
-    [context = ClientContext]
-    [established = ClientEstablished]
-    [closed = ClientClosed]
+    #[context = ClientContext]
+    #[established = ClientEstablished]
+    #[closed = ClientClosed]
     pub enum ClientState {
-        AwaitClientInitiate(AwaitClientInitiateState),
-        AwaitServerHello(AwaitServerHello),
-        AwaitServerCertificate(AwaitServerCertificate),
-        AwaitServerKeyExchangeOrCertificateRequest(AwaitServerKeyExchangeOrCertificateRequest),
-        AwaitServerKeyExchange(AwaitServerKeyExchange),
-        AwaitServerHelloDoneOrCertificateRequest(AwaitServerHelloDoneOrCertificateRequest),
-        AwaitServerHelloDone(AwaitServerHelloDone),
-        AwaitNewSessionTicket(AwaitNewSessionTicket),
-        AwaitNewSessionTicketOrCertificate(AwaitNewSessionTicketOrCertificate),
-        AwaitServerChangeCipherOrCertificate(AwaitServerChangeCipherOrCertificate),
-        AwaitServerChangeCipher(AwaitServerChangeCipher),
-        AwaitServerFinished(AwaitServerFinished),
+        ExpectClientInitiate(ExpectClientInitiateState),
+        ExpectServerHello(ExpectServerHello),
+        ExpectServerCertificate(ExpectServerCertificate),
+        ExpectServerKeyExchangeOrCertificateRequest(ExpectServerKeyExchangeOrCertificateRequest),
+        ExpectServerKeyExchange(ExpectServerKeyExchange),
+        ExpectServerHelloDoneOrCertificateRequest(ExpectServerHelloDoneOrCertificateRequest),
+        ExpectServerHelloDone(ExpectServerHelloDone),
+        ExpectNewSessionTicket(ExpectNewSessionTicket),
+        ExpectNewSessionTicketOrCertificate(ExpectNewSessionTicketOrCertificate),
+        ExpectServerChangeCipherOrCertificate(ExpectServerChangeCipherOrCertificate),
+        ExpectServerChangeCipher(ExpectServerChangeCipher),
+        ExpectServerFinished(ExpectServerFinished),
         ExpectNewSessionTicketAbbr(ExpectNewSessionTicketAbbr),
         ExpectServerChangeCipherAbbr(ExpectServerChangeCipherAbbr),
         ExpectServerFinishedAbbr(ExpectServerFinishedAbbr),
@@ -235,20 +236,20 @@ impl_state_dispatch! {
 }
 
 impl_state_dispatch! {
-    [context = ServerContext]
-    [established = ServerEstablished]
-    [closed = ServerClosed]
+    #[context = ServerContext]
+    #[established = ServerEstablished]
+    #[closed = ServerClosed]
     pub enum ServerState {
-        AwaitClientHello(AwaitClientHello),
-        AwaitStekInfo(AwaitStekInfo),
-        AwaitSessionValidation(AwaitSessionValidation),
-        AwaitClientCertificate(AwaitClientCertificate),
-        AwaitClientKeyExchange(AwaitClientKeyExchange),
-        AwaitCertificateVerify(AwaitCertificateVerify),
-        AwaitClientChangeCipher(AwaitClientChangeCipher),
-        AwaitClientFinished(AwaitClientFinished),
-        AwaitClientChangeCipherAbbr(AwaitClientChangeCipherAbbr),
-        AwaitClientFinishedAbbr(AwaitClientFinishedAbbr),
+        ExpectClientHello(ExpectClientHello),
+        ExpectStekInfo(ExpectStekInfo),
+        ExpectSessionValidation(ExpectSessionValidation),
+        ExpectClientCertificate(ExpectClientCertificate),
+        ExpectClientKeyExchange(ExpectClientKeyExchange),
+        ExpectCertificateVerify(ExpectCertificateVerify),
+        ExpectClientChangeCipher(ExpectClientChangeCipher),
+        ExpectClientFinished(ExpectClientFinished),
+        ExpectClientChangeCipherAbbr(ExpectClientChangeCipherAbbr),
+        ExpectClientFinishedAbbr(ExpectClientFinishedAbbr),
         ServerEstablished(ServerEstablished),
         ServerClosed(ClosedState),
     }

@@ -1,8 +1,8 @@
 macro_rules! impl_state_dispatch {
     (
-        [context = $context_name:path]
-        [established = $established_name:ident]
-        [closed = $closed_name:ident]
+        #[context = $context_name:path]
+        #[established = $established_name:ident]
+        #[closed = $closed_name:ident]
         pub enum $enum_name:ident {
             $($variant:ident($inner:ty)),+ $(,)?
         }
