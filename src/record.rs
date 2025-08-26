@@ -1,6 +1,6 @@
 use crate::{
     TlsPolicy, TlsValidateable,
-    alert::{TlsAlert, TlsAlertDesc},
+    alert::{Alert, AlertDesc},
     connection::ConnState,
     encoding::{Reader, TlsCodable},
     errors::TlsError,
@@ -39,16 +39,16 @@ impl RecordLayer {
             let ciphertext = TlsCiphertext::read_from(&mut reader)?;
             //println!("ciphertext len {}", ciphertext.fragment.len());
             if ciphertext.fragment.len() > max_fragmentation_len + 2048 {
-                return Err(TlsError::Alert(TlsAlert::fatal(
-                    TlsAlertDesc::RecordOverflow,
+                return Err(TlsError::Alert(Alert::fatal(
+                    AlertDesc::RecordOverflow,
                 )));
             }
 
             let plaintext = conn_state.decrypt(ciphertext)?;
             //println!("plaintext len {}", plaintext.fragment.len());
             if plaintext.fragment.len() > max_fragmentation_len {
-                return Err(TlsError::Alert(TlsAlert::fatal(
-                    TlsAlertDesc::RecordOverflow,
+                return Err(TlsError::Alert(Alert::fatal(
+                    AlertDesc::RecordOverflow,
                 )));
             }
 
@@ -65,7 +65,7 @@ impl RecordLayer {
                 TlsContentType::Alert => {
                     self.alert_buffer.extend(plaintext.fragment);
                     let mut reader = Reader::new(&self.alert_buffer);
-                    match TlsAlert::read_from(&mut reader) {
+                    match Alert::read_from(&mut reader) {
                         Ok(alert) => {
                             self.alert_buffer.drain(..reader.bytes_consumed());
                             return Ok(TlsMessage::Alert(alert));
@@ -89,8 +89,8 @@ impl RecordLayer {
                 }
                 TlsContentType::Unknown(x) => {
                     error!("Received unknown record type: {x}");
-                    return Err(TlsError::Alert(TlsAlert::fatal(
-                        TlsAlertDesc::UnexpectedMessage,
+                    return Err(TlsError::Alert(Alert::fatal(
+                        AlertDesc::UnexpectedMessage,
                     )));
                 }
             }

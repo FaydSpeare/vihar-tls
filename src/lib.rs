@@ -1,4 +1,4 @@
-use alert::{TlsAlert, TlsAlertLevel};
+use alert::{Alert, AlertLevel};
 
 #[macro_use]
 pub mod macros;
@@ -31,7 +31,7 @@ pub type TlsResult<T> = Result<T, Box<dyn std::error::Error>>;
 
 #[derive(Debug, Clone)]
 pub enum UnrecognisedServerNamePolicy {
-    Alert(TlsAlertLevel),
+    Alert(AlertLevel),
     Ignore,
 }
 
@@ -83,7 +83,7 @@ pub struct TlsPolicy {
 impl Default for TlsPolicy {
     fn default() -> Self {
         Self {
-            unrecognised_server_name: UnrecognisedServerNamePolicy::Alert(TlsAlertLevel::Fatal),
+            unrecognised_server_name: UnrecognisedServerNamePolicy::Alert(AlertLevel::Fatal),
             renegotiation: RenegotiationPolicy::OnlySecure,
             max_fragment_length_negotiation: MaxFragmentLengthNegotiationPolicy::Support,
             client_auth: ClientAuthPolicy::NoAuth,
@@ -93,5 +93,5 @@ impl Default for TlsPolicy {
 }
 
 pub trait TlsValidateable {
-    fn validate(&self, policy: &TlsPolicy) -> Result<(), TlsAlert>;
+    fn validate(&self, policy: &TlsPolicy) -> Result<(), Alert>;
 }

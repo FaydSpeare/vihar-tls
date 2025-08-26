@@ -3,7 +3,7 @@ use rand::seq::IteratorRandom;
 use rsa::{RsaPublicKey, pkcs8::DecodePublicKey};
 use std::collections::HashSet;
 
-use crate::alert::TlsAlertDesc;
+use crate::alert::AlertDesc;
 use crate::ca::validate_certificate_chain;
 use crate::ciphersuite::KeyExchangeAlgorithm;
 use crate::client::{CertificateAndPrivateKey, Certificates};
@@ -20,11 +20,9 @@ use crate::oid::{ServerCertificate, extract_dh_params};
 use crate::signature::{get_dh_pre_master_secret, get_rsa_pre_master_secret};
 use crate::state_machine::{
     NegotiatedExtensions, SessionResumption, TlsAction, TlsEntity, calculate_master_secret,
-    close_connection,
 };
 use crate::storage::SessionInfo;
 use crate::{
-    alert::TlsAlert,
     ciphersuite::CipherSuite,
     connection::{ConnState, SecurityParams},
     encoding::TlsCodable,
@@ -33,7 +31,7 @@ use crate::{
 
 use super::{
     HandleRecord, HandleResult, PreviousVerifyData, SessionTicketResumption, TlsContext, TlsEvent,
-    TlsState, close_with_unexpected_message,
+    TlsState,
 };
 
 #[derive(Debug)]
@@ -151,7 +149,7 @@ impl HandleRecord<TlsState> for AwaitServerHello {
         info!("Received ServerHello");
 
         if !server_hello.version.is_tls12() {
-            return close_connection(TlsAlertDesc::ProtocolVersion);
+            return Err(AlertDesc::ProtocolVersion);
         }
 
         handshake.write_to(&mut self.handshakes);
@@ -159,12 +157,12 @@ impl HandleRecord<TlsState> for AwaitServerHello {
         // For secure renegotiations we need to verify the renegotiation_info
         if let Some(previous_verify_data) = self.previous_verify_data {
             let Some(renegotiation_info) = server_hello.extensions.get_renegotiation_info() else {
-                return close_connection(TlsAlertDesc::HandshakeFailure);
+                return Err(AlertDesc::HandshakeFailure);
             };
 
             let expected = [previous_verify_data.client, previous_verify_data.server].concat();
             if renegotiation_info != expected {
-                return close_connection(TlsAlertDesc::HandshakeFailure);
+                return Err(AlertDesc::HandshakeFailure);
             }
         }
 
@@ -178,7 +176,7 @@ impl HandleRecord<TlsState> for AwaitServerHello {
                 "Server included extensions not sent by the Client: {:?}",
                 server_only_extensions
             );
-            return close_connection(TlsAlertDesc::UnsupportedExtension);
+            return Err(AlertDesc::UnsupportedExtension);
         }
 
         let mut actions = vec![];
@@ -191,7 +189,7 @@ impl HandleRecord<TlsState> for AwaitServerHello {
                 None => None,
                 Some(server_len) => {
                     if client_len != server_len {
-                        return close_connection(TlsAlertDesc::IllegalParameter);
+                        return Err(AlertDesc::IllegalParameter);
                     }
 
                     actions.push(TlsAction::UpdateMaxFragmentLen(client_len));
@@ -213,14 +211,14 @@ impl HandleRecord<TlsState> for AwaitServerHello {
 
                 // The server must correctly remember the session's max_fragment_length
                 if server_hello.extensions.get_max_fragment_len() != session.max_fragment_len {
-                    return close_connection(TlsAlertDesc::IllegalParameter);
+                    return Err(AlertDesc::IllegalParameter);
                 }
 
                 // The server must correctly remember the session's ems use
                 if server_hello.extensions.includes_extended_master_secret()
                     != session.extended_master_secret
                 {
-                    return close_connection(TlsAlertDesc::IllegalParameter);
+                    return Err(AlertDesc::IllegalParameter);
                 }
 
                 let negotiated_extensions = NegotiatedExtensions {
@@ -234,7 +232,7 @@ impl HandleRecord<TlsState> for AwaitServerHello {
                     ExpectServerChangeCipherAbbr {
                         session_id: server_hello.session_id.clone(),
                         handshakes: self.handshakes,
-                        negotiated_extensions: negotiated_extensions,
+                        negotiated_extensions,
                         security_params,
                     }
                     .into(),
@@ -368,7 +366,7 @@ impl HandleRecord<TlsState> for AwaitServerCertificate {
                 validate_certificate_chain(chain, ctx.config.server_name.clone().unwrap())
             {
                 error!("{:?}", e);
-                return close_connection(TlsAlertDesc::BadCertificate);
+                return Err(AlertDesc::BadCertificate);
             }
         }
 
@@ -429,7 +427,7 @@ impl HandleRecord<TlsState> for AwaitServerKeyExchangeOrCertificateRequest {
             )) => {
                 // Anonymous servers are not permitted to request a client certificate
                 if self.negotiated_cipher_suite.kx_algorithm() == KeyExchangeAlgorithm::DhAnon {
-                    return close_connection(TlsAlertDesc::HandshakeFailure);
+                    return Err(AlertDesc::HandshakeFailure);
                 }
 
                 handshake.write_to(&mut self.handshakes);
@@ -461,7 +459,7 @@ impl HandleRecord<TlsState> for AwaitServerKeyExchangeOrCertificateRequest {
                 client_certificate_request: None,
             }
             .handle(ctx, event),
-            _ => close_with_unexpected_message(),
+            _ => Err(AlertDesc::UnexpectedMessage),
         }
     }
 }
@@ -501,11 +499,11 @@ impl HandleRecord<TlsState> for AwaitServerKeyExchange {
                     &message,
                     &server_kx.signed_params.signature,
                 ) else {
-                    return close_connection(TlsAlertDesc::IllegalParameter);
+                    return Err(AlertDesc::IllegalParameter);
                 };
 
                 if !verified {
-                    return close_connection(TlsAlertDesc::DecryptError);
+                    return Err(AlertDesc::DecryptError);
                 }
                 server_kx.params.clone()
             }
@@ -581,7 +579,7 @@ impl HandleRecord<TlsState> for AwaitServerHelloDoneOrCertificateRequest {
                 }
                 .handle(ctx, event)
             }
-            _ => close_with_unexpected_message(),
+            _ => Err(AlertDesc::UnexpectedMessage),
         }
     }
 }
@@ -671,11 +669,11 @@ impl HandleRecord<TlsState> for AwaitServerHelloDone {
 
                 let Ok(rsa_public_key) = RsaPublicKey::from_public_key_der(&server_public_key_der)
                 else {
-                    return close_connection(TlsAlertDesc::IllegalParameter);
+                    return Err(AlertDesc::IllegalParameter);
                 };
 
                 let Ok((pms, enc_pms)) = get_rsa_pre_master_secret(&rsa_public_key) else {
-                    return close_connection(TlsAlertDesc::DecryptError);
+                    return Err(AlertDesc::DecryptError);
                 };
 
                 (pms, ClientKeyExchange::new_rsa(&enc_pms))
@@ -722,7 +720,7 @@ impl HandleRecord<TlsState> for AwaitServerHelloDone {
                 &client_certificate.private_key_der,
                 &self.handshakes,
             ) else {
-                return close_connection(TlsAlertDesc::InternalError);
+                return Err(AlertDesc::InternalError);
             };
 
             let certificate_verify = TlsHandshake::CertificateVerify(CertificateVerify {
@@ -842,17 +840,17 @@ impl HandleRecord<TlsState> for AwaitNewSessionTicketOrCertificate {
             if self.session_ticket_resumption.max_fragment_len
                 != self.negotiated_extensions.max_fragment_length
             {
-                return close_connection(TlsAlertDesc::IllegalParameter);
+                return Err(AlertDesc::IllegalParameter);
             }
 
             if self.session_ticket_resumption.extended_master_secret
                 != self.negotiated_extensions.extended_master_secret
             {
-                return close_connection(TlsAlertDesc::IllegalParameter);
+                return Err(AlertDesc::IllegalParameter);
             }
 
             if self.session_ticket_resumption.cipher_suite_id != self.negotiated_cipher_suite.id() {
-                return close_connection(TlsAlertDesc::IllegalParameter);
+                return Err(AlertDesc::IllegalParameter);
             }
 
             return ExpectNewSessionTicketAbbr {
@@ -882,7 +880,7 @@ impl HandleRecord<TlsState> for AwaitNewSessionTicketOrCertificate {
             );
         }
 
-        close_with_unexpected_message()
+        Err(AlertDesc::UnexpectedMessage)
     }
 }
 
@@ -919,17 +917,17 @@ impl HandleRecord<TlsState> for AwaitServerChangeCipherOrCertificate {
             if self.session_ticket_resumption.max_fragment_len
                 != self.negotiated_extensions.max_fragment_length
             {
-                return close_connection(TlsAlertDesc::IllegalParameter);
+                return Err(AlertDesc::IllegalParameter);
             }
 
             if self.session_ticket_resumption.extended_master_secret
                 != self.negotiated_extensions.extended_master_secret
             {
-                return close_connection(TlsAlertDesc::IllegalParameter);
+                return Err(AlertDesc::IllegalParameter);
             }
 
             if self.session_ticket_resumption.cipher_suite_id != self.negotiated_cipher_suite.id() {
-                return close_connection(TlsAlertDesc::IllegalParameter);
+                return Err(AlertDesc::IllegalParameter);
             }
 
             return ExpectServerChangeCipherAbbr {
@@ -975,7 +973,7 @@ pub struct AwaitServerChangeCipher {
 impl HandleRecord<TlsState> for AwaitServerChangeCipher {
     fn handle(self, _ctx: &mut TlsContext, event: TlsEvent) -> HandleResult<TlsState> {
         let TlsEvent::IncomingMessage(TlsMessage::ChangeCipherSpec) = event else {
-            return close_with_unexpected_message();
+            return Err(AlertDesc::UnexpectedMessage);
         };
 
         info!("Received ChangeCipherSpec");
@@ -1013,7 +1011,7 @@ impl HandleRecord<TlsState> for AwaitServerFinished {
 
         let server_verify_data = self.security_params.server_verify_data(&self.handshakes);
         if server_verify_data != server_finished.verify_data {
-            return close_connection(TlsAlertDesc::DecryptError);
+            return Err(AlertDesc::DecryptError);
         }
         handshake.write_to(&mut self.handshakes);
 
@@ -1107,7 +1105,7 @@ pub struct ExpectServerChangeCipherAbbr {
 impl HandleRecord<TlsState> for ExpectServerChangeCipherAbbr {
     fn handle(self, _ctx: &mut TlsContext, event: TlsEvent) -> HandleResult<TlsState> {
         let TlsEvent::IncomingMessage(TlsMessage::ChangeCipherSpec) = event else {
-            return close_with_unexpected_message();
+            return Err(AlertDesc::UnexpectedMessage);
         };
 
         info!("Received ChangeCipherSpec");
@@ -1141,7 +1139,7 @@ impl HandleRecord<TlsState> for ExpectServerFinishedAbbr {
 
         let server_verify_data = self.security_params.server_verify_data(&self.handshakes);
         if server_verify_data != server_finished.verify_data {
-            return close_connection(TlsAlertDesc::DecryptError);
+            return Err(AlertDesc::DecryptError);
         }
         handshake.write_to(&mut self.handshakes);
 

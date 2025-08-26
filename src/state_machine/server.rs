@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use log::{debug, info};
 use num_bigint::BigUint;
 
-use crate::alert::TlsAlertDesc;
+use crate::alert::AlertDesc;
 use crate::ciphersuite::{CipherSuiteId, KeyExchangeAlgorithm};
 use crate::client::{CertificateAndPrivateKey, PrioritisedCipherSuite};
 use crate::encoding::Reader;
@@ -20,12 +20,10 @@ use crate::signature::{
 };
 use crate::state_machine::{
     NegotiatedExtensions, SessionValidation, TlsAction, TlsEntity, calculate_master_secret,
-    close_connection, close_with_unexpected_message,
 };
 use crate::storage::SessionInfo;
 use crate::{ClientAuthPolicy, MaxFragmentLengthNegotiationPolicy, RenegotiationPolicy, utils};
 use crate::{
-    alert::TlsAlert,
     ciphersuite::CipherSuite,
     connection::{ConnState, SecurityParams},
     encoding::TlsCodable,
@@ -75,15 +73,15 @@ fn select_cipher_suite(
 
 fn start_abbr_handshake(client_hello: ClientHello, session: SessionInfo) -> HandleResult<TlsState> {
     if client_hello.extensions.get_max_fragment_len() != session.max_fragment_len {
-        return close_connection(TlsAlertDesc::IllegalParameter);
+        return Err(AlertDesc::IllegalParameter);
     }
 
     if session.extended_master_secret != client_hello.extensions.includes_extended_master_secret() {
-        return close_connection(TlsAlertDesc::IllegalParameter);
+        return Err(AlertDesc::IllegalParameter);
     }
 
     if session.max_fragment_len != client_hello.extensions.get_max_fragment_len() {
-        return close_connection(TlsAlertDesc::IllegalParameter);
+        return Err(AlertDesc::IllegalParameter);
     }
 
     let mut handshakes = TlsHandshake::ClientHello(client_hello.clone()).get_encoding();
@@ -187,7 +185,7 @@ fn start_full_handshake(
         &client_hello.cipher_suites,
         &ctx.config.certificates.certificates(),
     ) else {
-        return close_connection(TlsAlertDesc::HandshakeFailure);
+        return Err(AlertDesc::HandshakeFailure);
     };
 
     let negotiated_cipher_suite = CipherSuite::from(negotiated_cipher_suite_id);
@@ -380,7 +378,7 @@ impl HandleRecord<TlsState> for AwaitClientHello {
         // We're not willing to go below TLS1.2. For TLS1.3 we'll give the client
         // the option to decide whether to continue when we respond with TLS1.2.
         if client_hello.version < ProtocolVersion::tls12() {
-            return close_connection(TlsAlertDesc::ProtocolVersion);
+            return Err(AlertDesc::ProtocolVersion);
         }
 
         let issue_session_ticket = client_hello.extensions.includes_session_ticket();
@@ -468,7 +466,7 @@ pub struct AwaitSessionValidation {
 impl HandleRecord<TlsState> for AwaitSessionValidation {
     fn handle(self, ctx: &mut TlsContext, event: TlsEvent) -> HandleResult<TlsState> {
         let TlsEvent::SessionValidation(validation) = event else {
-            return close_with_unexpected_message();
+            return Err(AlertDesc::UnexpectedMessage);
         };
 
         let SessionValidation::Valid(session) = validation else {
@@ -495,7 +493,7 @@ pub struct AwaitClientChangeCipherAbbr {
 impl HandleRecord<TlsState> for AwaitClientChangeCipherAbbr {
     fn handle(self, _ctx: &mut TlsContext, event: TlsEvent) -> HandleResult<TlsState> {
         let TlsEvent::IncomingMessage(TlsMessage::ChangeCipherSpec) = event else {
-            return close_with_unexpected_message();
+            return Err(AlertDesc::UnexpectedMessage);
         };
 
         info!("Received ChangeCipherSpec");
@@ -529,7 +527,7 @@ impl HandleRecord<TlsState> for AwaitClientFinishedAbbr {
         info!("Received ClientFinished");
         let client_verify_data = self.security_params.client_verify_data(&self.handshakes);
         if client_verify_data != client_finished.verify_data {
-            return close_connection(TlsAlertDesc::DecryptError);
+            return Err(AlertDesc::DecryptError);
         }
 
         info!("Handshake complete! (abbr)");
@@ -580,14 +578,14 @@ impl HandleRecord<TlsState> for AwaitClientCertificate {
             }
         ) && certificate.list.is_empty()
         {
-            return close_connection(TlsAlertDesc::HandshakeFailure);
+            return Err(AlertDesc::HandshakeFailure);
         }
 
         handshake.write_to(&mut self.handshakes);
 
         let client_public_key = if let Some(cert) = certificate.list.first() {
             let Ok(key) = public_key_from_cert(cert) else {
-                return close_connection(TlsAlertDesc::IllegalParameter);
+                return Err(AlertDesc::IllegalParameter);
             };
             Some(key)
         } else {
@@ -660,7 +658,7 @@ impl HandleRecord<TlsState> for AwaitClientKeyExchange {
                         .private_key_der,
                     &enc_pre_master_secret,
                 ) else {
-                    return close_connection(TlsAlertDesc::DecryptError);
+                    return Err(AlertDesc::DecryptError);
                 };
                 pre_master_secret
             }
@@ -736,11 +734,11 @@ impl HandleRecord<TlsState> for AwaitCertificateVerify {
             &certificate_verify.signed.signature,
         ) {
             Ok(verified) => verified,
-            Err(_) => return close_connection(TlsAlertDesc::IllegalParameter),
+            Err(_) => return Err(AlertDesc::IllegalParameter),
         };
 
         if !verified {
-            return close_connection(TlsAlertDesc::DecryptError);
+            return Err(AlertDesc::DecryptError);
         }
 
         handshake.write_to(&mut self.handshakes);
@@ -771,7 +769,7 @@ pub struct AwaitClientChangeCipher {
 impl HandleRecord<TlsState> for AwaitClientChangeCipher {
     fn handle(self, _ctx: &mut TlsContext, event: TlsEvent) -> HandleResult<TlsState> {
         let TlsEvent::IncomingMessage(TlsMessage::ChangeCipherSpec) = event else {
-            return close_with_unexpected_message();
+            return Err(AlertDesc::UnexpectedMessage);
         };
 
         info!("Received ChangeCipherSpec");
@@ -807,7 +805,7 @@ impl HandleRecord<TlsState> for AwaitClientFinished {
         info!("Received ClientFinished");
         let client_verify_data = self.security_params.client_verify_data(&self.handshakes);
         if client_verify_data != client_finished.verify_data {
-            return close_connection(TlsAlertDesc::DecryptError);
+            return Err(AlertDesc::DecryptError);
         }
 
         handshake.write_to(&mut self.handshakes);
@@ -888,10 +886,10 @@ impl HandleRecord<TlsState> for ServerEstablished {
         // TODO:
         // Add options to simply ignore client renegotiation or simply send a warning.
         match ctx.config.policy.renegotiation {
-            RenegotiationPolicy::None => close_connection(TlsAlertDesc::NoRenegotiation),
+            RenegotiationPolicy::None => Err(AlertDesc::NoRenegotiation),
             RenegotiationPolicy::OnlyLegacy => {
                 if client_hello.extensions.includes_secure_renegotiation() {
-                    return close_connection(TlsAlertDesc::HandshakeFailure);
+                    return Err(AlertDesc::HandshakeFailure);
                 }
                 AwaitClientHello {
                     previous_verify_data: None,
@@ -901,7 +899,7 @@ impl HandleRecord<TlsState> for ServerEstablished {
             RenegotiationPolicy::OnlySecure => {
                 if let Some(info) = client_hello.extensions.get_renegotiation_info() {
                     if info != self.client_verify_data {
-                        return close_connection(TlsAlertDesc::NoRenegotiation);
+                        return Err(AlertDesc::NoRenegotiation);
                     }
 
                     return AwaitClientHello {
@@ -912,7 +910,7 @@ impl HandleRecord<TlsState> for ServerEstablished {
                     }
                     .handle(ctx, event);
                 }
-                close_connection(TlsAlertDesc::NoRenegotiation)
+                Err(AlertDesc::NoRenegotiation)
             }
         }
     }

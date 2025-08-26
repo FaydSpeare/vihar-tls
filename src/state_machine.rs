@@ -1,12 +1,10 @@
 use crate::MaxFragmentLength;
-use crate::alert::TlsAlertDesc;
+use crate::alert::AlertDesc;
 use crate::ciphersuite::{CipherSuiteId, PrfAlgorithm};
 use crate::client::TlsConfig;
-use crate::errors::TlsError;
 use crate::storage::{SessionInfo, StekInfo};
 use crate::{
-    TlsResult,
-    alert::TlsAlert,
+    alert::Alert,
     connection::ConnState,
     messages::{TlsHandshake, TlsMessage},
 };
@@ -84,7 +82,7 @@ pub enum TlsEvent<'a> {
 
 #[derive(Debug)]
 pub enum TlsAction {
-    SendAlert(TlsAlert),
+    SendAlert(Alert),
     ChangeCipherSpec(TlsEntity, ConnState),
     SendHandshakeMsg(TlsHandshake),
     GetStekInfo(Vec<u8>),
@@ -93,7 +91,7 @@ pub enum TlsAction {
     StoreSessionIdInfo(Vec<u8>, SessionInfo),
     InvalidateSessionId(Vec<u8>),
     InvalidateSessionTicket(Vec<u8>),
-    CloseConnection(TlsAlertDesc),
+    CloseConnection(AlertDesc),
     UpdateMaxFragmentLen(MaxFragmentLength),
 }
 
@@ -110,7 +108,7 @@ pub struct TlsStateMachine {
 }
 
 impl TlsStateMachine {
-    pub fn handle(&mut self, event: TlsEvent) -> TlsResult<Vec<TlsAction>> {
+    pub fn handle(&mut self, event: TlsEvent) -> Vec<TlsAction> {
         // Fatal alerts are handled the same for all states
         if let TlsEvent::IncomingMessage(TlsMessage::Alert(alert)) = event {
             if alert.is_fatal() {
@@ -118,8 +116,8 @@ impl TlsStateMachine {
 
                 // Must reply with close_notify if we receive one
                 if alert.is_close_notification() {
-                    actions.push(TlsAction::SendAlert(TlsAlert::fatal(
-                        TlsAlertDesc::CloseNotify,
+                    actions.push(TlsAction::SendAlert(Alert::fatal(
+                        AlertDesc::CloseNotify,
                     )));
                 }
 
@@ -130,13 +128,23 @@ impl TlsStateMachine {
 
                 actions.push(TlsAction::CloseConnection(alert.description));
                 self.state = Some(ClosedState {}.into());
-                return Ok(actions);
+                return actions;
             }
         }
 
-        let (new_state, actions) = self.state.take().unwrap().handle(&mut self.ctx, event)?;
-        self.state = Some(new_state);
-        Ok(actions)
+        match self.state.take().unwrap().handle(&mut self.ctx, event) {
+            Err(alert_desc) => {
+                self.state = Some(ClosedState {}.into());
+                vec![
+                    TlsAction::SendAlert(Alert::fatal(alert_desc)),
+                    TlsAction::CloseConnection(alert_desc),
+                ]
+            }
+            Ok((new_state, actions)) => {
+                self.state = Some(new_state);
+                actions
+            }
+        }
     }
 
     pub fn new(side: TlsEntity, config: Rc<TlsConfig>) -> Self {
@@ -219,7 +227,7 @@ impl_state_dispatch! {
     }
 }
 
-type HandleResult<T> = Result<(T, Vec<TlsAction>), TlsError>;
+type HandleResult<T> = Result<(T, Vec<TlsAction>), AlertDesc>;
 
 pub trait HandleRecord<T> {
     fn handle(self, ctx: &mut TlsContext, event: TlsEvent) -> HandleResult<T>;
@@ -258,26 +266,6 @@ fn calculate_master_secret(
         .try_into()
         .unwrap();
     master_secret
-}
-
-pub fn close_with_unexpected_message() -> HandleResult<TlsState> {
-    Ok((
-        ClosedState {}.into(),
-        vec![
-            TlsAction::SendAlert(TlsAlert::fatal(TlsAlertDesc::UnexpectedMessage)),
-            TlsAction::CloseConnection(TlsAlertDesc::UnexpectedMessage),
-        ],
-    ))
-}
-
-pub fn close_connection(desc: TlsAlertDesc) -> HandleResult<TlsState> {
-    Ok((
-        ClosedState {}.into(),
-        vec![
-            TlsAction::SendAlert(TlsAlert::fatal(desc)),
-            TlsAction::CloseConnection(desc),
-        ],
-    ))
 }
 
 #[derive(Debug)]

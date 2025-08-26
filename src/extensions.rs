@@ -5,7 +5,7 @@ use std::{collections::HashSet, fmt::Debug};
 
 use crate::{
     TlsPolicy, TlsValidateable, UnrecognisedServerNamePolicy,
-    alert::{TlsAlert, TlsAlertDesc},
+    alert::{Alert, AlertDesc},
     encoding::{
         LengthPrefixWriter, LengthPrefixedVec, MaybeEmpty, NonEmpty, Reader, Reconstrainable,
         TlsCodable,
@@ -161,7 +161,7 @@ impl Extensions {
         Self { list: None }
     }
 
-    pub fn validate(&self, policy: &TlsPolicy) -> Result<(), TlsAlert> {
+    pub fn validate(&self, policy: &TlsPolicy) -> Result<(), Alert> {
         if let Some(extensions) = &self.list {
             for item in extensions.iter() {
                 if let Extension::ServerName(ext) = item {
@@ -624,7 +624,7 @@ impl ServerNameExt {
         }
     }
 
-    pub fn validate(&self, policy: &TlsPolicy) -> Result<(), TlsAlert> {
+    pub fn validate(&self, policy: &TlsPolicy) -> Result<(), Alert> {
         let mut seen = HashSet::new();
 
         if let Some(list) = &self.list {
@@ -633,7 +633,7 @@ impl ServerNameExt {
                 .iter()
                 .all(|server_name| seen.insert(server_name.name_type()))
             {
-                return Err(TlsAlert::fatal(TlsAlertDesc::DecodeError));
+                return Err(Alert::fatal(AlertDesc::DecodeError));
             }
 
             if let UnrecognisedServerNamePolicy::Alert(level) = policy.unrecognised_server_name {
@@ -641,7 +641,7 @@ impl ServerNameExt {
                     .iter()
                     .any(|server_name| matches!(server_name, ServerName::Unknown(_, _)))
                 {
-                    return Err(TlsAlert::new(level, TlsAlertDesc::UnrecognisedName));
+                    return Err(Alert::new(level, AlertDesc::UnrecognisedName));
                 }
             }
         }
@@ -730,10 +730,10 @@ impl TlsCodable for MaxFragmentLenExt {
 }
 
 impl TlsValidateable for MaxFragmentLenExt {
-    fn validate(&self, _: &TlsPolicy) -> Result<(), TlsAlert> {
+    fn validate(&self, _: &TlsPolicy) -> Result<(), Alert> {
         if let MaxFragmentLength::Unknown(x) = self.value {
             trace!("Invalid max_fragment_length value: {x}");
-            return Err(TlsAlert::fatal(TlsAlertDesc::IllegalParameter));
+            return Err(Alert::fatal(AlertDesc::IllegalParameter));
         }
         Ok(())
     }

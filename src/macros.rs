@@ -1,7 +1,7 @@
 macro_rules! impl_state_dispatch {
     (
-        pub enum $enum_name:ident { 
-            $($variant:ident($inner:ty)),+ $(,)? 
+        pub enum $enum_name:ident {
+            $($variant:ident($inner:ty)),+ $(,)?
         }
     ) => {
 
@@ -50,12 +50,7 @@ macro_rules! require_handshake_msg {
             ) => (handshake, inner),
             msg => {
                 log::trace!("Expected: {:?}, but got: {:?}", stringify!($handshake), msg);
-                return Ok((
-                    crate::state_machine::ClosedState {}.into(),
-                    vec![crate::state_machine::TlsAction::SendAlert(TlsAlert::fatal(
-                        TlsAlertDesc::UnexpectedMessage,
-                    ))],
-                ))
+                return Err(crate::alert::AlertDesc::UnexpectedMessage);
             }
         }
     };
@@ -65,12 +60,7 @@ macro_rules! require_handshake_msg {
                 crate::messages::TlsMessage::Handshake(handshake @ $handshake),
             ) => handshake,
             _ => {
-                return Ok((
-                    crate::state_machine::ClosedState {}.into(),
-                    vec![crate::state_machine::TlsAction::SendAlert(TlsAlert::fatal(
-                        TlsAlertDesc::UnexpectedMessage,
-                    ))],
-                ))
+                return Err(crate::alert::AlertDesc::UnexpectedMessage);
             }
         }
     };

@@ -3,7 +3,7 @@ use std::cmp::Ordering;
 use log::debug;
 use num_bigint::BigUint;
 
-use crate::alert::{TlsAlert, TlsAlertDesc};
+use crate::alert::{Alert, AlertDesc};
 use crate::ciphersuite::{CipherSuiteId, CompressionMethod, KeyExchangeAlgorithm};
 use crate::encoding::{
     LengthPrefixWriter, LengthPrefixedVec, MaybeEmpty, NonEmpty, Reader, TlsCodable, u24,
@@ -872,7 +872,7 @@ impl TlsHandshake {
         }
     }
 
-    pub fn validate(&self, policy: &TlsPolicy) -> Result<(), TlsAlert> {
+    pub fn validate(&self, policy: &TlsPolicy) -> Result<(), Alert> {
         if let Self::ClientHello(hello) = self {
             hello.extensions.validate(policy)?
         }
@@ -956,7 +956,7 @@ impl TryFrom<TlsHandshake> for TlsPlaintext {
 #[derive(Debug)]
 pub enum TlsMessage {
     Handshake(TlsHandshake),
-    Alert(TlsAlert),
+    Alert(Alert),
     ChangeCipherSpec,
     ApplicationData(Vec<u8>),
 }
@@ -1003,10 +1003,10 @@ impl TlsPlaintext {
 }
 
 impl TlsValidateable for TlsPlaintext {
-    fn validate(&self, _policy: &TlsPolicy) -> Result<(), TlsAlert> {
+    fn validate(&self, _policy: &TlsPolicy) -> Result<(), Alert> {
         if let TlsContentType::Unknown(x) = self.content_type {
             debug!("Received unrecognised content type: {}", x);
-            return Err(TlsAlert::fatal(TlsAlertDesc::UnexpectedMessage));
+            return Err(Alert::fatal(AlertDesc::UnexpectedMessage));
         }
         Ok(())
     }

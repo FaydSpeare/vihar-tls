@@ -1,4 +1,4 @@
-use crate::alert::{TlsAlert, TlsAlertDesc};
+use crate::alert::{Alert, AlertDesc};
 use crate::ciphersuite::{
     AeadCipher, BlockCipher, CipherSuite, CipherSuiteId, CompressionMethod, ConcreteEncryption,
     ConcreteMac, EncryptionType, MacType, PrfAlgorithm, StreamCipher,
@@ -194,7 +194,7 @@ impl ConnState {
 
         if mac_bytes != mac.compute(&bytes) {
             debug!("mac verification failed");
-            return Err(TlsAlert::fatal(TlsAlertDesc::BadRecordMac).into());
+            return Err(Alert::fatal(AlertDesc::BadRecordMac).into());
         }
 
         Ok(TlsCompressed {
@@ -224,7 +224,7 @@ impl ConnState {
 
         if padding_bytes.iter().any(|b| *b != padding_len) {
             debug!("invalid padding bytes: {:?}", padding_bytes);
-            return Err(TlsAlert::fatal(TlsAlertDesc::BadRecordMac).into());
+            return Err(Alert::fatal(AlertDesc::BadRecordMac).into());
         }
 
         let mut bytes = Vec::<u8>::new();
@@ -237,7 +237,7 @@ impl ConnState {
         let expected_mac = mac.compute(&bytes);
         if actual_mac != expected_mac {
             debug!("mac verification failed");
-            return Err(TlsAlert::fatal(TlsAlertDesc::BadRecordMac).into());
+            return Err(Alert::fatal(AlertDesc::BadRecordMac).into());
         }
 
         Ok(TlsCompressed {
@@ -265,7 +265,7 @@ impl ConnState {
         aad.extend(((ciphertext.len() - 16) as u16).to_be_bytes());
         let fragment = match cipher.decrypt(ciphertext, &iv, &aad) {
             Ok(fragment) => fragment,
-            Err(_) => return Err(TlsAlert::fatal(TlsAlertDesc::BadRecordMac).into()),
+            Err(_) => return Err(Alert::fatal(AlertDesc::BadRecordMac).into()),
         };
 
         Ok(TlsCompressed {
@@ -472,96 +472,91 @@ impl<T: Read + Write> TlsConnection<T> {
     }
 
     fn process_message(&mut self, event: TlsEvent) -> TlsResult<()> {
-        match self.handshake_state_machine.handle(event) {
-            Ok(actions) => {
-                for action in actions {
-                    match action {
-                        TlsAction::ChangeCipherSpec(side, spec) => {
-                            if side == self.side {
-                                self.send_msg(TlsMessage::ChangeCipherSpec)?;
-                                self.conn_states.write = spec;
-                            } else {
-                                self.conn_states.read = spec;
-                            }
-                        }
-                        TlsAction::SendHandshakeMsg(handshake) => {
-                            self.send_msg(handshake)?;
-                        }
-                        TlsAction::SendAlert(alert) => {
-                            self.send_alert(alert)?;
-                        }
-                        TlsAction::CloseConnection(alert) => {
-                            self.is_closed = true;
-                            return Err(format!("Connection closed due to: {:?}", alert).into());
-                        }
-                        TlsAction::ValidateSessionId(session_id) => {
-                            trace!("Validating session...");
-                            let Some(store) = &self.config.session_store else {
-                                trace!("No session store configured -> invalid session");
-                                self.process_message(TlsEvent::SessionValidation(
-                                    SessionValidation::Invalid,
-                                ))?;
-                                continue;
-                            };
-
-                            let validation = match store.get_session_id(&session_id)? {
-                                None => {
-                                    trace!("Session is invalid");
-                                    SessionValidation::Invalid
-                                }
-                                Some(session_info) => {
-                                    trace!("Session is valid");
-                                    SessionValidation::Valid(session_info)
-                                }
-                            };
-
-                            self.process_message(TlsEvent::SessionValidation(validation))?;
-                        }
-                        TlsAction::GetStekInfo(key_name) => {
-                            trace!("Retrieving stek...");
-                            let Some(store) = &self.config.session_store else {
-                                trace!("No session store configured -> no stek");
-                                self.process_message(TlsEvent::StekInfo(None))?;
-                                continue;
-                            };
-                            let stek = store.get_stek(&key_name)?;
-                            self.process_message(TlsEvent::StekInfo(stek))?;
-                        }
-                        TlsAction::StoreSessionTicketInfo(ticket, info) => {
-                            trace!("Storing session ticket");
-                            if let Some(store) = &self.config.session_store {
-                                store.insert_session_ticket(&ticket, info)?
-                            }
-                        }
-                        TlsAction::StoreSessionIdInfo(id, info) => {
-                            trace!("Storing session id");
-                            if let Some(store) = &self.config.session_store {
-                                store.insert_session_id(&id, info)?
-                            }
-                        }
-                        TlsAction::InvalidateSessionId(session_id) => {
-                            trace!("Invalidating session id");
-                            if let Some(store) = &self.config.session_store {
-                                store.delete_session_id(&session_id)?
-                            }
-                        }
-                        TlsAction::InvalidateSessionTicket(session_ticket) => {
-                            trace!("Invalidating session ticket");
-                            if let Some(store) = &self.config.session_store {
-                                store.delete_session_ticket(&session_ticket)?
-                            }
-                        }
-                        TlsAction::UpdateMaxFragmentLen(max_fragment_len) => {
-                            trace!(
-                                "Updating max_fragment_length to {}",
-                                max_fragment_len.length()
-                            );
-                            self.max_fragment_len = max_fragment_len.length();
-                        }
+        for action in self.handshake_state_machine.handle(event) {
+            match action {
+                TlsAction::ChangeCipherSpec(side, spec) => {
+                    if side == self.side {
+                        self.send_msg(TlsMessage::ChangeCipherSpec)?;
+                        self.conn_states.write = spec;
+                    } else {
+                        self.conn_states.read = spec;
                     }
                 }
+                TlsAction::SendHandshakeMsg(handshake) => {
+                    self.send_msg(handshake)?;
+                }
+                TlsAction::SendAlert(alert) => {
+                    self.send_alert(alert)?;
+                }
+                TlsAction::CloseConnection(alert) => {
+                    self.is_closed = true;
+                    return Err(format!("Connection closed due to: {:?}", alert).into());
+                }
+                TlsAction::ValidateSessionId(session_id) => {
+                    trace!("Validating session...");
+                    let Some(store) = &self.config.session_store else {
+                        trace!("No session store configured -> invalid session");
+                        self.process_message(TlsEvent::SessionValidation(
+                            SessionValidation::Invalid,
+                        ))?;
+                        continue;
+                    };
+
+                    let validation = match store.get_session_id(&session_id)? {
+                        None => {
+                            trace!("Session is invalid");
+                            SessionValidation::Invalid
+                        }
+                        Some(session_info) => {
+                            trace!("Session is valid");
+                            SessionValidation::Valid(session_info)
+                        }
+                    };
+
+                    self.process_message(TlsEvent::SessionValidation(validation))?;
+                }
+                TlsAction::GetStekInfo(key_name) => {
+                    trace!("Retrieving stek...");
+                    let Some(store) = &self.config.session_store else {
+                        trace!("No session store configured -> no stek");
+                        self.process_message(TlsEvent::StekInfo(None))?;
+                        continue;
+                    };
+                    let stek = store.get_stek(&key_name)?;
+                    self.process_message(TlsEvent::StekInfo(stek))?;
+                }
+                TlsAction::StoreSessionTicketInfo(ticket, info) => {
+                    trace!("Storing session ticket");
+                    if let Some(store) = &self.config.session_store {
+                        store.insert_session_ticket(&ticket, info)?
+                    }
+                }
+                TlsAction::StoreSessionIdInfo(id, info) => {
+                    trace!("Storing session id");
+                    if let Some(store) = &self.config.session_store {
+                        store.insert_session_id(&id, info)?
+                    }
+                }
+                TlsAction::InvalidateSessionId(session_id) => {
+                    trace!("Invalidating session id");
+                    if let Some(store) = &self.config.session_store {
+                        store.delete_session_id(&session_id)?
+                    }
+                }
+                TlsAction::InvalidateSessionTicket(session_ticket) => {
+                    trace!("Invalidating session ticket");
+                    if let Some(store) = &self.config.session_store {
+                        store.delete_session_ticket(&session_ticket)?
+                    }
+                }
+                TlsAction::UpdateMaxFragmentLen(max_fragment_len) => {
+                    trace!(
+                        "Updating max_fragment_length to {}",
+                        max_fragment_len.length()
+                    );
+                    self.max_fragment_len = max_fragment_len.length();
+                }
             }
-            Err(_) => unreachable!(),
         }
         Ok(())
     }
@@ -584,7 +579,7 @@ impl<T: Read + Write> TlsConnection<T> {
                     }
                     TlsError::Decoding(DecodingError::InvalidEncoding(e)) => {
                         trace!("Record parsing failed: {e}");
-                        self.send_alert(TlsAlert::fatal(TlsAlertDesc::DecodeError))?;
+                        self.send_alert(Alert::fatal(AlertDesc::DecodeError))?;
                     }
                     _ => {}
                 },
@@ -620,7 +615,7 @@ impl<T: Read + Write> TlsConnection<T> {
         Ok(())
     }
 
-    fn send_alert(&mut self, alert: TlsAlert) -> TlsResult<()> {
+    fn send_alert(&mut self, alert: Alert) -> TlsResult<()> {
         info!("Sent alert: {:?}", alert);
         self.send_msg(TlsMessage::Alert(alert))?;
         Ok(())
