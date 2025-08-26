@@ -13,9 +13,8 @@ use client::{
     AwaitServerCertificate, AwaitServerChangeCipher, AwaitServerChangeCipherOrCertificate,
     AwaitServerFinished, AwaitServerHello, AwaitServerHelloDone,
     AwaitServerHelloDoneOrCertificateRequest, AwaitServerKeyExchange,
-    AwaitServerKeyExchangeOrCertificateRequest, ClientAttemptedRenegotiationState,
-    ClientEstablished, ExpectNewSessionTicketAbbr, ExpectServerChangeCipherAbbr,
-    ExpectServerFinishedAbbr,
+    AwaitServerKeyExchangeOrCertificateRequest, ClientEstablished, ExpectNewSessionTicketAbbr,
+    ExpectServerChangeCipherAbbr, ExpectServerFinishedAbbr,
 };
 use server::{
     AwaitCertificateVerify, AwaitClientCertificate, AwaitClientChangeCipher,
@@ -96,19 +95,66 @@ pub enum TlsAction {
 }
 
 #[derive(Debug, Clone)]
-pub struct TlsContext {
-    pub side: TlsEntity,
+pub struct ServerContext {
     pub config: Rc<TlsConfig>,
     pub stek: Option<StekInfo>,
 }
 
-pub struct TlsStateMachine {
-    pub state: Option<TlsState>,
-    pub ctx: TlsContext,
+#[derive(Debug, Clone)]
+pub struct ClientContext {
+    pub config: Rc<TlsConfig>,
 }
 
-impl TlsStateMachine {
-    pub fn handle(&mut self, event: TlsEvent) -> Vec<TlsAction> {
+pub trait StateMachine {
+    fn handle(&mut self, event: TlsEvent) -> Vec<TlsAction>;
+    fn is_established(&self) -> bool;
+}
+
+pub struct TlsStateMachine<T: TlsState<C>, C> {
+    pub state: Option<T>,
+    pub ctx: C,
+}
+
+pub type ClientStateMachine = TlsStateMachine<ClientState, ClientContext>;
+pub type ServerStateMachine = TlsStateMachine<ServerState, ServerContext>;
+
+impl ClientStateMachine {
+    pub fn new(config: Rc<TlsConfig>) -> Self {
+        Self {
+            ctx: ClientContext { config },
+            state: Some(
+                AwaitClientInitiateState {
+                    previous_verify_data: None,
+                }
+                .into(),
+            ),
+        }
+    }
+}
+
+impl ServerStateMachine {
+    pub fn new(config: Rc<TlsConfig>) -> Self {
+        let stek = config.session_store.as_ref().map(|store| {
+            let new_stek = StekInfo::new();
+            store
+                .insert_stek(&new_stek.key_name.to_vec(), new_stek.clone())
+                .expect("failed to create new STEK");
+            new_stek
+        });
+        Self {
+            ctx: ServerContext { config, stek },
+            state: Some(
+                AwaitClientHello {
+                    previous_verify_data: None,
+                }
+                .into(),
+            ),
+        }
+    }
+}
+
+impl<T: TlsState<C>, C> StateMachine for TlsStateMachine<T, C> {
+    fn handle(&mut self, event: TlsEvent) -> Vec<TlsAction> {
         // Fatal alerts are handled the same for all states
         if let TlsEvent::IncomingMessage(TlsMessage::Alert(alert)) = event {
             if alert.is_fatal() {
@@ -120,19 +166,19 @@ impl TlsStateMachine {
                 }
 
                 // Must invalidate session for fatal alerts
-                if let Some(session_id) = self.established_session_id() {
+                if let Some(session_id) = self.state.as_ref().unwrap().session_id() {
                     actions.push(TlsAction::InvalidateSessionId(session_id));
                 }
 
                 actions.push(TlsAction::CloseConnection(alert.description));
-                self.state = Some(ClosedState {}.into());
+                self.state = Some(T::new_closed_state());
                 return actions;
             }
         }
 
         match self.state.take().unwrap().handle(&mut self.ctx, event) {
             Err(alert_desc) => {
-                self.state = Some(ClosedState {}.into());
+                self.state = Some(T::new_closed_state());
                 vec![
                     TlsAction::SendAlert(Alert::fatal(alert_desc)),
                     TlsAction::CloseConnection(alert_desc),
@@ -145,62 +191,29 @@ impl TlsStateMachine {
         }
     }
 
-    pub fn new(side: TlsEntity, config: Rc<TlsConfig>) -> Self {
-        let state: TlsState = match side {
-            TlsEntity::Client => AwaitClientInitiateState {
-                previous_verify_data: None,
-            }
-            .into(),
-            TlsEntity::Server => AwaitClientHello {
-                previous_verify_data: None,
-            }
-            .into(),
-        };
-
-        let stek = config.session_store.as_ref().map(|store| {
-            let new_stek = StekInfo::new();
-            store
-                .insert_stek(&new_stek.key_name.to_vec(), new_stek.clone())
-                .expect("failed to create new STEK");
-            new_stek
-        });
-
-        Self {
-            ctx: TlsContext { side, config, stek },
-            state: Some(state),
-        }
-    }
-
-    pub fn is_established(&self) -> bool {
-        matches!(
-            self.state.as_ref().unwrap(),
-            TlsState::ClientEstablished(_) | TlsState::ServerEstablished(_)
-        )
-    }
-
-    pub fn established_session_id(&self) -> Option<Vec<u8>> {
-        match self.state.as_ref().unwrap() {
-            TlsState::ClientEstablished(state) => Some(state.session_id.to_vec()),
-            TlsState::ServerEstablished(state) => Some(state.session_id.to_vec()),
-            _ => None,
-        }
+    fn is_established(&self) -> bool {
+        self.state.as_ref().unwrap().is_established()
     }
 }
 
-impl_state_dispatch! {
-    pub enum TlsState {
-        AwaitClientHello(AwaitClientHello),
-        AwaitStekInfo(AwaitStekInfo),
-        AwaitSessionValidation(AwaitSessionValidation),
-        AwaitClientCertificate(AwaitClientCertificate),
-        AwaitClientKeyExchange(AwaitClientKeyExchange),
-        AwaitCertificateVerify(AwaitCertificateVerify),
-        AwaitClientChangeCipher(AwaitClientChangeCipher),
-        AwaitClientFinished(AwaitClientFinished),
-        AwaitClientChangeCipherAbbr(AwaitClientChangeCipherAbbr),
-        AwaitClientFinishedAbbr(AwaitClientFinishedAbbr),
-        ClientEstablished(ClientEstablished),
+type HandleResult<S> = Result<(S, Vec<TlsAction>), AlertDesc>;
 
+pub trait HandleEvent<C, S> {
+    fn handle(self, ctx: &mut C, event: TlsEvent) -> HandleResult<S>;
+}
+
+pub trait TlsState<C>: Sized {
+    fn handle(self, ctx: &mut C, event: TlsEvent) -> HandleResult<Self>;
+    fn is_established(&self) -> bool;
+    fn new_closed_state() -> Self;
+    fn session_id(&self) -> Option<Vec<u8>>;
+}
+
+impl_state_dispatch! {
+    [context = ClientContext]
+    [established = ClientEstablished]
+    [closed = ClientClosed]
+    pub enum ClientState {
         AwaitClientInitiate(AwaitClientInitiateState),
         AwaitServerHello(AwaitServerHello),
         AwaitServerCertificate(AwaitServerCertificate),
@@ -216,17 +229,29 @@ impl_state_dispatch! {
         ExpectNewSessionTicketAbbr(ExpectNewSessionTicketAbbr),
         ExpectServerChangeCipherAbbr(ExpectServerChangeCipherAbbr),
         ExpectServerFinishedAbbr(ExpectServerFinishedAbbr),
-        ServerEstablished(ServerEstablished),
-        Closed(ClosedState),
-
-        ClientAttemptedRenegotiation(ClientAttemptedRenegotiationState),
+        ClientEstablished(ClientEstablished),
+        ClientClosed(ClosedState),
     }
 }
 
-type HandleResult = Result<(TlsState, Vec<TlsAction>), AlertDesc>;
-
-pub trait HandleEvent<T> {
-    fn handle(self, ctx: &mut T, event: TlsEvent) -> HandleResult;
+impl_state_dispatch! {
+    [context = ServerContext]
+    [established = ServerEstablished]
+    [closed = ServerClosed]
+    pub enum ServerState {
+        AwaitClientHello(AwaitClientHello),
+        AwaitStekInfo(AwaitStekInfo),
+        AwaitSessionValidation(AwaitSessionValidation),
+        AwaitClientCertificate(AwaitClientCertificate),
+        AwaitClientKeyExchange(AwaitClientKeyExchange),
+        AwaitCertificateVerify(AwaitCertificateVerify),
+        AwaitClientChangeCipher(AwaitClientChangeCipher),
+        AwaitClientFinished(AwaitClientFinished),
+        AwaitClientChangeCipherAbbr(AwaitClientChangeCipherAbbr),
+        AwaitClientFinishedAbbr(AwaitClientFinishedAbbr),
+        ServerEstablished(ServerEstablished),
+        ServerClosed(ClosedState),
+    }
 }
 
 #[derive(Debug)]
@@ -267,8 +292,18 @@ fn calculate_master_secret(
 #[derive(Debug)]
 pub struct ClosedState {}
 
-impl HandleEvent<TlsContext> for ClosedState {
-    fn handle(self, _ctx: &mut TlsContext, event: TlsEvent) -> HandleResult {
+impl HandleEvent<ServerContext, ServerState> for ClosedState {
+    fn handle(self, _ctx: &mut ServerContext, event: TlsEvent) -> HandleResult<ServerState> {
+        println!("{:?}", event);
+        // Maybe get server hello
+        // Maybe get alert
+        // Maybe get nothing...
+        unimplemented!()
+    }
+}
+
+impl HandleEvent<ClientContext, ClientState> for ClosedState {
+    fn handle(self, _ctx: &mut ClientContext, event: TlsEvent) -> HandleResult<ClientState> {
         println!("{:?}", event);
         // Maybe get server hello
         // Maybe get alert

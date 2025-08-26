@@ -30,7 +30,7 @@ use crate::{
     messages::{Finished, TlsHandshake, TlsMessage},
 };
 
-use super::{HandleEvent, HandleResult, PreviousVerifyData, TlsContext, TlsEvent};
+use super::{HandleEvent, HandleResult, PreviousVerifyData, ServerContext, TlsEvent, ServerState};
 use rand::prelude::IteratorRandom;
 
 fn select_cipher_suite(
@@ -74,7 +74,7 @@ fn select_cipher_suite(
 fn start_abbreviated_handshake(
     client_hello: ClientHello,
     session: SessionInfo,
-) -> HandleResult {
+) -> HandleResult<ServerState> {
     if client_hello.extensions.get_max_fragment_len() != session.max_fragment_len {
         return Err(AlertDesc::IllegalParameter);
     }
@@ -179,11 +179,11 @@ struct DhParams {
 }
 
 fn start_full_handshake(
-    ctx: &TlsContext,
+    ctx: &ServerContext,
     previous_verify_data: Option<PreviousVerifyData>,
     client_hello: ClientHello,
     issue_session_ticket: bool,
-) -> HandleResult {
+) -> HandleResult<ServerState> {
     let mut handshakes = TlsHandshake::ClientHello(client_hello.clone()).get_encoding();
     let suites: Vec<_> = client_hello
         .cipher_suites
@@ -383,8 +383,8 @@ pub struct AwaitClientHello {
     pub previous_verify_data: Option<PreviousVerifyData>,
 }
 
-impl HandleEvent<TlsContext> for AwaitClientHello {
-    fn handle(self, ctx: &mut TlsContext, event: TlsEvent) -> HandleResult {
+impl HandleEvent<ServerContext, ServerState> for AwaitClientHello {
+    fn handle(self, ctx: &mut ServerContext, event: TlsEvent) -> HandleResult<ServerState> {
         let (_, client_hello) = require_handshake_msg!(event, TlsHandshake::ClientHello);
         info!("Received ClientHello");
 
@@ -442,8 +442,8 @@ pub struct AwaitStekInfo {
     issue_session_ticket: bool,
     ticket: SessionTicket,
 }
-impl HandleEvent<TlsContext> for AwaitStekInfo {
-    fn handle(self, ctx: &mut TlsContext, event: TlsEvent) -> HandleResult {
+impl HandleEvent<ServerContext, ServerState> for AwaitStekInfo {
+    fn handle(self, ctx: &mut ServerContext, event: TlsEvent) -> HandleResult<ServerState> {
         let TlsEvent::StekInfo(maybe_stek) = event else {
             panic!("Expected StekInfo event");
         };
@@ -476,8 +476,8 @@ pub struct AwaitSessionValidation {
     issue_session_ticket: bool,
 }
 
-impl HandleEvent<TlsContext> for AwaitSessionValidation {
-    fn handle(self, ctx: &mut TlsContext, event: TlsEvent) -> HandleResult {
+impl HandleEvent<ServerContext, ServerState> for AwaitSessionValidation {
+    fn handle(self, ctx: &mut ServerContext, event: TlsEvent) -> HandleResult<ServerState> {
         let TlsEvent::SessionValidation(validation) = event else {
             return Err(AlertDesc::UnexpectedMessage);
         };
@@ -503,8 +503,8 @@ pub struct AwaitClientChangeCipherAbbr {
     server_verify_data: Vec<u8>,
 }
 
-impl HandleEvent<TlsContext> for AwaitClientChangeCipherAbbr {
-    fn handle(self, _ctx: &mut TlsContext, event: TlsEvent) -> HandleResult {
+impl HandleEvent<ServerContext, ServerState> for AwaitClientChangeCipherAbbr {
+    fn handle(self, _ctx: &mut ServerContext, event: TlsEvent) -> HandleResult<ServerState> {
         let TlsEvent::IncomingMessage(TlsMessage::ChangeCipherSpec) = event else {
             return Err(AlertDesc::UnexpectedMessage);
         };
@@ -533,8 +533,8 @@ pub struct AwaitClientFinishedAbbr {
     server_verify_data: Vec<u8>,
 }
 
-impl HandleEvent<TlsContext> for AwaitClientFinishedAbbr {
-    fn handle(self, _ctx: &mut TlsContext, event: TlsEvent) -> HandleResult {
+impl HandleEvent<ServerContext, ServerState> for AwaitClientFinishedAbbr {
+    fn handle(self, _ctx: &mut ServerContext, event: TlsEvent) -> HandleResult<ServerState> {
         let (_, client_finished) = require_handshake_msg!(event, TlsHandshake::Finished);
 
         info!("Received ClientFinished");
@@ -569,8 +569,8 @@ pub struct AwaitClientCertificate {
     server_dh_params: Option<DhParams>,
 }
 
-impl HandleEvent<TlsContext> for AwaitClientCertificate {
-    fn handle(mut self, ctx: &mut TlsContext, event: TlsEvent) -> HandleResult {
+impl HandleEvent<ServerContext, ServerState> for AwaitClientCertificate {
+    fn handle(mut self, ctx: &mut ServerContext, event: TlsEvent) -> HandleResult<ServerState> {
         let (handshake, certificate) = require_handshake_msg!(event, TlsHandshake::Certificate);
 
         info!("Received ClientCertificate");
@@ -630,8 +630,8 @@ pub struct AwaitClientKeyExchange {
     client_public_key: Option<Vec<u8>>,
 }
 
-impl HandleEvent<TlsContext> for AwaitClientKeyExchange {
-    fn handle(mut self, ctx: &mut TlsContext, event: TlsEvent) -> HandleResult {
+impl HandleEvent<ServerContext, ServerState> for AwaitClientKeyExchange {
+    fn handle(mut self, ctx: &mut ServerContext, event: TlsEvent) -> HandleResult<ServerState> {
         let (handshake, client_kx) = require_handshake_msg!(event, TlsHandshake::ClientKeyExchange);
 
         info!("Received ClientKeyExchange");
@@ -725,8 +725,8 @@ pub struct AwaitCertificateVerify {
     client_public_key: Vec<u8>,
 }
 
-impl HandleEvent<TlsContext> for AwaitCertificateVerify {
-    fn handle(mut self, _ctx: &mut TlsContext, event: TlsEvent) -> HandleResult {
+impl HandleEvent<ServerContext, ServerState> for AwaitCertificateVerify {
+    fn handle(mut self, _ctx: &mut ServerContext, event: TlsEvent) -> HandleResult<ServerState> {
         let (handshake, certificate_verify) =
             require_handshake_msg!(event, TlsHandshake::CertificateVerify);
 
@@ -771,8 +771,8 @@ pub struct AwaitClientChangeCipher {
     issue_session_ticket: bool,
 }
 
-impl HandleEvent<TlsContext> for AwaitClientChangeCipher {
-    fn handle(self, _ctx: &mut TlsContext, event: TlsEvent) -> HandleResult {
+impl HandleEvent<ServerContext, ServerState> for AwaitClientChangeCipher {
+    fn handle(self, _ctx: &mut ServerContext, event: TlsEvent) -> HandleResult<ServerState> {
         let TlsEvent::IncomingMessage(TlsMessage::ChangeCipherSpec) = event else {
             return Err(AlertDesc::UnexpectedMessage);
         };
@@ -803,8 +803,8 @@ pub struct AwaitClientFinished {
     issue_session_ticket: bool,
 }
 
-impl HandleEvent<TlsContext> for AwaitClientFinished {
-    fn handle(mut self, ctx: &mut TlsContext, event: TlsEvent) -> HandleResult {
+impl HandleEvent<ServerContext, ServerState> for AwaitClientFinished {
+    fn handle(mut self, ctx: &mut ServerContext, event: TlsEvent) -> HandleResult<ServerState> {
         let (handshake, client_finished) = require_handshake_msg!(event, TlsHandshake::Finished);
 
         info!("Received ClientFinished");
@@ -872,6 +872,7 @@ impl HandleEvent<TlsContext> for AwaitClientFinished {
 
 #[derive(Debug)]
 pub struct ServerEstablished {
+    #[allow(unused)]
     pub session_id: SessionId,
     #[allow(unused)]
     negotiated_extensions: NegotiatedExtensions,
@@ -879,8 +880,8 @@ pub struct ServerEstablished {
     pub client_verify_data: Vec<u8>,
 }
 
-impl HandleEvent<TlsContext> for ServerEstablished {
-    fn handle(self, ctx: &mut TlsContext, event: TlsEvent) -> HandleResult {
+impl HandleEvent<ServerContext, ServerState> for ServerEstablished {
+    fn handle(self, ctx: &mut ServerContext, event: TlsEvent) -> HandleResult<ServerState> {
         if let TlsEvent::IncomingMessage(TlsMessage::ApplicationData(data)) = event {
             println!("{:?}", String::from_utf8_lossy(data));
             return Ok((self.into(), vec![]));
@@ -930,7 +931,7 @@ impl HandleEvent<TlsContext> for ServerEstablished {
 // }
 //
 // impl HandleRecord<TlsContext> for ServerEstablished {
-//     fn handle(self, ctx: &mut TlsContext, event: TlsEvent) -> HandleResult {
+//     fn handle(self, ctx: &mut TlsContext, event: TlsEvent) -> HandleResult<TlsState> {
 //         if let TlsEvent::IncomingMessage(TlsMessage::ApplicationData(data)) = event {
 //             println!("{:?}", String::from_utf8_lossy(data));
 //             return Ok((self.into(), vec![]));

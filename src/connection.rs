@@ -9,8 +9,8 @@ use crate::errors::{DecodingError, TlsError};
 use crate::messages::{TlsCiphertext, TlsCompressed, TlsContentType, TlsMessage, TlsPlaintext};
 use crate::record::RecordLayer;
 use crate::state_machine::{
-    SessionIdResumption, SessionResumption, SessionTicketResumption, SessionValidation, TlsAction,
-    TlsEntity, TlsEvent, TlsStateMachine,
+    ClientStateMachine, ServerStateMachine, SessionIdResumption, SessionResumption,
+    SessionTicketResumption, SessionValidation, StateMachine, TlsAction, TlsEntity, TlsEvent,
 };
 use crate::{TlsResult, utils};
 use log::{debug, info, trace};
@@ -450,7 +450,7 @@ impl ConnStates {
 
 pub struct TlsConnection<T: Read + Write> {
     stream: T,
-    pub handshake_state_machine: TlsStateMachine,
+    pub handshake_state_machine: Box<dyn StateMachine>,
     conn_states: ConnStates,
     record_layer: RecordLayer,
     config: Rc<TlsConfig>,
@@ -468,7 +468,10 @@ impl<T: Read + Write> TlsConnection<T> {
         Self {
             side,
             stream,
-            handshake_state_machine: TlsStateMachine::new(side, config.clone()),
+            handshake_state_machine: match side {
+                TlsEntity::Server => Box::new(ServerStateMachine::new(config.clone())),
+                TlsEntity::Client => Box::new(ClientStateMachine::new(config.clone())),
+            },
             config,
             conn_states: ConnStates::new(),
             record_layer: RecordLayer::new(),

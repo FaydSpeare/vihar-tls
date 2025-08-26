@@ -1,5 +1,8 @@
 macro_rules! impl_state_dispatch {
     (
+        [context = $context_name:path]
+        [established = $established_name:ident]
+        [closed = $closed_name:ident]
         pub enum $enum_name:ident {
             $($variant:ident($inner:ty)),+ $(,)?
         }
@@ -20,13 +23,28 @@ macro_rules! impl_state_dispatch {
             }
         )+
 
-        impl HandleEvent<TlsContext> for $enum_name {
-            fn handle(self, ctx: &mut TlsContext, event: TlsEvent) -> HandleResult {
+        impl TlsState<$context_name> for $enum_name {
+            fn handle(self, ctx: &mut $context_name, event: TlsEvent) -> HandleResult<Self> {
                 match self {
                     $(
                         Self::$variant(inner) => inner.handle(ctx, event),
                     )+
                 }
+            }
+
+            fn is_established(&self) -> bool {
+                matches!(self, Self::$established_name(_))
+            }
+
+            fn session_id(&self) -> Option<Vec<u8>> {
+                match self {
+                    Self::$established_name(state) => Some(state.session_id.to_vec()),
+                    _ => None,
+                }
+            }
+
+            fn new_closed_state() -> Self {
+                Self::$closed_name(ClosedState {})
             }
         }
     };
