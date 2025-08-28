@@ -1,7 +1,8 @@
 use crate::MaxFragmentLength;
 use crate::alert::AlertDesc;
 use crate::ciphersuite::{CipherSuiteId, PrfAlgorithm};
-use crate::client::TlsConfig;
+use crate::client::TlsClientConfig;
+use crate::server::TlsServerConfig;
 use crate::storage::{SessionInfo, StekInfo};
 use crate::{
     alert::Alert,
@@ -9,12 +10,12 @@ use crate::{
     messages::{TlsHandshake, TlsMessage},
 };
 use client::{
-    ClientEstablished, ExpectClientInitiateState, ExpectNewSessionTicket,
-    ExpectNewSessionTicketAbbr, ExpectNewSessionTicketOrCertificate, ExpectServerCertificate,
-    ExpectServerChangeCipher, ExpectServerChangeCipherAbbr, ExpectServerChangeCipherOrCertificate,
-    ExpectServerFinished, ExpectServerFinishedAbbr, ExpectServerHello, ExpectServerHelloDone,
-    ExpectServerHelloDoneOrCertificateRequest, ExpectServerKeyExchange,
-    ExpectServerKeyExchangeOrCertificateRequest,
+    ClientAttemptedRenegotiationState, ClientEstablished, ExpectClientInitiateState,
+    ExpectNewSessionTicket, ExpectNewSessionTicketAbbr, ExpectNewSessionTicketOrCertificate,
+    ExpectServerCertificate, ExpectServerChangeCipher, ExpectServerChangeCipherAbbr,
+    ExpectServerChangeCipherOrCertificate, ExpectServerFinished, ExpectServerFinishedAbbr,
+    ExpectServerHello, ExpectServerHelloDone, ExpectServerHelloDoneOrCertificateRequest,
+    ExpectServerKeyExchange, ExpectServerKeyExchangeOrCertificateRequest,
 };
 use server::{
     ExpectCertificateVerify, ExpectClientCertificate, ExpectClientChangeCipher,
@@ -69,7 +70,7 @@ pub enum TlsEvent<'a> {
     ClientInitiate {
         cipher_suites: Vec<CipherSuiteId>,
         session_resumption: SessionResumption,
-        server_name: Option<String>,
+        server_name: String,
         support_session_ticket: bool,
         support_extended_master_secret: bool,
         support_secure_renegotiation: bool,
@@ -97,13 +98,13 @@ pub enum TlsAction {
 
 #[derive(Debug, Clone)]
 pub struct ServerContext {
-    pub config: Rc<TlsConfig>,
+    pub config: Rc<TlsServerConfig>,
     pub stek: Option<StekInfo>,
 }
 
 #[derive(Debug, Clone)]
 pub struct ClientContext {
-    pub config: Rc<TlsConfig>,
+    pub config: Rc<TlsClientConfig>,
 }
 
 pub trait StateMachine {
@@ -120,7 +121,7 @@ pub type ClientStateMachine = TlsStateMachine<ClientState, ClientContext>;
 pub type ServerStateMachine = TlsStateMachine<ServerState, ServerContext>;
 
 impl ClientStateMachine {
-    pub fn new(config: Rc<TlsConfig>) -> Self {
+    pub fn new(config: Rc<TlsClientConfig>) -> Self {
         Self {
             ctx: ClientContext { config },
             state: Some(
@@ -134,7 +135,7 @@ impl ClientStateMachine {
 }
 
 impl ServerStateMachine {
-    pub fn new(config: Rc<TlsConfig>) -> Self {
+    pub fn new(config: Rc<TlsServerConfig>) -> Self {
         let stek = config.session_store.as_ref().map(|store| {
             let new_stek = StekInfo::new();
             store
@@ -232,6 +233,7 @@ impl_state_dispatch! {
         ExpectServerFinishedAbbr(ExpectServerFinishedAbbr),
         ClientEstablished(ClientEstablished),
         ClientClosed(ClosedState),
+        AttemptedRenegotiation(ClientAttemptedRenegotiationState),
     }
 }
 

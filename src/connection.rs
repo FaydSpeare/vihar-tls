@@ -3,18 +3,20 @@ use crate::ciphersuite::{
     AeadCipher, BlockCipher, CipherSuite, CipherSuiteId, CompressionMethod, ConcreteEncryption,
     ConcreteMac, EncryptionType, MacType, PrfAlgorithm, StreamCipher,
 };
-use crate::client::TlsConfig;
+use crate::client::TlsClientConfig;
 use crate::encoding::TlsCodable;
 use crate::errors::{DecodingError, TlsError};
 use crate::messages::{
     ProtocolVersion, TlsCiphertext, TlsCompressed, TlsContentType, TlsMessage, TlsPlaintext,
 };
 use crate::record::RecordLayer;
+use crate::server::TlsServerConfig;
 use crate::state_machine::{
     ClientStateMachine, ServerStateMachine, SessionIdResumption, SessionResumption,
     SessionTicketResumption, SessionValidation, StateMachine, TlsAction, TlsEntity, TlsEvent,
 };
-use crate::{TlsResult, utils};
+use crate::storage::SessionStorage;
+use crate::{TlsPolicy, TlsResult, utils};
 use log::{debug, info, trace};
 use std::io::{Read, Write};
 use std::rc::Rc;
@@ -478,31 +480,58 @@ impl ConnStates {
     }
 }
 
-pub struct TlsConnection<T: Read + Write> {
+pub struct ClientConnection<T: Read + Write> {
+    #[allow(dead_code)]
+    config: Rc<TlsClientConfig>,
+    pub core: ConnectionCore<T>,
+}
+
+impl<T: Read + Write> ClientConnection<T> {
+    pub fn new(stream: T, config: Rc<TlsClientConfig>) -> Self {
+        let handshake_state_machine = Box::new(ClientStateMachine::new(config.clone()));
+        Self {
+            config,
+            core: ConnectionCore::new(TlsEntity::Client, stream, handshake_state_machine),
+        }
+    }
+}
+
+pub struct ServerConnection<T: Read + Write> {
+    #[allow(dead_code)]
+    config: Rc<TlsServerConfig>,
+    pub core: ConnectionCore<T>,
+}
+
+impl<T: Read + Write> ServerConnection<T> {
+    pub fn new(stream: T, config: Rc<TlsServerConfig>) -> Self {
+        let handshake_state_machine = Box::new(ServerStateMachine::new(config.clone()));
+        Self {
+            config,
+            core: ConnectionCore::new(TlsEntity::Server, stream, handshake_state_machine),
+        }
+    }
+}
+
+pub struct ConnectionCore<T: Read + Write> {
     stream: T,
     pub handshake_state_machine: Box<dyn StateMachine>,
     conn_states: ConnStates,
     record_layer: RecordLayer,
-    config: Rc<TlsConfig>,
     side: TlsEntity,
     is_closed: bool,
     max_fragment_len: usize,
 }
 
-impl<T: Read + Write> TlsConnection<T> {
+impl<T: Read + Write> ConnectionCore<T> {
     pub fn is_established(&self) -> bool {
         self.handshake_state_machine.is_established()
     }
 
-    pub fn new(side: TlsEntity, stream: T, config: Rc<TlsConfig>) -> Self {
+    pub fn new(side: TlsEntity, stream: T, handshake_state_machine: Box<dyn StateMachine>) -> Self {
         Self {
             side,
             stream,
-            handshake_state_machine: match side {
-                TlsEntity::Server => Box::new(ServerStateMachine::new(config.clone())),
-                TlsEntity::Client => Box::new(ClientStateMachine::new(config.clone())),
-            },
-            config,
+            handshake_state_machine,
             conn_states: ConnStates::new(),
             record_layer: RecordLayer::new(),
             is_closed: false,
@@ -510,7 +539,11 @@ impl<T: Read + Write> TlsConnection<T> {
         }
     }
 
-    fn process_message(&mut self, event: TlsEvent) -> TlsResult<()> {
+    fn process_message(
+        &mut self,
+        event: TlsEvent,
+        session_store: Option<&dyn SessionStorage>,
+    ) -> TlsResult<()> {
         for action in self.handshake_state_machine.handle(event) {
             match action {
                 TlsAction::ChangeCipherSpec(side, spec) => {
@@ -533,11 +566,12 @@ impl<T: Read + Write> TlsConnection<T> {
                 }
                 TlsAction::ValidateSessionId(session_id) => {
                     trace!("Validating session...");
-                    let Some(store) = &self.config.session_store else {
+                    let Some(store) = session_store else {
                         trace!("No session store configured -> invalid session");
-                        self.process_message(TlsEvent::SessionValidation(
-                            SessionValidation::Invalid,
-                        ))?;
+                        self.process_message(
+                            TlsEvent::SessionValidation(SessionValidation::Invalid),
+                            session_store,
+                        )?;
                         continue;
                     };
 
@@ -552,39 +586,39 @@ impl<T: Read + Write> TlsConnection<T> {
                         }
                     };
 
-                    self.process_message(TlsEvent::SessionValidation(validation))?;
+                    self.process_message(TlsEvent::SessionValidation(validation), session_store)?;
                 }
                 TlsAction::GetStekInfo(key_name) => {
                     trace!("Retrieving stek...");
-                    let Some(store) = &self.config.session_store else {
+                    let Some(store) = &session_store else {
                         trace!("No session store configured -> no stek");
-                        self.process_message(TlsEvent::StekInfo(None))?;
+                        self.process_message(TlsEvent::StekInfo(None), session_store)?;
                         continue;
                     };
                     let stek = store.get_stek(&key_name)?;
-                    self.process_message(TlsEvent::StekInfo(stek))?;
+                    self.process_message(TlsEvent::StekInfo(stek), session_store)?;
                 }
                 TlsAction::StoreSessionTicketInfo(ticket, info) => {
                     trace!("Storing session ticket");
-                    if let Some(store) = &self.config.session_store {
+                    if let Some(store) = &session_store {
                         store.insert_session_ticket(&ticket, info)?
                     }
                 }
                 TlsAction::StoreSessionIdInfo(id, info) => {
                     trace!("Storing session id");
-                    if let Some(store) = &self.config.session_store {
+                    if let Some(store) = &session_store {
                         store.insert_session_id(&id, info)?
                     }
                 }
                 TlsAction::InvalidateSessionId(session_id) => {
                     trace!("Invalidating session id");
-                    if let Some(store) = &self.config.session_store {
+                    if let Some(store) = &session_store {
                         store.delete_session_id(&session_id)?
                     }
                 }
                 TlsAction::InvalidateSessionTicket(session_ticket) => {
                     trace!("Invalidating session ticket");
-                    if let Some(store) = &self.config.session_store {
+                    if let Some(store) = &session_store {
                         store.delete_session_ticket(&session_ticket)?
                     }
                 }
@@ -600,15 +634,19 @@ impl<T: Read + Write> TlsConnection<T> {
         Ok(())
     }
 
-    pub fn next_message(&mut self) -> TlsResult<TlsMessage> {
+    pub fn next_message(
+        &mut self,
+        policy: &TlsPolicy,
+        session_store: Option<&dyn SessionStorage>,
+    ) -> TlsResult<TlsMessage> {
         loop {
             match self.record_layer.try_parse_message(
                 &mut self.conn_states.read,
-                &self.config.policy,
+                policy,
                 self.max_fragment_len,
             ) {
                 Ok(msg) => {
-                    self.process_message(TlsEvent::IncomingMessage(&msg))?;
+                    self.process_message(TlsEvent::IncomingMessage(&msg), session_store)?;
                     return Ok(msg);
                 }
                 Err(e) => match e {
@@ -620,7 +658,9 @@ impl<T: Read + Write> TlsConnection<T> {
                         trace!("Record parsing failed: {e}");
                         self.send_alert(Alert::fatal(AlertDesc::DecodeError))?;
                     }
-                    _ => {}
+                    _ => {
+                        println!("AHHHH {e}");
+                    }
                 },
             };
 
@@ -666,7 +706,11 @@ impl<T: Read + Write> TlsConnection<T> {
             .ok_or(TlsError::ConnectionClosed)
     }
 
-    pub fn complete_handshake(&mut self, side: TlsEntity, config: &TlsConfig) -> TlsResult<()> {
+    pub fn complete_handshake(
+        &mut self,
+        side: TlsEntity,
+        config: &TlsClientConfig,
+    ) -> TlsResult<()> {
         self.check_connection_not_closed()?;
 
         let start_time = Instant::now();
@@ -715,13 +759,13 @@ impl<T: Read + Write> TlsConnection<T> {
                 support_session_ticket: true,
                 support_extended_master_secret: true,
                 support_secure_renegotiation: true,
-                max_fragment_len: self.config.max_fragment_length,
+                max_fragment_len: config.max_fragment_length,
             };
-            self.process_message(initiate)?;
+            self.process_message(initiate, config.session_store.as_deref())?;
         }
 
         while !self.handshake_state_machine.is_established() {
-            self.next_message()?;
+            self.next_message(&config.policy, config.session_store.as_deref())?;
         }
 
         let elapsed = Instant::now() - start_time;
@@ -740,11 +784,11 @@ impl<T: Read + Write> TlsConnection<T> {
         Ok(())
     }
 
-    pub fn read(&mut self) -> TlsResult<Vec<u8>> {
+    pub fn read(&mut self, policy: &TlsPolicy, session_store: Option<&dyn SessionStorage>) -> TlsResult<Vec<u8>> {
         self.check_connection_not_closed()?;
         #[allow(clippy::never_loop)]
         loop {
-            let msg = self.next_message()?;
+            let msg = self.next_message(policy, session_store)?;
             match msg {
                 TlsMessage::ApplicationData(bytes) => {
                     return Ok(bytes);

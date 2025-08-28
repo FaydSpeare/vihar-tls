@@ -10,7 +10,7 @@ use x509_parser::prelude::{FromDer, X509Certificate};
 use crate::{
     TlsPolicy, TlsResult,
     ciphersuite::{CipherSuite, CipherSuiteId},
-    connection::TlsConnection,
+    connection::ClientConnection,
     extensions::{HashType, MaxFragmentLength, SignatureAlgorithm, SignatureType},
     messages::ClientCertificateType,
     oid::{get_public_key_algorithm, get_signature_algorithm},
@@ -167,36 +167,38 @@ impl Certificates {
     }
 }
 
-pub struct TlsConfigBuilder {
+pub struct TlsClientConfigBuilder {
     pub cipher_suites: Option<Box<[PrioritisedCipherSuite]>>,
     pub session_store: Option<Box<dyn SessionStorage>>,
     pub certificates: Option<Certificates>,
-    pub server_name: Option<String>,
+    pub server_name: String,
     pub policy: Option<TlsPolicy>,
     pub max_fragment_length: Option<MaxFragmentLength>,
 }
 
-impl Default for TlsConfigBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+// Client can choose:
+// cipher suites to offer
+// server name
+// certificates
+// session store
+// max_fragment_length
+// client policy
 
-impl TlsConfigBuilder {
-    pub fn new() -> Self {
+impl TlsClientConfigBuilder {
+    pub fn new(server_name: String) -> Self {
         Self {
             cipher_suites: None,
             session_store: None,
             certificates: None,
-            server_name: None,
+            server_name,
             policy: None,
             max_fragment_length: None,
         }
     }
 
-    pub fn build(self) -> TlsConfig {
+    pub fn build(self) -> TlsClientConfig {
         use crate::ciphersuite::CipherSuiteId::*;
-        TlsConfig {
+        TlsClientConfig {
             cipher_suites: self.cipher_suites.unwrap_or(Box::new([
                 // pcs!(4, RsaWithAes128GcmSha256),
                 // pcs!(3, RsaWithAes256GcmSha384),
@@ -206,14 +208,6 @@ impl TlsConfigBuilder {
                 pcs!(1, RsaWithAes256CbcSha256),
             ])),
             supported_signature_algorithms: Box::new([
-                // SignatureAndHashAlgorithm {
-                //     signature: SigAlgo::Ecdsa,
-                //     hash: HashAlgo::Sha1,
-                // },
-                // SignatureAndHashAlgorithm {
-                //     signature: SigAlgo::Ecdsa,
-                //     hash: HashAlgo::Sha256,
-                // },
                 SignatureAlgorithm {
                     signature: SignatureType::Rsa,
                     hash: HashType::Sha1,
@@ -258,11 +252,6 @@ impl TlsConfigBuilder {
         self
     }
 
-    pub fn with_server_name(mut self, server_name: &str) -> Self {
-        self.server_name = Some(server_name.to_string());
-        self
-    }
-
     pub fn with_policy(mut self, policy: TlsPolicy) -> Self {
         self.policy = Some(policy);
         self
@@ -282,41 +271,43 @@ pub enum PublicKeyAlgorithm {
 }
 
 #[derive(Debug)]
-pub struct TlsConfig {
+pub struct TlsClientConfig {
     pub cipher_suites: Box<[PrioritisedCipherSuite]>,
     pub supported_signature_algorithms: Box<[SignatureAlgorithm]>,
     pub session_store: Option<Box<dyn SessionStorage>>,
     pub certificates: Certificates,
-    pub server_name: Option<String>,
+    pub server_name: String,
     pub policy: TlsPolicy,
     pub max_fragment_length: Option<MaxFragmentLength>,
 }
 
 pub struct TlsClient<T: Read + Write> {
-    config: Rc<TlsConfig>,
-    connection: TlsConnection<T>,
+    config: Rc<TlsClientConfig>,
+    connection: ClientConnection<T>,
 }
 
 impl<T: Read + Write> TlsClient<T> {
-    pub fn new(config: TlsConfig, stream: T) -> Self {
+    pub fn new(config: TlsClientConfig, stream: T) -> Self {
         let config = Rc::new(config);
         Self {
-            connection: TlsConnection::new(TlsEntity::Client, stream, config.clone()),
+            connection: ClientConnection::new(stream, config.clone()),
             config,
         }
     }
 
     pub fn write(&mut self, buf: &[u8]) -> TlsResult<usize> {
-        if !self.connection.is_established() {
+        if !self.connection.core.is_established() {
             self.connection
+                .core
                 .complete_handshake(TlsEntity::Client, &self.config)?;
         }
-        self.connection.write(buf)?;
+        self.connection.core.write(buf)?;
         Ok(buf.len())
     }
 
     pub fn renegotiate(&mut self) -> TlsResult<()> {
         self.connection
+            .core
             .complete_handshake(TlsEntity::Client, &self.config)?;
         Ok(())
     }

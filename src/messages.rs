@@ -951,7 +951,7 @@ impl TlsCodable for TlsHandshake {
             TlsHandshakeType::CertificateVerify => {
                 CertificateVerify::read_from(&mut subreader).map(TlsHandshake::CertificateVerify)
             }
-            TlsHandshakeType::Unknown(_) => unimplemented!(),
+            TlsHandshakeType::Unknown(x) => unimplemented!("{x}"),
         }
     }
 }

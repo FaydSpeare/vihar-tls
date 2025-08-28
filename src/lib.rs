@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use alert::{AlertDesc, AlertLevel};
 
 #[macro_use]
@@ -55,7 +57,7 @@ pub enum ClientAuthPolicy {
 
     // Server will send a CertificateRequest during handshake, but will accept
     // a empty ClientCertificate (and absence of CertificateVerify) message.
-    // 
+    //
     // Server will send a CertificateRequest during handshake, and expects a valid
     // verifiable certificate from the client. In the case of an empty client
     // certificate or failed certificate verification, the server will send a fatal
@@ -64,6 +66,13 @@ pub enum ClientAuthPolicy {
         certificate_types: Vec<ClientCertificateType>,
         mandatory: bool,
     },
+}
+
+#[derive(Debug, Clone)]
+pub struct ClientRenegotiationPolicy {
+    close_on_failure: bool,
+    max_wait_messages: u32,
+    max_wait_time: Duration,
 }
 
 #[derive(Debug, Clone)]
@@ -78,6 +87,8 @@ pub struct TlsPolicy {
     pub client_auth: ClientAuthPolicy,
 
     pub verify_server: bool,
+
+    pub client_renegotation: ClientRenegotiationPolicy,
 }
 
 impl Default for TlsPolicy {
@@ -85,9 +96,14 @@ impl Default for TlsPolicy {
         Self {
             unrecognised_server_name: UnrecognisedServerNamePolicy::Alert(AlertLevel::Fatal),
             renegotiation: RenegotiationPolicy::OnlySecure,
-            max_fragment_length_negotiation: MaxFragmentLengthNegotiationPolicy::Support,
+            max_fragment_length_negotiation: MaxFragmentLengthNegotiationPolicy::Reject,
             client_auth: ClientAuthPolicy::NoAuth,
             verify_server: false,
+            client_renegotation: ClientRenegotiationPolicy {
+                close_on_failure: false,
+                max_wait_messages: 3,
+                max_wait_time: Duration::from_secs(2),
+            },
         }
     }
 }

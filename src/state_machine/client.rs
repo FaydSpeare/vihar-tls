@@ -1,6 +1,7 @@
 use log::{debug, error, info, trace};
 use rand::seq::IteratorRandom;
 use std::collections::HashSet;
+use std::time::Instant;
 
 use crate::alert::AlertDesc;
 use crate::ca::validate_certificate_chain;
@@ -29,8 +30,8 @@ use crate::{
 };
 
 use super::{
-    HandleEvent, HandleResult, PreviousVerifyData, SessionTicketResumption, ClientContext,
-    ClientState, TlsEvent,
+    ClientContext, ClientState, HandleEvent, HandleResult, PreviousVerifyData,
+    SessionTicketResumption, TlsEvent,
 };
 
 #[derive(Debug)]
@@ -42,7 +43,6 @@ pub struct ExpectClientInitiateState {
 
 impl HandleEvent<ClientContext, ClientState> for ExpectClientInitiateState {
     fn handle(self, ctx: &mut ClientContext, event: TlsEvent) -> HandleResult<ClientState> {
-
         let TlsEvent::ClientInitiate {
             cipher_suites,
             session_resumption,
@@ -88,9 +88,7 @@ impl HandleEvent<ClientContext, ClientState> for ExpectClientInitiateState {
             extensions.push(SessionTicketExt::new().into())
         }
 
-        if let Some(server_name) = &server_name {
-            extensions.push(ServerNameExt::new(server_name).into());
-        }
+        extensions.push(ServerNameExt::new(&server_name).into());
 
         let session_id = match &session_resumption {
             SessionResumption::SessionId(info) => Some(info.session_id.clone()),
@@ -348,6 +346,7 @@ pub struct ExpectServerCertificate {
 impl HandleEvent<ClientContext, ClientState> for ExpectServerCertificate {
     fn handle(mut self, ctx: &mut ClientContext, event: TlsEvent) -> HandleResult<ClientState> {
         let (handshake, certs) = require_handshake_msg!(event, TlsHandshake::Certificate);
+        info!("Received ServerCertificate");
 
         handshake.write_to(&mut self.handshakes);
 
@@ -358,7 +357,7 @@ impl HandleEvent<ClientContext, ClientState> for ExpectServerCertificate {
 
         if ctx.config.policy.verify_server {
             if let Err(e) =
-                validate_certificate_chain(chain, ctx.config.server_name.clone().unwrap())
+                validate_certificate_chain(chain, ctx.config.server_name.clone())
             {
                 error!("{:?}", e);
                 return Err(AlertDesc::BadCertificate);
@@ -1201,30 +1200,74 @@ impl HandleEvent<ClientContext, ClientState> for ClientEstablished {
             return Ok((self.into(), vec![]));
         }
 
-        // TODO:
-        // The server may choose to ignore a renegotiation or simply
-        // send a warning alert in which case it will remain in the established
-        // state. The client needs to transition back to the established state
-        // if it sees the server isn't willing to renegotiate, but doesn't want
-        // to close the connection either.
-        ExpectClientInitiateState {
+        let (state, actions) = ExpectClientInitiateState {
+            // TODO: only use the previous verify data if configured as such
             previous_verify_data: Some(PreviousVerifyData {
-                client: self.client_verify_data,
-                server: self.server_verify_data,
+                client: self.client_verify_data.clone(),
+                server: self.server_verify_data.clone(),
             }),
         }
-        .handle(ctx, event)
+        .handle(ctx, event)?;
+
+        let ClientState::ExpectServerHello(state) = state else {
+            unreachable!()
+        };
+
+        Ok((
+            ClientAttemptedRenegotiationState {
+                initiated_at: Instant::now(),
+                message_count: 0,
+                established_state: self,
+                expect_server_hello_state: state,
+            }
+            .into(),
+            actions,
+        ))
     }
 }
 
 #[derive(Debug)]
-pub struct ClientAttemptedRenegotiationState {}
+pub struct ClientAttemptedRenegotiationState {
+    initiated_at: Instant,
+    message_count: u32,
+    established_state: ClientEstablished,
+    expect_server_hello_state: ExpectServerHello,
+}
 
 impl HandleEvent<ClientContext, ClientState> for ClientAttemptedRenegotiationState {
-    fn handle(self, _ctx: &mut ClientContext, _event: TlsEvent) -> HandleResult<ClientState> {
-        // Maybe get server hello
-        // Maybe get alert
-        // Maybe get nothing...
-        unimplemented!()
+    fn handle(mut self, ctx: &mut ClientContext, event: TlsEvent) -> HandleResult<ClientState> {
+        if let TlsEvent::IncomingMessage(TlsMessage::ApplicationData(data)) = event {
+            println!("{:?}", String::from_utf8_lossy(data));
+
+            self.message_count += 1;
+            match self.message_count >= ctx.config.policy.client_renegotation.max_wait_messages
+                || self.initiated_at.elapsed()
+                    >= ctx.config.policy.client_renegotation.max_wait_time
+            {
+                false => return Ok((self.into(), vec![])),
+                true => {
+                    if ctx.config.policy.client_renegotation.close_on_failure {
+                        return Err(AlertDesc::HandshakeFailure);
+                    }
+                    return Ok((self.established_state.into(), vec![]));
+                }
+            };
+        }
+
+        if let TlsEvent::IncomingMessage(TlsMessage::Handshake(TlsHandshake::ServerHello(_))) =
+            event
+        {
+            return self.expect_server_hello_state.handle(ctx, event);
+        }
+
+        // This will only be warning, fatals handled higher up
+        if let TlsEvent::IncomingMessage(TlsMessage::Alert(alert)) = event {
+            if alert.description == AlertDesc::NoRenegotiation {
+                return Ok((self.established_state.into(), vec![]));
+            }
+            return Ok((self.into(), vec![]));
+        }
+
+        Err(AlertDesc::UnexpectedMessage)
     }
 }

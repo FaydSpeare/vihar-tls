@@ -2,7 +2,7 @@ use std::{net::TcpStream, thread::sleep, time::Duration};
 
 use vihar_tls::{
     ciphersuite::CipherSuiteId,
-    client::{Certificates, TlsClient, TlsConfigBuilder},
+    client::{Certificates, TlsClient, TlsClientConfigBuilder},
     pcs,
 };
 
@@ -19,16 +19,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (host, port) = parse_host_port();
     let tcp_stream = TcpStream::connect(format!("{host}:{port}"))?;
     let mut client = TlsClient::new(
-        TlsConfigBuilder::new()
+        TlsClientConfigBuilder::new(host)
             //.with_max_fragment_length(MaxFragmentLength::Len1024)
-            .with_cipher_suites([pcs!(2, CipherSuiteId::RsaWithAes128GcmSha256)].into())
-            //.with_cipher_suites([pcs!(2, CipherSuiteId::RsaWithAes128CbcSha)].into())
+            //.with_cipher_suites([pcs!(2, CipherSuiteId::RsaWithAes128GcmSha256)].into())
+            .with_cipher_suites([pcs!(2, CipherSuiteId::RsaWithAes128CbcSha)].into())
             .with_certificates(
                 Certificates::new()
                     .with_rsa("testing/rsacert.pem", "testing/rsakey.pem")
                     .with_dsa("testing/dsacert.pem", "testing/dsakey.pem"),
             )
-            .with_server_name(&host)
             //.with_session_store("sdb")
             .build(),
         tcp_stream,
@@ -36,7 +35,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     client.write(b"1st data")?;
     sleep(Duration::from_secs(2));
-    // client.renegotiate()?;
+    client.renegotiate()?;
     // sleep(Duration::from_secs(10));
     Ok(())
 }

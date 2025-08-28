@@ -1,18 +1,16 @@
 use std::{net::TcpListener, thread::sleep, time::Duration};
 
 use vihar_tls::{
-    ClientAuthPolicy, MaxFragmentLengthNegotiationPolicy, RenegotiationPolicy, TlsPolicy,
-    UnrecognisedServerNamePolicy,
     ciphersuite::CipherSuiteId,
-    client::{Certificates, TlsConfigBuilder},
+    client::Certificates,
     pcs,
-    server::TlsServer,
+    server::{TlsServer, TlsServerConfigBuilder},
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
 
-    let config = TlsConfigBuilder::new()
+    let config = TlsServerConfigBuilder::new("localhost".to_string())
         .with_cipher_suites(
             CipherSuiteId::all()
                 .iter()
@@ -27,13 +25,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .with_dsa("testing/dsacert.pem", "testing/dsakey.pem")
                 .with_dh("dh/dhcert.pem", "dh/dhkey.pem"),
         )
-        .with_policy(TlsPolicy {
-            unrecognised_server_name: UnrecognisedServerNamePolicy::Ignore,
-            renegotiation: RenegotiationPolicy::None,
-            max_fragment_length_negotiation: MaxFragmentLengthNegotiationPolicy::Reject,
-            client_auth: ClientAuthPolicy::NoAuth,
-            verify_server: false,
-        })
         .build();
 
     let listener = TcpListener::bind("localhost:4443")?;
