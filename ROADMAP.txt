@@ -1,19 +1,17 @@
-## TODO
-
 ======== MVP =========
 
-- [1] add DistinguishedName client auth config
 - [2] Seperate stek and session store
+
 - [2] Validate client certificate
+
 - [2] Certificate validation alerts
 
 - [5] HelloRequest
-- Need to finished reading before starting client.renegotiate
-
-- [3] Fixed DH client auth => implicit CKX
 
 - [2] Native root certs for linux and windows
 
+- Cleaner way to pass around config
+- Only give state machine context access to what it needs from config
 
 ======== Further =========
 

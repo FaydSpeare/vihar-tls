@@ -4,14 +4,10 @@ use sha2::{Sha224, Sha256, Sha384, Sha512};
 use std::{collections::HashSet, fmt::Debug};
 
 use crate::{
-    TlsPolicy, TlsValidateable, UnrecognisedServerNamePolicy,
-    alert::AlertDesc,
-    encoding::{
+    alert::AlertDesc, encoding::{
         LengthPrefixWriter, LengthPrefixedVec, MaybeEmpty, NonEmpty, Reader, Reconstrainable,
         TlsCodable,
-    },
-    errors::{DecodingError, InvalidEncodingError},
-    signature::{dsa_sign, dsa_verify, rsa_sign, rsa_verify},
+    }, errors::{DecodingError, InvalidEncodingError}, signature::{dsa_sign, dsa_verify, rsa_sign, rsa_verify}, TlsValidateable, UnrecognisedServerNamePolicy, ValidationPolicy
 };
 
 tls_codable_enum! {
@@ -161,7 +157,7 @@ impl Extensions {
         Self { list: None }
     }
 
-    pub fn validate(&self, policy: &TlsPolicy) -> Result<(), AlertDesc> {
+    pub fn validate(&self, policy: &ValidationPolicy) -> Result<(), AlertDesc> {
         if let Some(extensions) = &self.list {
             for item in extensions.iter() {
                 if let Extension::ServerName(ext) = item {
@@ -624,7 +620,7 @@ impl ServerNameExt {
         }
     }
 
-    pub fn validate(&self, policy: &TlsPolicy) -> Result<(), AlertDesc> {
+    pub fn validate(&self, policy: &ValidationPolicy) -> Result<(), AlertDesc> {
         let mut seen = HashSet::new();
 
         if let Some(list) = &self.list {
@@ -730,7 +726,7 @@ impl TlsCodable for MaxFragmentLenExt {
 }
 
 impl TlsValidateable for MaxFragmentLenExt {
-    fn validate(&self, _: &TlsPolicy) -> Result<(), AlertDesc> {
+    fn validate(&self, _: &ValidationPolicy) -> Result<(), AlertDesc> {
         if let MaxFragmentLength::Unknown(x) = self.value {
             trace!("Invalid max_fragment_length value: {x}");
             return Err(AlertDesc::IllegalParameter);

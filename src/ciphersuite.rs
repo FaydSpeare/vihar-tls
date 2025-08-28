@@ -304,6 +304,12 @@ pub enum KeyExchangeType {
     Ecdhe,
 }
 
+impl KeyExchangeType {
+    pub fn uses_dh(&self) -> bool {
+        *self == Self::Dh || *self == Self::Dhe
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum KeyExchangeAlgorithm {
     Rsa,
@@ -329,6 +335,14 @@ impl KeyExchangeAlgorithm {
             Self::Rsa | Self::DheRsa | Self::DhRsa | Self::EcdheRsa => Some(SignatureType::Rsa),
             Self::DheDss | Self::DhDss => Some(SignatureType::Dsa),
             Self::DhAnon => None,
+        }
+    }
+    pub fn kx_type(&self) -> KeyExchangeType {
+        match self {
+            Self::Rsa => KeyExchangeType::Rsa,
+            Self::DhDss | Self::DhRsa | Self::DhAnon => KeyExchangeType::Dh,
+            Self::DheDss | Self::DheRsa => KeyExchangeType::Dhe,
+            Self::EcdheRsa => KeyExchangeType::Ecdhe,
         }
     }
     pub fn sends_server_certificate(&self) -> bool {

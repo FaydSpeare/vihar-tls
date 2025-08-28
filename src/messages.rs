@@ -1,7 +1,9 @@
 use std::cmp::Ordering;
+use std::str::FromStr;
 
 use log::debug;
 use num_bigint::BigUint;
+use x509_cert::{der::Encode, name::RdnSequence};
 
 use crate::alert::{Alert, AlertDesc};
 use crate::ciphersuite::{CipherSuiteId, CompressionMethod, KeyExchangeAlgorithm};
@@ -15,7 +17,7 @@ use crate::extensions::{
 };
 use crate::session_ticket::{ClientIdentity, StatePlaintext};
 use crate::storage::StekInfo;
-use crate::{MaxFragmentLength, TlsPolicy, TlsValidateable, utils};
+use crate::{MaxFragmentLength, TlsValidateable, ValidationPolicy, utils};
 
 #[derive(Debug, Clone, Copy)]
 pub struct ProtocolVersion {
@@ -602,13 +604,20 @@ pub struct CertificateRequest {
 
 impl CertificateRequest {
     pub fn new(
+        certificate_authorities: &[String],
         signature_algorithms: &[SignatureAlgorithm],
         certificate_types: &[ClientCertificateType],
     ) -> Self {
         Self {
             certificate_types: certificate_types.to_vec().try_into().unwrap(),
             supported_signature_algorithms: signature_algorithms.to_vec().try_into().unwrap(),
-            certificate_authorities: vec![].try_into().unwrap(), // TODO: config
+            certificate_authorities: certificate_authorities
+                .iter()
+                .map(|x| RdnSequence::from_str(x).unwrap().to_der().unwrap())
+                .map(|x| DistinguishedName::try_from(x).unwrap())
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap(),
         }
     }
 }
@@ -672,16 +681,16 @@ pub enum ClientKeyExchangeInner {
 #[derive(Debug, Clone)]
 pub enum ClientKeyExchange {
     Resolved(ClientKeyExchangeInner),
-    Unresolved(ClientKeyExchangeBytes),
+    Unresolved(Vec<u8>),
 }
 
 impl ClientKeyExchange {
-    pub fn new_dh() -> Self {
+    pub fn new_dh_implicit() -> Self {
         Self::Resolved(ClientKeyExchangeInner::ClientDiffieHellmanPublic(
             PublicValueEncoding::Implicit,
         ))
     }
-    pub fn new_dhe(client_public_key_der: Vec<u8>) -> Self {
+    pub fn new_dh_explicit(client_public_key_der: Vec<u8>) -> Self {
         Self::Resolved(ClientKeyExchangeInner::ClientDiffieHellmanPublic(
             PublicValueEncoding::Explicit(
                 client_public_key_der
@@ -705,13 +714,18 @@ impl ClientKeyExchange {
                 | KeyExchangeAlgorithm::DhRsa
                 | KeyExchangeAlgorithm::DhDss
                 | KeyExchangeAlgorithm::DhAnon => {
+                    if bytes.is_empty() {
+                        return ClientKeyExchangeInner::ClientDiffieHellmanPublic(
+                            PublicValueEncoding::Implicit,
+                        );
+                    }
                     ClientKeyExchangeInner::ClientDiffieHellmanPublic(
-                        PublicValueEncoding::Explicit(bytes.clone()),
+                        PublicValueEncoding::Explicit(bytes.to_vec().try_into().unwrap()),
                     )
                 }
-                KeyExchangeAlgorithm::Rsa => {
-                    ClientKeyExchangeInner::EncryptedPreMasterSecret(bytes.clone())
-                }
+                KeyExchangeAlgorithm::Rsa => ClientKeyExchangeInner::EncryptedPreMasterSecret(
+                    bytes.to_vec().try_into().unwrap(),
+                ),
                 _ => unimplemented!(),
             },
             Self::Resolved(inner) => inner.clone(),
@@ -737,11 +751,11 @@ impl TlsCodable for ClientKeyExchange {
                 ) => value.write_to(bytes),
                 ClientKeyExchangeInner::EncryptedPreMasterSecret(value) => value.write_to(bytes),
             },
-            Self::Unresolved(value) => value.write_to(bytes),
+            Self::Unresolved(value) => bytes.extend_from_slice(&value),
         };
     }
     fn read_from(reader: &mut Reader) -> Result<Self, DecodingError> {
-        Ok(Self::Unresolved(ClientKeyExchangeBytes::read_from(reader)?))
+        Ok(Self::Unresolved(reader.consume_rest().to_vec()))
     }
 }
 
@@ -889,7 +903,7 @@ impl TlsHandshake {
         }
     }
 
-    pub fn validate(&self, policy: &TlsPolicy) -> Result<(), AlertDesc> {
+    pub fn validate(&self, policy: &ValidationPolicy) -> Result<(), AlertDesc> {
         if let Self::ClientHello(hello) = self {
             hello.extensions.validate(policy)?
         }
@@ -1020,7 +1034,7 @@ impl TlsPlaintext {
 }
 
 impl TlsValidateable for TlsPlaintext {
-    fn validate(&self, _policy: &TlsPolicy) -> Result<(), AlertDesc> {
+    fn validate(&self, _policy: &ValidationPolicy) -> Result<(), AlertDesc> {
         if let TlsContentType::Unknown(x) = self.content_type {
             debug!("Received unrecognised content type: {}", x);
             return Err(AlertDesc::UnexpectedMessage);

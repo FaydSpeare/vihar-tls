@@ -8,9 +8,9 @@ use rand::seq::IteratorRandom;
 use x509_parser::prelude::{FromDer, X509Certificate};
 
 use crate::{
-    TlsPolicy, TlsResult,
+    TlsPolicy, TlsResult, ValidationPolicy,
     ciphersuite::{CipherSuite, CipherSuiteId},
-    connection::ClientConnection,
+    connection::ConnectionCore,
     extensions::{HashType, MaxFragmentLength, SignatureAlgorithm, SignatureType},
     messages::ClientCertificateType,
     oid::{get_public_key_algorithm, get_signature_algorithm},
@@ -168,7 +168,7 @@ impl Certificates {
 }
 
 pub struct TlsClientConfigBuilder {
-    pub cipher_suites: Option<Box<[PrioritisedCipherSuite]>>,
+    pub cipher_suites: Option<Box<[CipherSuiteId]>>,
     pub session_store: Option<Box<dyn SessionStorage>>,
     pub certificates: Option<Certificates>,
     pub server_name: String,
@@ -197,15 +197,13 @@ impl TlsClientConfigBuilder {
     }
 
     pub fn build(self) -> TlsClientConfig {
-        use crate::ciphersuite::CipherSuiteId::*;
         TlsClientConfig {
+            validation_policy: ValidationPolicy::default(),
             cipher_suites: self.cipher_suites.unwrap_or(Box::new([
-                // pcs!(4, RsaWithAes128GcmSha256),
-                // pcs!(3, RsaWithAes256GcmSha384),
-                pcs!(2, RsaWithAes128CbcSha),
-                pcs!(1, RsaWithAes128CbcSha256),
-                pcs!(1, RsaWithAes256CbcSha),
-                pcs!(1, RsaWithAes256CbcSha256),
+                CipherSuiteId::RsaWithAes128CbcSha,
+                CipherSuiteId::RsaWithAes128CbcSha256,
+                CipherSuiteId::RsaWithAes256CbcSha,
+                CipherSuiteId::RsaWithAes256CbcSha256,
             ])),
             supported_signature_algorithms: Box::new([
                 SignatureAlgorithm {
@@ -228,8 +226,28 @@ impl TlsClientConfigBuilder {
                     signature: SignatureType::Rsa,
                     hash: HashType::Sha512,
                 },
+                SignatureAlgorithm {
+                    signature: SignatureType::Dsa,
+                    hash: HashType::Sha1,
+                },
+                SignatureAlgorithm {
+                    signature: SignatureType::Dsa,
+                    hash: HashType::Sha224,
+                },
+                SignatureAlgorithm {
+                    signature: SignatureType::Dsa,
+                    hash: HashType::Sha256,
+                },
+                SignatureAlgorithm {
+                    signature: SignatureType::Dsa,
+                    hash: HashType::Sha384,
+                },
+                SignatureAlgorithm {
+                    signature: SignatureType::Dsa,
+                    hash: HashType::Sha512,
+                },
             ]),
-            session_store: self.session_store,
+            session_store: self.session_store.map(|b| Rc::from(b)),
             certificates: self.certificates.unwrap_or_default(),
             server_name: self.server_name,
             policy: self.policy.unwrap_or_default(),
@@ -242,7 +260,7 @@ impl TlsClientConfigBuilder {
         self
     }
 
-    pub fn with_cipher_suites(mut self, suites: Box<[PrioritisedCipherSuite]>) -> Self {
+    pub fn with_cipher_suites(mut self, suites: Box<[CipherSuiteId]>) -> Self {
         self.cipher_suites = Some(suites);
         self
     }
@@ -263,51 +281,57 @@ impl TlsClientConfigBuilder {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum PublicKeyAlgorithm {
     DhKeyAgreement,
     RsaEncryption,
     DsaEncryption,
 }
 
+impl PublicKeyAlgorithm {
+    pub fn can_sign(&self) -> bool {
+        !matches!(self, Self::DhKeyAgreement)
+    }
+}
+
 #[derive(Debug)]
 pub struct TlsClientConfig {
-    pub cipher_suites: Box<[PrioritisedCipherSuite]>,
+    pub cipher_suites: Box<[CipherSuiteId]>,
     pub supported_signature_algorithms: Box<[SignatureAlgorithm]>,
-    pub session_store: Option<Box<dyn SessionStorage>>,
+    pub session_store: Option<Rc<dyn SessionStorage>>,
     pub certificates: Certificates,
     pub server_name: String,
     pub policy: TlsPolicy,
+    pub validation_policy: ValidationPolicy,
     pub max_fragment_length: Option<MaxFragmentLength>,
 }
 
 pub struct TlsClient<T: Read + Write> {
+    #[allow(dead_code)]
     config: Rc<TlsClientConfig>,
-    connection: ClientConnection<T>,
+    connection: ConnectionCore<T>,
 }
 
 impl<T: Read + Write> TlsClient<T> {
     pub fn new(config: TlsClientConfig, stream: T) -> Self {
         let config = Rc::new(config);
         Self {
-            connection: ClientConnection::new(stream, config.clone()),
+            connection: ConnectionCore::client(stream, config.clone()),
             config,
         }
     }
 
     pub fn write(&mut self, buf: &[u8]) -> TlsResult<usize> {
-        if !self.connection.core.is_established() {
+        if !self.connection.is_established() {
             self.connection
-                .core
                 .complete_handshake(TlsEntity::Client, &self.config)?;
         }
-        self.connection.core.write(buf)?;
+        self.connection.write(buf)?;
         Ok(buf.len())
     }
 
     pub fn renegotiate(&mut self) -> TlsResult<()> {
         self.connection
-            .core
             .complete_handshake(TlsEntity::Client, &self.config)?;
         Ok(())
     }

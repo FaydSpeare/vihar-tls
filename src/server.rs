@@ -4,49 +4,41 @@ use std::{
 };
 
 use crate::{
-    TlsPolicy, TlsResult,
+    TlsPolicy, TlsResult, ValidationPolicy,
     client::{Certificates, PrioritisedCipherSuite},
-    connection::ServerConnection,
+    connection::ConnectionCore,
     extensions::{HashType, SignatureAlgorithm, SignatureType},
     storage::{SessionStorage, SledSessionStore},
 };
 
 pub struct TlsServer<T: Read + Write> {
+    #[allow(dead_code)]
     config: Rc<TlsServerConfig>,
-    connection: ServerConnection<T>,
+    pub connection: ConnectionCore<T>,
 }
 
 impl<T: Read + Write> TlsServer<T> {
     pub fn new(config: TlsServerConfig, stream: T) -> Self {
         let config = Rc::new(config);
         Self {
-            connection: ServerConnection::new(stream, config.clone()),
+            connection: ConnectionCore::server(stream, config.clone()),
             config,
         }
     }
 
     pub fn write(&mut self, buf: &[u8]) -> TlsResult<usize> {
-        if !self.connection.core.is_established() {
-            while !self
-                .connection
-                .core
-                .handshake_state_machine
-                .is_established()
-            {
-                self.connection
-                    .core
-                    .next_message(&self.config.policy, self.config.session_store.as_deref())?;
+        if !self.connection.is_established() {
+            while !self.connection.is_established() {
+                self.connection.next_message()?;
             }
         }
-        self.connection.core.write(buf)?;
+        self.connection.write(buf)?;
         Ok(buf.len())
     }
 
     pub fn serve(&mut self) -> TlsResult<()> {
         loop {
-            self.connection
-                .core
-                .next_message(&self.config.policy, self.config.session_store.as_deref())?;
+            self.connection.next_message()?;
         }
     }
 }
@@ -66,12 +58,12 @@ pub struct TlsServerConfigBuilder {
 }
 
 impl TlsServerConfigBuilder {
-    pub fn new(server_name: String) -> Self {
+    pub fn new<S: Into<String>>(server_name: S) -> Self {
         Self {
             cipher_suites: None,
             session_store: None,
             certificates: None,
-            server_name,
+            server_name: server_name.into(),
             policy: None,
         }
     }
@@ -79,13 +71,15 @@ impl TlsServerConfigBuilder {
     pub fn build(self) -> TlsServerConfig {
         use crate::ciphersuite::CipherSuiteId::*;
         TlsServerConfig {
+            validation_policy: ValidationPolicy::default(),
             cipher_suites: self.cipher_suites.unwrap_or(Box::new([
-                // pcs!(4, RsaWithAes128GcmSha256),
-                // pcs!(3, RsaWithAes256GcmSha384),
+                pcs!(3, RsaWithAes128GcmSha256),
+                pcs!(3, RsaWithAes256GcmSha384),
                 pcs!(2, RsaWithAes128CbcSha),
                 pcs!(1, RsaWithAes128CbcSha256),
                 pcs!(1, RsaWithAes256CbcSha),
                 pcs!(1, RsaWithAes256CbcSha256),
+                pcs!(1, DhRsaWithAes128CbcSha),
             ])),
             supported_signature_algorithms: Box::new([
                 SignatureAlgorithm {
@@ -108,8 +102,28 @@ impl TlsServerConfigBuilder {
                     signature: SignatureType::Rsa,
                     hash: HashType::Sha512,
                 },
+                SignatureAlgorithm {
+                    signature: SignatureType::Dsa,
+                    hash: HashType::Sha1,
+                },
+                SignatureAlgorithm {
+                    signature: SignatureType::Dsa,
+                    hash: HashType::Sha224,
+                },
+                SignatureAlgorithm {
+                    signature: SignatureType::Dsa,
+                    hash: HashType::Sha256,
+                },
+                SignatureAlgorithm {
+                    signature: SignatureType::Dsa,
+                    hash: HashType::Sha384,
+                },
+                SignatureAlgorithm {
+                    signature: SignatureType::Dsa,
+                    hash: HashType::Sha512,
+                },
             ]),
-            session_store: self.session_store,
+            session_store: self.session_store.map(|b| Rc::from(b)),
             certificates: self.certificates.unwrap_or_default(),
             server_name: self.server_name,
             policy: self.policy.unwrap_or_default(),
@@ -146,9 +160,10 @@ pub enum PublicKeyAlgorithm {
 
 #[derive(Debug)]
 pub struct TlsServerConfig {
+    pub validation_policy: ValidationPolicy,
     pub cipher_suites: Box<[PrioritisedCipherSuite]>,
     pub supported_signature_algorithms: Box<[SignatureAlgorithm]>,
-    pub session_store: Option<Box<dyn SessionStorage>>,
+    pub session_store: Option<Rc<dyn SessionStorage>>,
     pub certificates: Certificates,
     pub server_name: String,
     pub policy: TlsPolicy,

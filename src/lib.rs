@@ -27,7 +27,7 @@ pub mod server;
 pub mod storage;
 
 pub use extensions::MaxFragmentLength;
-use messages::ClientCertificateType;
+pub use messages::ClientCertificateType;
 
 pub type TlsResult<T> = Result<T, Box<dyn std::error::Error>>;
 
@@ -63,6 +63,7 @@ pub enum ClientAuthPolicy {
     // certificate or failed certificate verification, the server will send a fatal
     // handshake_failure alert.
     Auth {
+        distinguished_names: Vec<String>,
         certificate_types: Vec<ClientCertificateType>,
         mandatory: bool,
     },
@@ -74,11 +75,21 @@ pub struct ClientRenegotiationPolicy {
     max_wait_messages: u32,
     max_wait_time: Duration,
 }
+#[derive(Debug, Clone)]
+pub struct ValidationPolicy {
+    // Google just sends a fatal decode_error rather than unrecognised_name
+    pub unrecognised_server_name: UnrecognisedServerNamePolicy,
+}
+impl Default for ValidationPolicy {
+    fn default() -> Self {
+        Self {
+            unrecognised_server_name: UnrecognisedServerNamePolicy::Ignore,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct TlsPolicy {
-    // Google just sends a fatal decode_error rather than unrecognised_name
-    pub unrecognised_server_name: UnrecognisedServerNamePolicy,
 
     pub renegotiation: RenegotiationPolicy,
 
@@ -94,7 +105,6 @@ pub struct TlsPolicy {
 impl Default for TlsPolicy {
     fn default() -> Self {
         Self {
-            unrecognised_server_name: UnrecognisedServerNamePolicy::Alert(AlertLevel::Fatal),
             renegotiation: RenegotiationPolicy::OnlySecure,
             max_fragment_length_negotiation: MaxFragmentLengthNegotiationPolicy::Reject,
             client_auth: ClientAuthPolicy::NoAuth,
@@ -109,5 +119,5 @@ impl Default for TlsPolicy {
 }
 
 pub trait TlsValidateable {
-    fn validate(&self, policy: &TlsPolicy) -> Result<(), AlertDesc>;
+    fn validate(&self, policy: &ValidationPolicy) -> Result<(), AlertDesc>;
 }

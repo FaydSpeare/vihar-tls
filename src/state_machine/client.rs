@@ -6,7 +6,7 @@ use std::time::Instant;
 use crate::alert::AlertDesc;
 use crate::ca::validate_certificate_chain;
 use crate::ciphersuite::KeyExchangeAlgorithm;
-use crate::client::{CertificateAndPrivateKey, Certificates};
+use crate::client::{CertificateAndPrivateKey, Certificates, PublicKeyAlgorithm};
 use crate::extensions::{
     ExtendedMasterSecretExt, ExtensionType, MaxFragmentLenExt, MaxFragmentLength,
     RenegotiationInfoExt, ServerNameExt, SessionTicketExt, SignatureAlgorithm,
@@ -16,7 +16,7 @@ use crate::messages::{
     Certificate, CertificateRequest, CertificateVerify, ClientHello, ServerDhParams,
     ServerKeyExchangeInner, SessionId,
 };
-use crate::oid::{ServerCertificate, extract_dh_params};
+use crate::oid::{ServerCertificate, deconstruct_dh_key, extract_dh_params};
 use crate::signature::{get_dh_pre_master_secret, get_rsa_pre_master_secret};
 use crate::state_machine::{
     NegotiatedExtensions, SessionResumption, TlsAction, TlsEntity, calculate_master_secret,
@@ -356,9 +356,7 @@ impl HandleEvent<ClientContext, ClientState> for ExpectServerCertificate {
         }
 
         if ctx.config.policy.verify_server {
-            if let Err(e) =
-                validate_certificate_chain(chain, ctx.config.server_name.clone())
-            {
+            if let Err(e) = validate_certificate_chain(chain, ctx.config.server_name.clone()) {
                 error!("{:?}", e);
                 return Err(AlertDesc::BadCertificate);
             }
@@ -480,7 +478,7 @@ impl HandleEvent<ClientContext, ClientState> for ExpectServerKeyExchange {
 
         info!("Received ServerKeyExchange");
 
-        let secrets = match server_kx.resolve(self.negotiated_cipher_suite.kx_algorithm()) {
+        let dh_params = match server_kx.resolve(self.negotiated_cipher_suite.kx_algorithm()) {
             ServerKeyExchangeInner::Dhe(server_kx) => {
                 let server_public_key_der = self
                     .server_certificate
@@ -522,7 +520,7 @@ impl HandleEvent<ClientContext, ClientState> for ExpectServerKeyExchange {
                 negotiated_cipher_suite: self.negotiated_cipher_suite,
                 negotiated_extensions: self.negotiated_extensions,
                 server_certificate: self.server_certificate,
-                dh_params: Some(secrets),
+                dh_params: Some(dh_params),
                 client_certificate_request: self.client_certificate_request,
             }
             .into(),
@@ -625,7 +623,22 @@ fn prepare_client_key_exchange(
     kx_algorithm: KeyExchangeAlgorithm,
     server_certificate: Option<&ServerCertificate>,
     dh_params: Option<&ServerDhParams>,
+    client_certificate: Option<&CertificateAndPrivateKey>,
 ) -> Result<(Vec<u8>, ClientKeyExchange), AlertDesc> {
+    let use_implicit = client_certificate
+        .is_some_and(|x| x.public_key_algorithm == PublicKeyAlgorithm::DhKeyAgreement)
+        && kx_algorithm.kx_type().uses_dh();
+    if use_implicit {
+        let (p, _, private_key) = deconstruct_dh_key(&client_certificate.unwrap().private_key_der);
+        let dh_params =
+            extract_dh_params(&server_certificate.unwrap()).map_err(|_| AlertDesc::HandshakeFailure)?;
+        let pre_master_secret = dh_params.server_public_key.modpow(&private_key, &p);
+        return Ok((
+            pre_master_secret.to_bytes_be(),
+            ClientKeyExchange::new_dh_implicit(),
+        ));
+    }
+
     match kx_algorithm {
         KeyExchangeAlgorithm::Rsa => {
             let server_public_key_der = server_certificate
@@ -648,7 +661,7 @@ fn prepare_client_key_exchange(
                 get_dh_pre_master_secret(&dh_params.p, &dh_params.g, &dh_params.server_public_key);
             Ok((
                 pre_master_secret,
-                ClientKeyExchange::new_dhe(client_public_key),
+                ClientKeyExchange::new_dh_explicit(client_public_key),
             ))
         }
         KeyExchangeAlgorithm::DhDss | KeyExchangeAlgorithm::DhRsa => {
@@ -660,7 +673,7 @@ fn prepare_client_key_exchange(
                 get_dh_pre_master_secret(&dh_params.p, &dh_params.g, &dh_params.server_public_key);
             Ok((
                 pre_master_secret,
-                ClientKeyExchange::new_dhe(client_public_key),
+                ClientKeyExchange::new_dh_explicit(client_public_key),
             ))
         }
         KeyExchangeAlgorithm::EcdheRsa => unimplemented!(),
@@ -714,6 +727,7 @@ impl HandleEvent<ClientContext, ClientState> for ExpectServerHelloDone {
             self.negotiated_cipher_suite.kx_algorithm(),
             self.server_certificate.as_ref(),
             self.dh_params.as_ref(),
+            requested_certificate,
         )?;
         let client_kx = TlsHandshake::ClientKeyExchange(client_kx);
         client_kx.write_to(&mut self.handshakes);
@@ -728,22 +742,25 @@ impl HandleEvent<ClientContext, ClientState> for ExpectServerHelloDone {
             self.negotiated_cipher_suite.prf_algorithm(),
             self.negotiated_extensions.extended_master_secret,
         );
+        // println!("MS: {:?}", master_secret);
 
         // Send CertificateVerify
         if let Some(client_certificate) = requested_certificate {
-            let signature = sign(
-                client_certificate.signature_algorithm,
-                &client_certificate.private_key_der,
-                &self.handshakes,
-            )
-            .map_err(|_| AlertDesc::InternalError)?;
-            let certificate_verify = TlsHandshake::CertificateVerify(CertificateVerify::new(
-                client_certificate.signature_algorithm,
-                signature,
-            ));
-            certificate_verify.write_to(&mut self.handshakes);
-            actions.push(TlsAction::SendHandshakeMsg(certificate_verify));
-            info!("Sent CertificateVerify");
+            if client_certificate.public_key_algorithm.can_sign() {
+                let signature = sign(
+                    client_certificate.signature_algorithm,
+                    &client_certificate.private_key_der,
+                    &self.handshakes,
+                )
+                .map_err(|_| AlertDesc::InternalError)?;
+                let certificate_verify = TlsHandshake::CertificateVerify(CertificateVerify::new(
+                    client_certificate.signature_algorithm,
+                    signature,
+                ));
+                certificate_verify.write_to(&mut self.handshakes);
+                actions.push(TlsAction::SendHandshakeMsg(certificate_verify));
+                info!("Sent CertificateVerify");
+            }
         }
 
         // Send ChangeCipherSuite

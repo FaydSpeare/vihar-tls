@@ -2,10 +2,11 @@ use std::collections::{HashMap, HashSet};
 
 use log::{debug, info};
 use num_bigint::BigUint;
+use x509_parser::prelude::{FromDer, X509Certificate};
 
 use crate::alert::AlertDesc;
 use crate::ciphersuite::{CipherSuiteId, KeyExchangeAlgorithm};
-use crate::client::{CertificateAndPrivateKey, PrioritisedCipherSuite};
+use crate::client::{CertificateAndPrivateKey, PrioritisedCipherSuite, PublicKeyAlgorithm};
 use crate::encoding::Reader;
 use crate::extensions::{HashType, SignatureAlgorithm, verify};
 use crate::messages::{
@@ -13,7 +14,9 @@ use crate::messages::{
     ProtocolVersion, PublicValueEncoding, ServerDhParams, ServerHello, ServerKeyExchange,
     SessionId,
 };
-use crate::oid::deconstruct_dh_key;
+use crate::oid::{
+    ServerCertificate, deconstruct_dh_key, extract_dh_params, get_public_key_algorithm,
+};
 use crate::session_ticket::{ClientIdentity, SessionTicket};
 use crate::signature::{
     decrypt_rsa_master_secret, generate_dh_keypair, get_dh_params, public_key_from_cert,
@@ -312,10 +315,13 @@ fn start_full_handshake(
     }
 
     if let ClientAuthPolicy::Auth {
-        certificate_types, ..
+        distinguished_names,
+        certificate_types,
+        ..
     } = &ctx.config.policy.client_auth
     {
         let certificate_request = CertificateRequest::new(
+            &distinguished_names,
             &ctx.config.supported_signature_algorithms,
             certificate_types,
         );
@@ -372,6 +378,7 @@ fn start_full_handshake(
             server_dh_params,
             expect_certificate_verify: false,
             client_public_key: None,
+            dh_client_public_key: None,
         }
         .into(),
         actions,
@@ -588,13 +595,49 @@ impl HandleEvent<ServerContext, ServerState> for ExpectClientCertificate {
 
         handshake.write_to(&mut self.handshakes);
 
-        let client_public_key = if let Some(cert) = certificate.list.first() {
-            let Ok(key) = public_key_from_cert(cert) else {
-                return Err(AlertDesc::IllegalParameter);
-            };
-            Some(key)
+        let (client_public_key, dh_client_public_key) = if let Some(cert) = certificate.list.first()
+        {
+            let key = public_key_from_cert(cert).map_err(|_| AlertDesc::IllegalParameter)?;
+
+            if self
+                .negotiated_cipher_suite
+                .kx_algorithm()
+                .kx_type()
+                .uses_dh()
+            {
+                let certificate = X509Certificate::from_der(cert)
+                    .map(|x| x.1)
+                    .map_err(|_| AlertDesc::IllegalParameter)?;
+                let public_key_algorithm = get_public_key_algorithm(&certificate);
+                if public_key_algorithm == PublicKeyAlgorithm::DhKeyAgreement {
+                    let certificate = ServerCertificate::from_der(cert)
+                        .map_err(|_| AlertDesc::IllegalParameter)?;
+                    let dh_params =
+                        extract_dh_params(&certificate).map_err(|_| AlertDesc::IllegalParameter)?;
+                    let server_dh_params = self.server_dh_params.as_ref().unwrap();
+                    if dh_params.g != server_dh_params.g || dh_params.p != server_dh_params.p {
+                        return Err(AlertDesc::IllegalParameter);
+                    }
+                    (Some(key), Some(dh_params.server_public_key))
+                } else {
+                    (Some(key), None)
+                }
+            } else {
+                (Some(key), None)
+            }
         } else {
-            None
+            (None, None)
+        };
+
+        let expect_certificate_verify = match certificate.list.first() {
+            None => false,
+            Some(der) => {
+                let certificate = X509Certificate::from_der(der)
+                    .map(|x| x.1)
+                    .map_err(|_| AlertDesc::IllegalParameter)?;
+                let public_key_algorithm = get_public_key_algorithm(&certificate);
+                public_key_algorithm.can_sign()
+            }
         };
 
         Ok((
@@ -607,8 +650,9 @@ impl HandleEvent<ServerContext, ServerState> for ExpectClientCertificate {
                 negotiated_extensions: self.negotiated_extensions,
                 issue_session_ticket: self.issue_session_ticket,
                 server_dh_params: self.server_dh_params,
-                expect_certificate_verify: !certificate.list.is_empty(),
+                expect_certificate_verify,
                 client_public_key,
+                dh_client_public_key,
             }
             .into(),
             vec![],
@@ -628,6 +672,7 @@ pub struct ExpectClientKeyExchange {
     server_dh_params: Option<DhParams>,
     expect_certificate_verify: bool,
     client_public_key: Option<Vec<u8>>,
+    dh_client_public_key: Option<BigUint>,
 }
 
 impl HandleEvent<ServerContext, ServerState> for ExpectClientKeyExchange {
@@ -642,8 +687,13 @@ impl HandleEvent<ServerContext, ServerState> for ExpectClientKeyExchange {
 
         let pre_master_secret = match client_kx {
             ClientKeyExchangeInner::ClientDiffieHellmanPublic(PublicValueEncoding::Implicit) => {
-                // TODO: this is for when client has fixed_dh authenticated
-                unimplemented!()
+                let Some(client_public_key) = self.dh_client_public_key else {
+                    return Err(AlertDesc::UnexpectedMessage);
+                };
+
+                let dh_params = self.server_dh_params.unwrap();
+                let secret = client_public_key.modpow(&dh_params.private_key, &dh_params.p);
+                secret.to_bytes_be()
             }
             ClientKeyExchangeInner::ClientDiffieHellmanPublic(PublicValueEncoding::Explicit(
                 client_public_key,
@@ -677,7 +727,7 @@ impl HandleEvent<ServerContext, ServerState> for ExpectClientKeyExchange {
             self.negotiated_cipher_suite.prf_algorithm(),
             self.negotiated_extensions.extended_master_secret,
         );
-        //println!("MS: {:?}", master_secret);
+        // println!("MS: {:?}", master_secret);
 
         let security_params = SecurityParams::new(
             self.client_random,
@@ -827,7 +877,7 @@ impl HandleEvent<ServerContext, ServerState> for ExpectClientFinished {
                 utils::get_unix_time(),
                 self.negotiated_extensions.max_fragment_length,
                 self.negotiated_extensions.extended_master_secret,
-                ctx.stek.as_ref().unwrap(),
+                ctx.stek.as_ref().expect("configured"),
             );
             let new_session_ticket = TlsHandshake::NewSessionTicket(new_session_ticket);
             new_session_ticket.write_to(&mut self.handshakes);

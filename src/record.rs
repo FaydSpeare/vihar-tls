@@ -1,5 +1,5 @@
 use crate::{
-    TlsPolicy, TlsValidateable,
+    TlsValidateable, ValidationPolicy,
     alert::{Alert, AlertDesc},
     connection::ConnState,
     encoding::{Reader, TlsCodable},
@@ -30,7 +30,7 @@ impl RecordLayer {
     pub fn try_parse_message(
         &mut self,
         conn_state: &mut ConnState,
-        policy: &TlsPolicy,
+        policy: &ValidationPolicy,
         max_fragmentation_len: usize,
     ) -> Result<TlsMessage, TlsError> {
         loop {
